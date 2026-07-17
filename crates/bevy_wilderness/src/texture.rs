@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use bevy::{
-    asset::RenderAssetUsages,
+    asset::{RenderAssetUsages, io::file::FileAssetReader},
     image::{
         CompressedImageFormats, ImageAddressMode, ImageFilterMode, ImageSampler,
         ImageSamplerDescriptor, ImageType,
@@ -55,6 +55,12 @@ pub(crate) fn terrain_tiling_sampler() -> ImageSampler {
 /// into R, G, B (metallic is ~0 for terrain); build them from the separate
 /// AO/roughness files that texture sites ship.
 ///
+/// Relative paths resolve against the same base as Bevy's asset server
+/// (`BEVY_ASSET_ROOT`, else `CARGO_MANIFEST_DIR`, else the executable's
+/// directory — not the process CWD), so `"assets/terrain/grass_albedo.png"`
+/// finds the same file `AssetServer::load("terrain/grass_albedo.png")` would,
+/// wherever the app is launched from.
+///
 /// This reads files synchronously and is meant for one-time setup. It panics on
 /// a missing/undecodable file or a dimension mismatch — asset-authoring errors
 /// worth surfacing immediately at startup.
@@ -79,11 +85,20 @@ pub fn load_terrain_array(
         !paths.is_empty(),
         "load_terrain_array needs at least one layer"
     );
+    // Resolve relative paths like Bevy's asset server does (manifest dir under
+    // `cargo run`), not against the CWD — from a workspace root the CWD isn't
+    // the crate, and the files would spuriously not be found.
+    let base = FileAssetReader::get_base_path();
     let layers = paths
         .iter()
         .map(|path| {
             let path = path.as_ref();
-            let bytes = std::fs::read(path)
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                base.join(path)
+            };
+            let bytes = std::fs::read(&path)
                 .unwrap_or_else(|e| panic!("load_terrain_array: reading {}: {e}", path.display()));
             let ext = path
                 .extension()
@@ -176,8 +191,12 @@ pub fn build_terrain_array(layers: &[Image], srgb: bool) -> Image {
     }
 
     let (width, height) = dims.unwrap();
-    let mut array = Image::default();
-    array.data = Some(stacked);
+    let mut array = Image {
+        data: Some(stacked),
+        asset_usage: RenderAssetUsages::RENDER_WORLD,
+        sampler: terrain_tiling_sampler(),
+        ..Default::default()
+    };
     array.texture_descriptor.size = Extent3d {
         width,
         height,
@@ -186,8 +205,6 @@ pub fn build_terrain_array(layers: &[Image], srgb: bool) -> Image {
     array.texture_descriptor.dimension = TextureDimension::D2;
     array.texture_descriptor.format = format;
     array.texture_descriptor.mip_level_count = 32 - width.max(height).leading_zeros();
-    array.asset_usage = RenderAssetUsages::RENDER_WORLD;
-    array.sampler = terrain_tiling_sampler();
     array
 }
 

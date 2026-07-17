@@ -31,7 +31,7 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 
 ## Usage
 
-The example usage can be seen in the [examples](examples/basic.rs) directory.
+The example usage can be seen in the [examples](crates/bevy_wilderness/examples/basic.rs) directory.
 This example uses a very low-resolution heightmap to save space when cloning this repository. For better visual results, create your own higher-resolution textures.
 
 The example's terrain material uses CC0 texture sets that are not committed to the
@@ -39,7 +39,7 @@ repo. Fetch them once before running it:
 
 ```sh
 > pip install Pillow
-> python assets/fetch_textures.py   # downloads grass/dirt/rock/snow into assets/terrain/
+> python crates/bevy_wilderness/assets/fetch_textures.py   # downloads grass/dirt/rock/snow into crates/bevy_wilderness/assets/terrain/
 > cargo run --example basic
 ```
 
@@ -59,7 +59,7 @@ standalone VR) — so one binary serves flatscreen and VR. Add `HeightFogPlugin`
 set the `TerrainFog` (look) and `TerrainQuality` (performance profile, `Low`/
 `Medium`/`High`) resources, and use `HeightFogExtension` (or the
 `bevy_wilderness::fog_functions` shader include + `InlineFog`) to fog your own meshes.
-See [`examples/basic.rs`](examples/basic.rs).
+See [`examples/basic.rs`](crates/bevy_wilderness/examples/basic.rs).
 
 ## How to create textures
 

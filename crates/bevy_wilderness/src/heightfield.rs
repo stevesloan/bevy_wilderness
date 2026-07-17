@@ -38,11 +38,15 @@ impl<'a> Heightfield<'a> {
     }
 
     /// Heightmap dimensions in texels.
+    // Editor-facing accessor; unused internally without the `editing` feature.
+    #[cfg_attr(not(feature = "editing"), allow(dead_code))]
     pub fn dimensions(&self) -> UVec2 {
         UVec2::new(self.width as u32, self.height as u32)
     }
 
     /// World size of one texel, in meters.
+    // Editor-facing accessor; unused internally without the `editing` feature.
+    #[cfg_attr(not(feature = "editing"), allow(dead_code))]
     pub fn texel_size(&self) -> f32 {
         self.texel_size
     }

@@ -1,0 +1,25 @@
+[package]
+name = "bevy_wilderness"
+# Fresh version: the crate publishes under a new name (the fork of bevy-clipmap
+# 1.0.5 renamed; too diverged to upstream).
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Beautiful, walkable, nature-shaped terrain for Bevy"
+repository = "https://github.com/stevesloan/bevy_wilderness"
+exclude = ["assets/*"]
+
+[dependencies]
+bevy = "0.19.0"
+
+[features]
+# Demo A/B keybinds (B/N/V) for the AO/bent-normal experiment. Off by default so
+# the library ships no input systems; the `basic` example enables it.
+dev-controls = []
+# Opt-in editable-terrain API for the terrain editor: the RebakeRequested
+# re-bake trigger and the public Heightfield. Default consumers gain no runtime
+# cost (docs/terrain-editor-design.md §5).
+editing = []
+
+[dev-dependencies]
+bevy = { version = "0.19.0", features = ["free_camera"] }
