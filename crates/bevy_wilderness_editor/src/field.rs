@@ -64,7 +64,14 @@ impl TerrainField {
     /// dims.y` of them) — the load path for a 16-bit grayscale PNG, whose
     /// decoder hands back `u16` samples rather than a bevy `Image`. The
     /// `to_r16` inverse.
-    pub fn from_r16(texels: &[u16], dims: UVec2, texel_size: f32, min: f32, max: f32, looping: bool) -> Self {
+    pub fn from_r16(
+        texels: &[u16],
+        dims: UVec2,
+        texel_size: f32,
+        min: f32,
+        max: f32,
+        looping: bool,
+    ) -> Self {
         debug_assert_eq!(texels.len(), (dims.x * dims.y) as usize);
         let heights = texels
             .iter()
@@ -435,7 +442,10 @@ mod tests {
         for y in 0..16 {
             for x in 0..16 {
                 let (a, b) = (field.get(x, y), back.get(x, y));
-                assert!((a - b).abs() < 200.0 / 65535.0, "texel ({x},{y}): {a} vs {b}");
+                assert!(
+                    (a - b).abs() < 200.0 / 65535.0,
+                    "texel ({x},{y}): {a} vs {b}"
+                );
             }
         }
     }

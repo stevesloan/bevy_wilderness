@@ -108,8 +108,9 @@ pub(crate) fn poll_export_tasks(
 }
 
 /// Write `texels` to `path`, format by extension; `None` on success, the
-/// error message otherwise.
-fn write_export(path: &Path, dims: UVec2, texels: Vec<u16>) -> Option<String> {
+/// error message otherwise. `pub(crate)` so the load path (`swap.rs`) can
+/// round-trip against the real writers in its tests.
+pub(crate) fn write_export(path: &Path, dims: UVec2, texels: Vec<u16>) -> Option<String> {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) if ext.eq_ignore_ascii_case("png") => write_png(path, dims, texels),
         _ => std::fs::write(path, write_ktx2(dims, &texels))

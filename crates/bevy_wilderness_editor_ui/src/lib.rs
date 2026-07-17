@@ -16,8 +16,8 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, EditableTerrain, EditorSet, EditorTools, ErosionRequested,
     ErosionRun, ErosionSettings, ExportRequested, HeightmapExported, LoadRequested,
-    NewTerrainRequested, PointerBlocked, SculptMode, SeamOverlay, TerrainLoaded, ToolId, UndoBuffer,
-    UndoHistory,
+    NewTerrainRequested, PointerBlocked, SculptMode, SeamOverlay, TerrainLoaded, ToolId,
+    UndoBuffer, UndoHistory,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export

@@ -28,6 +28,7 @@ use bevy::{
 use bevy_wilderness::Clipmap;
 
 use crate::{
+    erosion::ErosionRun,
     field::TerrainField,
     terrain::{Editable, EditableTerrain},
     undo::UndoHistory,
@@ -94,7 +95,14 @@ pub(crate) fn apply_new_terrain(
             req.height,
         );
         let heightmap = images.add(field.to_image());
-        swap_in(&mut commands, req.terrain, &mut clipmap, &mut history, field, heightmap);
+        swap_in(
+            &mut commands,
+            req.terrain,
+            &mut clipmap,
+            &mut history,
+            field,
+            heightmap,
+        );
     }
 }
 
@@ -120,7 +128,14 @@ pub(crate) fn apply_load(
         let error = match load_field(&req.path, world, clipmap.min, clipmap.max, clipmap.looping) {
             Ok(field) => {
                 let heightmap = images.add(field.to_image());
-                swap_in(&mut commands, req.terrain, &mut clipmap, &mut history, field, heightmap);
+                swap_in(
+                    &mut commands,
+                    req.terrain,
+                    &mut clipmap,
+                    &mut history,
+                    field,
+                    heightmap,
+                );
                 None
             }
             Err(error) => Some(error),
@@ -161,8 +176,11 @@ fn swap_in(
     editable.mark_dirty(editable.field.full_rect());
     commands
         .entity(terrain)
-        // Drop the load marker in case a swap pre-empts an in-flight decode.
-        .remove::<Editable>()
+        // Drop the load marker in case a swap pre-empts an in-flight decode,
+        // and cancel any in-flight erosion run (dropping its task aborts it):
+        // its delta buffer and changed rect are sized for the replaced field —
+        // landing them would corrupt the new one, or index out of its bounds.
+        .remove::<(Editable, ErosionRun)>()
         .insert(editable);
     // The old tile snapshots describe a field that no longer exists.
     history.clear();
@@ -210,5 +228,100 @@ fn load_field(
         }
         TerrainField::from_image(&image, world / dims.x as f32, min, max, looping)
             .ok_or_else(|| "KTX2 heightmap must be R16_UNORM with CPU-resident data".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::export::write_export;
+
+    fn ramp_field() -> TerrainField {
+        // 32² over a 32 m world (texel_size 1), heights ramping across X.
+        let mut field = TerrainField::flat(32, 32, 1.0, 0.0, 200.0, false, 0.0);
+        for y in 0..32 {
+            for x in 0..32 {
+                field.set(x, y, (x + y) as f32 * 3.0);
+            }
+        }
+        field
+    }
+
+    /// Export → load_field must round-trip both formats — the runtime twin of
+    /// export.rs's restart-based acceptance, exercising the real writers
+    /// against the real readers.
+    #[test]
+    fn load_field_round_trips_both_export_formats() {
+        let field = ramp_field();
+        let world = field.dimensions().x as f32 * field.texel_size();
+        for ext in ["ktx2", "png"] {
+            let path = std::env::temp_dir().join(format!("wilderness_load_test.{ext}"));
+            assert_eq!(
+                write_export(&path, field.dimensions(), field.to_r16()),
+                None,
+                "{ext} export must succeed"
+            );
+            let back = load_field(&path, world, 0.0, 200.0, false)
+                .unwrap_or_else(|e| panic!("{ext} load must succeed: {e}"));
+            assert_eq!(back.dimensions(), field.dimensions());
+            assert_eq!(
+                back.texel_size(),
+                field.texel_size(),
+                "{ext}: same world footprint"
+            );
+            for y in 0..32 {
+                for x in 0..32 {
+                    let (a, b) = (field.get(x, y), back.get(x, y));
+                    assert!(
+                        (a - b).abs() < 200.0 / 65535.0,
+                        "{ext} texel ({x},{y}): {a} vs {b}"
+                    );
+                }
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    /// A different-resolution file re-derives texel_size so the world footprint
+    /// is preserved (D9: resolution is texel density, not scale).
+    #[test]
+    fn load_field_keeps_the_world_footprint() {
+        let field = TerrainField::flat(16, 16, 1.0, 0.0, 100.0, true, 5.0);
+        let path = std::env::temp_dir().join("wilderness_load_footprint_test.ktx2");
+        assert_eq!(
+            write_export(&path, field.dimensions(), field.to_r16()),
+            None
+        );
+        // Load the 16² file into a 64 m world: texels are now 4 m.
+        let back = load_field(&path, 64.0, 0.0, 100.0, true).expect("must load");
+        assert_eq!(back.texel_size(), 4.0);
+        assert_eq!(back.half_extent(), Vec2::splat(32.0));
+        assert!(back.looping());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn load_field_reports_errors_without_panicking() {
+        // Missing file.
+        assert!(
+            load_field(
+                Path::new("/nonexistent/heightmap.ktx2"),
+                64.0,
+                0.0,
+                100.0,
+                false
+            )
+            .is_err()
+        );
+        // Not a KTX2 / not a PNG: garbage bytes under both extensions.
+        for ext in ["ktx2", "png"] {
+            let path = std::env::temp_dir().join(format!("wilderness_load_garbage.{ext}"));
+            std::fs::write(&path, b"not a heightmap").unwrap();
+            assert!(
+                load_field(&path, 64.0, 0.0, 100.0, false).is_err(),
+                "{ext}: garbage must error, not panic"
+            );
+            std::fs::remove_file(&path).ok();
+        }
     }
 }

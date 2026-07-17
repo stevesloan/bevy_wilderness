@@ -215,10 +215,7 @@ fn retag_r16uint(image: &mut Image) -> bool {
 /// — so a PNG heightmap is a first-class asset and a host can ship one file
 /// for both terrain and physics (e.g. an Avian collision heightfield reads
 /// the same PNG through a standard image decoder).
-pub(crate) fn retag_png_heightmaps(
-    mut images: ResMut<Assets<Image>>,
-    clipmaps: Query<&Clipmap>,
-) {
+pub(crate) fn retag_png_heightmaps(mut images: ResMut<Assets<Image>>, clipmaps: Query<&Clipmap>) {
     for clipmap in &clipmaps {
         // `get_mut` only on a mismatch — it marks the asset modified, which
         // would re-upload every heightmap every frame otherwise.
