@@ -1,7 +1,6 @@
 //! Brush / erosion state resources (design doc §6): the data a UI reads and
-//! writes. Data-only in Phase 1 — the sculpt tool consumes [`BrushSettings`]
-//! in Phase 2, erosion consumes [`ErosionSettings`] in Phase 5, and the mask
-//! state arrives with the mask tool in Phase 4.
+//! writes. The sculpt (Phase 2) and mask (Phase 4) tools consume
+//! [`BrushSettings`]; the erosion run (Phase 5) consumes [`ErosionSettings`].
 
 use bevy::prelude::*;
 
@@ -41,15 +40,17 @@ impl Default for BrushSettings {
     }
 }
 
-/// Droplet-erosion parameters (D3): ~1–3 M droplets simulated on the CPU in the
+/// Droplet-erosion parameters (D3): droplets simulated on the CPU in the
 /// background, each carrying sediment downhill for up to `max_lifetime` steps.
 /// Defaults follow the standard droplet model; exposed as a resource so a UI
-/// can offer a few sliders. Consumed by the erosion tool in Phase 5.
+/// can offer a few sliders.
 #[derive(Resource, Clone, Debug)]
 pub struct ErosionSettings {
-    /// Droplets per run. More = stronger, more detailed erosion, linearly
-    /// slower. ~1–3 M suits a 4K map; scale down with the masked area.
-    pub droplets: u32,
+    /// Droplets per texel of eroded area (the mask, or the whole map when
+    /// unmasked) — a density, so a run feels the same at any map resolution
+    /// or mask size. More = stronger, more detailed erosion, linearly slower.
+    /// The default 0.1 is ~1.7 M droplets over a full 4096² map.
+    pub droplet_density: f32,
     /// Max steps a droplet lives (each step moves one texel).
     pub max_lifetime: u32,
     /// 0 = flow follows the gradient exactly (twitchy); 1 = never turns.
@@ -72,12 +73,15 @@ pub struct ErosionSettings {
     pub talus_angle_deg: f32,
     /// Fraction of the excess slope relaxed per thermal iteration.
     pub thermal_rate: f32,
+    /// Thermal iterations after the droplet pass; talus creeps at most one
+    /// texel per iteration.
+    pub thermal_iterations: u32,
 }
 
 impl Default for ErosionSettings {
     fn default() -> Self {
         Self {
-            droplets: 1_500_000,
+            droplet_density: 0.1,
             max_lifetime: 64,
             inertia: 0.05,
             sediment_capacity: 4.0,
@@ -89,6 +93,7 @@ impl Default for ErosionSettings {
             erosion_radius: 3,
             talus_angle_deg: 33.0,
             thermal_rate: 0.5,
+            thermal_iterations: 8,
         }
     }
 }

@@ -1,9 +1,9 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **In progress — Phases 0–4 done** (workspace + editing API; editor core;
+Status: **In progress — Phases 0–5 done** (workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
-visualization) · Next: **Phase 5, erosion** · Project name:
-**`bevy_wilderness`** · Last updated: 2026-07-16
+visualization; background droplet + thermal erosion) · Next: **Phase 6,
+looping seams** · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -353,9 +353,24 @@ history survives deep strokes without unbounded memory.
 multi-buffer entries. *Accept:* a mask confines a subsequent op with a soft,
 seamless edge.
 
-**Phase 5 — Erosion.** Masked droplet + thermal on `AsyncComputeTaskPool` (D3).
+**Phase 5 ✅ — Erosion.** Masked droplet + thermal on `AsyncComputeTaskPool` (D3).
 *Accept:* mask a lump, erode, get dendritic valleys/ridgelines in a few seconds
 without freezing; re-bake shows rock on new cliffs.
+Decisions in flight: the sim works in *normalized* height units (0..1 of the
+encode range) so the standard droplet parameters stay scale-independent; a run
+is 8 sequential *rounds* of parallel per-batch delta buffers (≤ 4, each a
+full-field f32 — memory cap), applied mask-weighted between rounds so later
+droplets follow earlier rounds' channels (the dendritic feedback); thermal is
+steepest-neighbor talus shed, mask-weighted at the source, region-bounded to
+the mask + one texel of creep per iteration; results land as *deltas* (not
+absolute heights) so edits made during the run survive; the apply defers while
+`UndoHistory::gesture_open()` so it never splits another tool's stroke entry.
+API: `ErosionRequested` message (the erode tool writes it on click; a host UI
+writes it directly) + `ErosionRun` component with `progress()`. Droplet budget
+is `ErosionSettings::droplet_density` (droplets *per texel* of eroded area,
+default 0.1) — an absolute count over-eroded small maps/masks by their area
+ratio, so the knob is a density; spawn positions are rejection-thinned by the
+feathered mask weight.
 
 **Phase 6 — Looping seams.** Toroidal edits + wrapped erosion + boundary overlay
 (D6). *Accept:* with `looping` on, a stroke/erosion across an edge is continuous

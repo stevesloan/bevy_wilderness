@@ -206,6 +206,14 @@ impl UndoHistory {
         Some(entry.label.clone())
     }
 
+    /// Whether a gesture is currently open (between [`begin`](Self::begin) and
+    /// [`seal`](Self::seal)). Deferred appliers (the erosion result landing
+    /// from its background task) check this and wait a frame, so they never
+    /// seal another tool's stroke mid-gesture and split its entry.
+    pub fn gesture_open(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// The label the next [`undo`](Self::undo) would revert (for UI).
     pub fn undo_label(&self) -> Option<&str> {
         self.entries[..self.cursor].last().map(|e| e.label.as_str())

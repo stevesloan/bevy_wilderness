@@ -11,11 +11,14 @@
 //! - [`TerrainHeight`] — height at (x, z), for snapping props to the surface.
 //! - [`TerrainRegionChanged`] — emitted when terrain changes; re-snap props.
 //! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
+//! - [`ErosionRequested`] / [`ErosionRun`] — start an erosion run / watch its
+//!   progress (D3).
 //! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
 
 use bevy::prelude::*;
 
 mod cursor;
+mod erosion;
 mod field;
 mod mask;
 mod rebake;
@@ -26,6 +29,7 @@ mod tools;
 mod undo;
 
 pub use cursor::{TerrainCursor, TerrainHit};
+pub use erosion::{ErosionRequested, ErosionRun};
 pub use field::TerrainField;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
@@ -61,6 +65,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<ErosionSettings>()
             .init_resource::<UndoHistory>()
             .add_message::<TerrainRegionChanged>()
+            .add_message::<ErosionRequested>()
             .configure_sets(
                 Update,
                 (EditorSet::Pick, EditorSet::Tools, EditorSet::Apply).chain(),
@@ -76,6 +81,16 @@ impl Plugin for TerrainEditorPlugin {
                     mask::apply_mask_paint
                         .run_if(tool_active(ToolId::MASK))
                         .in_set(EditorSet::Tools),
+                    erosion::request_on_click
+                        .run_if(tool_active(ToolId::ERODE))
+                        .in_set(EditorSet::Tools),
+                    // Between Tools and Apply: a click's request starts its
+                    // task the same frame, and a landed result's dirty region
+                    // flushes (quantize + event + re-bake debounce) the same
+                    // frame it applies.
+                    (erosion::start_requested_runs, erosion::apply_finished_runs)
+                        .after(EditorSet::Tools)
+                        .before(EditorSet::Apply),
                     (terrain::sync_dirty_regions, terrain::sync_dirty_masks)
                         .in_set(EditorSet::Apply),
                     // After the sync so a flush's re-armed timer isn't ticked
@@ -84,8 +99,7 @@ impl Plugin for TerrainEditorPlugin {
                 ),
             );
 
-        // The built-in tools' registry entries. Their systems arrive with
-        // their phases (sculpt 2, mask 4, erode 5).
+        // The built-in tools' registry entries.
         let mut tools = app.world_mut().resource_mut::<EditorTools>();
         tools.register(ToolId::SCULPT, "Sculpt");
         tools.register(ToolId::MASK, "Mask");

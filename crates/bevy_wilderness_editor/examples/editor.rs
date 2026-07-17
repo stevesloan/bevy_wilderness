@@ -8,15 +8,18 @@
 //!
 //! Controls (WASD + right-drag to fly):
 //! - **Left mouse (held)** — apply the active tool under the brush ring
-//! - **S / M / P** — sculpt / mask paint / demo probe tool
+//! - **S / M / E / P** — sculpt / mask paint / erode / demo probe tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
 //! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
 //!
-//! A painted mask (orange tint) confines sculpting to it, feathered at the
-//! edge — and will confine erosion in Phase 5.
+//! A painted mask (orange tint) confines sculpting *and* erosion to it,
+//! feathered at the edge. With the erode tool active, a click starts a
+//! background erosion run over the mask (the whole map if none) — geometry
+//! updates when it lands a few seconds later, then the re-bake turns the
+//! fresh cliffs rocky.
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -36,9 +39,9 @@ use bevy_wilderness::{
     SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, SculptMode,
-    TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory,
-    tool_active,
+    ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
+    SculptMode, TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoBuffer,
+    UndoHistory, tool_active,
 };
 
 /// The demo third-party tool: proves a host-registered tool receives the shared
@@ -65,6 +68,7 @@ fn main() {
                 undo_keys,
                 clear_mask_key,
                 draw_brush_ring,
+                erosion_progress,
             ),
         )
         .add_systems(
@@ -125,6 +129,10 @@ fn brush_controls(
     if keys.just_pressed(KeyCode::KeyM) {
         active.0 = Some(ToolId::MASK);
         info!("tool: mask paint (Shift+LMB erases, C clears)");
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        active.0 = Some(ToolId::ERODE);
+        info!("tool: erode (click to run over the mask, or the whole map if none)");
     }
     if keys.just_pressed(KeyCode::KeyP) {
         active.0 = Some(PROBE);
@@ -191,6 +199,25 @@ fn draw_brush_ring(cursor: Res<TerrainCursor>, brush: Res<BrushSettings>, mut gi
             2.0,
             Color::srgb(1.0, 0.9, 0.2),
         );
+    }
+}
+
+/// Progress-bar stand-in: logs a running erosion every ~20%, and once when the
+/// result lands — the same `ErosionRun::progress` a UI's bar will read.
+fn erosion_progress(runs: Query<&ErosionRun>, mut last: Local<Option<u32>>) {
+    match runs.iter().next() {
+        Some(run) => {
+            let pct = (run.progress() * 100.0) as u32 / 20 * 20;
+            if *last != Some(pct) {
+                *last = Some(pct);
+                info!("erosion: {pct}% of droplets simulated");
+            }
+        }
+        None => {
+            if last.take().is_some() {
+                info!("erosion: result applied");
+            }
+        }
     }
 }
 
