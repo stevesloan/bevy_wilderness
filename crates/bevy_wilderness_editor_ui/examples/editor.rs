@@ -25,6 +25,17 @@
 //! The place-prop tool (P) drops cubes that snap to the surface and *re-snap*
 //! whenever the ground under them changes — sculpt or erode under one and
 //! watch it follow.
+//!
+//! The panel's Export button saves the heightmap into the renderer crate's
+//! assets dir in both formats: `heightmap_export.ktx2` (the engine master)
+//! and `heightmap_export.png` (16-bit interchange, e.g. for a physics
+//! pipeline's collision heightfield). To prove the round-trip, restart
+//! loading the KTX2:
+//!
+//! ```sh
+//! WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 \
+//!     cargo run -p bevy_wilderness_editor_ui --example editor
+//! ```
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -48,7 +59,7 @@ use bevy_wilderness_editor::{
     SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainHeight,
     TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory, tool_active,
 };
-use bevy_wilderness_editor_ui::TerrainEditorUiPlugin;
+use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath};
 
 /// The demo third-party tool (design doc §6): places props that snap to the
 /// terrain and re-snap when it changes — proving a host-registered tool gets
@@ -314,6 +325,11 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut scattering_mediums: ResMut<Assets<ScatteringMedium>>,
 ) {
+    // Export into the assets dir (cwd-relative — run from the workspace root)
+    // so the exported file is immediately loadable via WILDERNESS_HEIGHTMAP.
+    commands.insert_resource(UiExportPath(
+        "crates/bevy_wilderness/assets/heightmap_export.ktx2".into(),
+    ));
     commands.insert_resource(TerrainFog(HeightFog {
         density: 0.002e-4,
         falloff: 0.0128,
@@ -419,7 +435,12 @@ fn setup(
                 .with_settings(|settings: &mut ImageLoaderSettings| {
                     settings.is_srgb = false;
                 })
-                .load("heightmap_1024x1024.ktx2"),
+                // WILDERNESS_HEIGHTMAP overrides the heightmap asset path —
+                // point it at an export to prove the D7 round-trip.
+                .load(
+                    std::env::var("WILDERNESS_HEIGHTMAP")
+                        .unwrap_or_else(|_| "heightmap_1024x1024.ktx2".into()),
+                ),
             albedo_array,
             normal_array,
             orm_array,

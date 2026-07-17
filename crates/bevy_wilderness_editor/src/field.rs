@@ -103,6 +103,13 @@ impl TerrainField {
         )
     }
 
+    /// Quantize the whole field to raw `R16` texels (row-major) — the export
+    /// path's payload; the same encoding [`Self::to_image`] wraps in an
+    /// `Image`.
+    pub fn to_r16(&self) -> Vec<u16> {
+        self.heights.iter().map(|&h| self.quantize(h)).collect()
+    }
+
     /// Quantize `rect` (texel space, max-exclusive) into `image`, which must be
     /// the same-dimension `R16Unorm` heightmap this field derives. The cheap
     /// dirty-region path: only the touched texels are re-encoded.

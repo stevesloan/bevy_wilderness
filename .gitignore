@@ -1,2 +1,4 @@
 /target
 /crates/bevy_wilderness/assets/terrain
+# Editor exports written into the assets dir by the example (Export button)
+heightmap_export.*

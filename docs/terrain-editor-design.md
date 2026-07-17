@@ -1,10 +1,10 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **In progress — Phases 0–7 done** (workspace + editing API; editor core;
+Status: **All phases (0–8) complete** — workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
-overlay; default egui UI + prop-placement demo tool) · Next: **Phase 8,
-export** · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
+overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
+export · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -305,7 +305,21 @@ side live.
 
 ### D7 — Export to file
 Export the R16 heightmap to a file that round-trips with the existing loader
-(`examples/basic.rs:233`). Format: 16-bit PNG or KTX2. *(Confirm — §11.)*
+(`examples/basic.rs:233`). Format *(settled in Phase 8)*: **both**, chosen by
+the requested path's extension —
+- **R16 KTX2** (engine master): the only format that round-trips — ⚠️ bevy
+  0.19 decodes 16-bit grayscale PNG to `R16Uint`, *not* `R16Unorm` (found in
+  acceptance testing: `Uint` sampler mismatch, editor rejects the load), so
+  PNG cannot be the renderer/editor master. KTX2 carries an explicit
+  `vkFormat` the loader trusts. Written by hand (~40 lines: header, index,
+  DFD, data — the `ktx2` parser crate has no writer).
+- **16-bit grayscale PNG** (interchange): required by the game — its physics
+  pipeline builds the Avian collision heightfield from the PNG via standard
+  image decoding (which is lossless for R16, just off the engine's loader
+  path). Also opens in DCC tools.
+
+Round-trip requires the same `min`/`max` encode range on the loading
+`Clipmap` (inherent to R16, same as the shipped asset).
 
 ### D8 — Undo/history: tile-based region snapshots *(settled 2026-07-16)*
 Not full-field copies (67 MB each at 4096²). The field divides into fixed tiles
@@ -409,8 +423,19 @@ mesh, no asset dependency) via the shared pick and re-snaps them from
 plus a manifest. Erosion sliders exposed: droplet density, capacity,
 erode/deposit rate, talus angle (§11's "a few sliders").
 
-**Phase 8 — Export.** Write the R16 heightmap to file (D7). *Accept:* export,
+**Phase 8 ✅ — Export.** Write the R16 heightmap to file (D7). *Accept:* export,
 restart loading the exported file, terrain matches.
+Decisions in flight: dual format by extension — KTX2 engine master + PNG
+interchange for the game's Avian collision build (see D7 for the full story,
+including why PNG-only failed in acceptance). Core API is the message pair
+`ExportRequested { terrain, path }` → `HeightmapExported { terrain, path,
+error }`; one request per file, exports run concurrently on
+`AsyncComputeTaskPool` (a 4096² map is ~33 MB). The UI's Export button writes
+*both* formats beside the host-configurable `UiExportPath` base; the example
+points it into the renderer's assets dir and takes a `WILDERNESS_HEIGHTMAP`
+env override so the round-trip is one restart:
+`WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 cargo run -p
+bevy_wilderness_editor_ui --example editor`.
 
 ---
 
@@ -434,7 +459,8 @@ restart loading the exported file, terrain matches.
 
 ## 11. Open questions
 
-- **Export format**: 16-bit PNG vs KTX2? (D7.)
+- ~~**Export format**~~ *(settled in Phase 8)*: both — KTX2 engine master +
+  16-bit PNG interchange, by extension. See D7.
 - ~~**Erosion parameter exposure**~~ *(settled in Phase 7)*: five sliders —
   droplet density, sediment capacity, erode/deposit rate, talus angle. The rest
   stay `ErosionSettings` fields a host can still set in code.

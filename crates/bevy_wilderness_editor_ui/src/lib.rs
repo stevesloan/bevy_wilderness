@@ -15,9 +15,23 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, EditableTerrain, EditorSet, EditorTools, ErosionRequested,
-    ErosionRun, ErosionSettings, PointerBlocked, SculptMode, SeamOverlay, ToolId, UndoBuffer,
-    UndoHistory,
+    ErosionRun, ErosionSettings, ExportRequested, HeightmapExported, PointerBlocked, SculptMode,
+    SeamOverlay, ToolId, UndoBuffer, UndoHistory,
 };
+
+/// Base path for the panel's Export button. One click writes **both** export
+/// formats beside each other — `<base>.ktx2` (the engine master a `Clipmap`
+/// re-loads) and `<base>.png` (the 16-bit interchange copy, e.g. for a
+/// physics pipeline's collision heightfield). The host app sets this — e.g.
+/// into its assets directory so the export loads straight back.
+#[derive(Resource, Clone, Debug)]
+pub struct UiExportPath(pub std::path::PathBuf);
+
+impl Default for UiExportPath {
+    fn default() -> Self {
+        Self("heightmap_export.ktx2".into())
+    }
+}
 
 /// The default editor UI. Add after
 /// [`TerrainEditorPlugin`](bevy_wilderness_editor::TerrainEditorPlugin); adds
@@ -29,7 +43,9 @@ impl Plugin for TerrainEditorUiPlugin {
         if !app.is_plugin_added::<EguiPlugin>() {
             app.add_plugins(EguiPlugin::default());
         }
-        app.add_systems(EguiPrimaryContextPass, editor_panel).add_systems(
+        app.init_resource::<UiExportPath>()
+            .add_systems(EguiPrimaryContextPass, editor_panel)
+            .add_systems(
             Update,
             // Before the shared pick, so a brush stroke can't land through a
             // panel the same frame the pointer moves onto it.
@@ -70,7 +86,19 @@ fn editor_panel(
     )>,
     runs: Query<&ErosionRun>,
     mut erode: MessageWriter<ErosionRequested>,
+    export_path: Res<UiExportPath>,
+    mut export: MessageWriter<ExportRequested>,
+    mut exported: MessageReader<HeightmapExported>,
+    mut export_status: Local<Vec<String>>,
 ) -> Result {
+    for done in exported.read() {
+        // Replace the "exporting…" placeholder with per-file results.
+        export_status.retain(|line| !line.ends_with('…'));
+        export_status.push(match &done.error {
+            None => format!("saved {}", done.path.display()),
+            Some(error) => format!("failed {}: {error}", done.path.display()),
+        });
+    }
     let ctx = contexts.ctx_mut()?;
     // egui 0.35: panels attach to a root `Ui` spanning the viewport.
     let mut root = egui::Ui::new(
@@ -196,6 +224,33 @@ fn editor_panel(
                         }
                     }
                 }
+            }
+
+            ui.separator();
+            ui.label("Export");
+            if ui
+                .button("Export heightmap")
+                .on_hover_text(format!(
+                    "R16 KTX2 (engine) + 16-bit PNG (interchange) → {}",
+                    export_path.0.with_extension("{ktx2,png}").display()
+                ))
+                .clicked()
+            {
+                for (entity, _) in &terrains.p1() {
+                    // Both formats side by side: the KTX2 the renderer
+                    // re-loads and the PNG a physics/DCC pipeline reads.
+                    for extension in ["ktx2", "png"] {
+                        export.write(ExportRequested {
+                            terrain: entity,
+                            path: export_path.0.with_extension(extension),
+                        });
+                    }
+                }
+                export_status.clear();
+                export_status.push("exporting…".into());
+            }
+            for status in export_status.iter() {
+                ui.small(status);
             }
         });
     Ok(())
