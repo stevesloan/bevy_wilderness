@@ -2,13 +2,16 @@
 //! marks the terrain [`Editable`], and registers a third-party "probe" tool to
 //! prove the extension API — the same embedding path a game uses.
 //!
-//! Phase 1 scope: the terrain renders from the R16 map derived from the f32
-//! field, and the probe tool receives the shared cursor pick (drawn as a ring)
-//! and `TerrainRegionChanged` events (logged). Sculpting arrives in Phase 2.
-//!
 //! ```sh
 //! cargo run -p bevy_wilderness_editor --example editor
 //! ```
+//!
+//! Controls (WASD + right-drag to fly):
+//! - **Left mouse (held)** — sculpt under the brush ring
+//! - **1 / 2 / 3 / 4** — Raise / Lower / Smooth / Flatten
+//! - **[ / ]** — brush radius down / up
+//! - **- / =** — brush strength down / up
+//! - **P** — switch to the demo probe tool (logs edit events); **S** back to sculpt
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -28,7 +31,7 @@ use bevy_wilderness::{
     SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, Editable, EditorSet, EditorTools, TerrainCursor,
+    ActiveTool, BrushSettings, Editable, EditorSet, EditorTools, SculptMode, TerrainCursor,
     TerrainEditorPlugin, TerrainRegionChanged, ToolId, tool_active,
 };
 
@@ -48,7 +51,7 @@ fn main() {
         .add_plugins(HeightFogPlugin)
         .add_plugins(TerrainEditorPlugin)
         .add_systems(Startup, (setup, register_probe_tool))
-        .add_systems(Update, update_sun_color)
+        .add_systems(Update, (update_sun_color, brush_controls, draw_brush_ring))
         .add_systems(
             Update,
             probe_tool
@@ -58,23 +61,61 @@ fn main() {
         .run();
 }
 
-/// Register the demo tool and make it active — exactly what a game does for
-/// its own tools (e.g. glTF placement).
+/// Register the demo tool — exactly what a game does for its own tools (e.g.
+/// glTF placement). Sculpt starts active; P switches to the probe.
 fn register_probe_tool(mut tools: ResMut<EditorTools>, mut active: ResMut<ActiveTool>) {
     tools.register(PROBE, "Demo Probe");
-    active.0 = Some(PROBE);
+    active.0 = Some(ToolId::SCULPT);
 }
 
-/// The no-op tool of the Phase 1 acceptance check: draws a brush-sized ring at
-/// the shared cursor pick and logs `TerrainRegionChanged` events (expect one
-/// full-terrain event at startup, when the display map is first derived from
-/// the f32 field).
-fn probe_tool(
-    cursor: Res<TerrainCursor>,
-    brush: Res<BrushSettings>,
-    mut changed: MessageReader<TerrainRegionChanged>,
-    mut gizmos: Gizmos,
+/// A UI stand-in: keybinds writing the editor's state resources — the same
+/// `BrushSettings` / `ActiveTool` writes an egui panel will make in Phase 7.
+fn brush_controls(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut brush: ResMut<BrushSettings>,
+    mut active: ResMut<ActiveTool>,
 ) {
+    let mode = [
+        (KeyCode::Digit1, SculptMode::Raise),
+        (KeyCode::Digit2, SculptMode::Lower),
+        (KeyCode::Digit3, SculptMode::Smooth),
+        (KeyCode::Digit4, SculptMode::Flatten),
+    ]
+    .into_iter()
+    .find(|(key, _)| keys.just_pressed(*key));
+    if let Some((_, mode)) = mode {
+        brush.mode = mode;
+        info!("brush mode: {mode:?}");
+    }
+    if keys.just_pressed(KeyCode::BracketLeft) {
+        brush.radius = (brush.radius / 1.3).max(4.0);
+        info!("brush radius: {:.0} m", brush.radius);
+    }
+    if keys.just_pressed(KeyCode::BracketRight) {
+        brush.radius = (brush.radius * 1.3).min(2000.0);
+        info!("brush radius: {:.0} m", brush.radius);
+    }
+    if keys.just_pressed(KeyCode::Minus) {
+        brush.strength = (brush.strength / 1.5).max(1.0);
+        info!("brush strength: {:.0} m/s", brush.strength);
+    }
+    if keys.just_pressed(KeyCode::Equal) {
+        brush.strength = (brush.strength * 1.5).min(500.0);
+        info!("brush strength: {:.0} m/s", brush.strength);
+    }
+    if keys.just_pressed(KeyCode::KeyS) {
+        active.0 = Some(ToolId::SCULPT);
+        info!("tool: sculpt");
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        active.0 = Some(PROBE);
+        info!("tool: demo probe");
+    }
+}
+
+/// Brush-radius ring + center dot at the shared cursor pick, whatever tool is
+/// active.
+fn draw_brush_ring(cursor: Res<TerrainCursor>, brush: Res<BrushSettings>, mut gizmos: Gizmos) {
     if let Some(hit) = &cursor.0 {
         let up = Isometry3d::new(
             hit.position + Vec3::Y * 0.5,
@@ -87,9 +128,16 @@ fn probe_tool(
             Color::srgb(1.0, 0.9, 0.2),
         );
     }
+}
+
+/// The no-op third-party tool: logs the edit events sculpting produces (and
+/// the one full-terrain event at startup, when the display map is first
+/// derived from the f32 field).
+fn probe_tool(cursor: Res<TerrainCursor>, mut changed: MessageReader<TerrainRegionChanged>) {
     for event in changed.read() {
+        let under_cursor = cursor.0.map(|hit| hit.position);
         info!(
-            "probe tool: terrain {:?} changed over {:?}",
+            "probe tool: terrain {:?} changed over {:?} (cursor at {under_cursor:?})",
             event.terrain, event.region
         );
     }

@@ -1,6 +1,14 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **Agreed direction, not yet started** · Project name: **`bevy_wilderness`** · Last updated: 2026-07-14
+Status: **In progress — Phases 0–2 done** (workspace + rename + editing API;
+editor core skeleton; sculpt tool) · Project name: **`bevy_wilderness`** ·
+Last updated: 2026-07-16
+
+> Note for later phases: the renderer's §3 anchors predate the workspace
+> restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
+> former `lib.rs` grab-bag is split into `clipmap.rs` / `material.rs` /
+> `quality.rs` / `dev_controls.rs`. The editor core lives in
+> `crates/bevy_wilderness_editor`.
 
 ## How to use this document
 
@@ -284,29 +292,53 @@ side live.
 Export the R16 heightmap to a file that round-trips with the existing loader
 (`examples/basic.rs:233`). Format: 16-bit PNG or KTX2. *(Confirm — §11.)*
 
+### D8 — Undo/history: tile-based region snapshots *(settled 2026-07-16)*
+Not full-field copies (67 MB each at 4096²). The field divides into fixed tiles
+(64² texels ≈ 16 KB); an input gesture (stroke press→release, one erosion run)
+opens an **undo entry** that copies each touched tile's *pre-edit* data on first
+touch, then seals on release. **Undo** writes the saved tiles back and
+`mark_dirty`s them — the existing sync path then handles re-quantize,
+`TerrainRegionChanged` (prop re-snap), and the D5 re-bake debounce, so undo gets
+correct shading for free. **Redo** saves the current tiles into the entry before
+restoring. History is a ring buffer capped by **total bytes** (~256 MB), evicting
+oldest — one fat erosion entry and fifty thin brush dabs cost what they touch.
+Two early commitments:
+- **Entries span buffers**: an entry is a set of *(buffer, tile, old data)*, not
+  height-specific — the Phase 4 mask (and any later layer) is undoable with the
+  same machinery.
+- **Core API, not UI** (P2): an `UndoHistory` resource with undo/redo methods;
+  the UI (or a Ctrl+Z keybind in the example) merely calls them.
+
 ---
 
 ## 9. Build phases (in order; each with an acceptance check)
 
-**Phase 0 — Workspace + rename + editable-terrain API.** Stand up the workspace
+**Phase 0 ✅ — Workspace + rename + editable-terrain API.** Stand up the workspace
 (§7) and rename the fork to `bevy_wilderness` (in place, preserve git history);
 add its `editing` feature: re-bake trigger (refactor §5.1), CPU heightmap mode,
 expose `Heightfield`. *Accept:* an external crate triggers a re-bake on a running
 clipmap and shading updates.
 
-**Phase 1 — Editor core skeleton.** Editor plugin; tool registry, shared raycast,
+**Phase 1 ✅ — Editor core skeleton.** Editor plugin; tool registry, shared raycast,
 `TerrainRegionChanged` event, height query, brush/mask/erosion state resources
 (§6). f32 authoritative field + R16 quantize (P1). *Accept:* terrain renders from
 the derived R16 map; a no-op registered tool receives raycast hits + edit events.
 
-**Phase 2 — Sculpt tool.** Raise/lower/smooth/flatten editing the f32 field (D2).
+**Phase 2 ✅ — Sculpt tool.** Raise/lower/smooth/flatten editing the f32 field (D2).
 *Accept:* dragging deforms terrain live; radius/strength adjustable.
 
 **Phase 3 — Re-bake on release.** Debounced re-bake + `TerrainRegionChanged`
 (D5). *Accept:* sculpt a hill, release, shadows/AO/rock-placement update to match.
 
-**Phase 4 — Mask tool.** Feathered mask paint (D4). *Accept:* a mask confines a
-subsequent op with a soft, seamless edge.
+**Phase 3.5 — Undo/history.** Tile-based region snapshots + byte-capped ring
+buffer (D8). Placed before erosion deliberately: a 5-second erosion run you
+don't like is exactly what undo exists for. *Accept:* sculpt, undo (Ctrl+Z in
+the example) — terrain, shading, and prop re-snap all revert; redo restores;
+history survives deep strokes without unbounded memory.
+
+**Phase 4 — Mask tool.** Feathered mask paint (D4), undoable via D8's
+multi-buffer entries. *Accept:* a mask confines a subsequent op with a soft,
+seamless edge.
 
 **Phase 5 — Erosion.** Masked droplet + thermal on `AsyncComputeTaskPool` (D3).
 *Accept:* mask a lump, erode, get dendritic valleys/ridgelines in a few seconds
@@ -347,8 +379,6 @@ restart loading the exported file, terrain matches.
 ## 11. Open questions
 
 - **Export format**: 16-bit PNG vs KTX2? (D7.)
-- **Undo/history**: not scoped. Snapshotting the f32 field per stroke is obvious at
-  67 MB/snapshot — cap the ring buffer. Decide when it comes up.
 - **Erosion parameter exposure**: how many knobs in the UI (inertia, capacity,
   deposition/erosion rates, evaporation, droplet count)? Start with defaults + a
   few sliders.

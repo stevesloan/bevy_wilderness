@@ -189,9 +189,58 @@ impl TerrainField {
     }
 
     /// Set one texel's height in meters. `x`/`y` must be in bounds; callers
-    /// working toroidally wrap their coordinates first (see [`Self::get`]).
+    /// working toroidally wrap their coordinates first (see [`Self::wrap_texel`]).
     pub fn set(&mut self, x: u32, y: u32, h: f32) {
         self.heights[(y * self.width + x) as usize] = h;
+    }
+
+    /// Resolve possibly-out-of-range texel coordinates to storage indices:
+    /// wraps when `looping` (a brush footprint crossing the seam lands on the
+    /// far side, D2), else `None` for out-of-bounds — the write is dropped, not
+    /// clamped (clamping would pile a brush's whole overhang onto the edge row).
+    pub fn wrap_texel(&self, x: i64, y: i64) -> Option<(u32, u32)> {
+        if self.looping {
+            Some((
+                x.rem_euclid(self.width as i64) as u32,
+                y.rem_euclid(self.height as i64) as u32,
+            ))
+        } else if (0..self.width as i64).contains(&x) && (0..self.height as i64).contains(&y) {
+            Some((x as u32, y as u32))
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a possibly-out-of-range texel rect (max-exclusive) to in-bounds
+    /// pieces: clamped to one piece when finite, or split across the seam into
+    /// up to four when `looping` — so a wrapped brush footprint dirties the far
+    /// side's texels instead of unioning into a whole-map rect.
+    pub fn wrap_rect(&self, min: IVec2, max: IVec2) -> Vec<URect> {
+        // Split one axis into in-bounds spans (max-exclusive).
+        let axis = |lo: i32, hi: i32, n: i32| -> Vec<(u32, u32)> {
+            if !self.looping {
+                let (lo, hi) = (lo.clamp(0, n), hi.clamp(0, n));
+                if lo < hi {
+                    return vec![(lo as u32, hi as u32)];
+                }
+                return vec![];
+            }
+            if hi - lo >= n {
+                return vec![(0, n as u32)];
+            }
+            let lo_wrapped = lo.rem_euclid(n);
+            let hi_wrapped = lo_wrapped + (hi - lo);
+            if hi_wrapped <= n {
+                vec![(lo_wrapped as u32, hi_wrapped as u32)]
+            } else {
+                vec![(lo_wrapped as u32, n as u32), (0, (hi_wrapped - n) as u32)]
+            }
+        };
+        let xs = axis(min.x, max.x, self.width as i32);
+        let ys = axis(min.y, max.y, self.height as i32);
+        xs.iter()
+            .flat_map(|&(x0, x1)| ys.iter().map(move |&(y0, y1)| URect::new(x0, y0, x1, y1)))
+            .collect()
     }
 
     /// Fractional texel coordinates for a world `xz` — the same mapping as the
@@ -348,6 +397,40 @@ mod tests {
         assert_eq!(field.get(-1, 3), 50.0); // -1 wraps to column 7
         assert_eq!(field.get(15, 3), 50.0); // 15 wraps to column 7
         assert!(field.contains(Vec2::new(1e6, 1e6)));
+    }
+
+    #[test]
+    fn wrap_rect_splits_across_the_seam() {
+        let looping = TerrainField::flat(16, 16, 1.0, 0.0, 100.0, true, 0.0);
+        // Footprint hanging off the -X edge: two pieces, near edge + far edge.
+        let pieces = looping.wrap_rect(IVec2::new(-2, 4), IVec2::new(3, 8));
+        assert_eq!(
+            pieces,
+            vec![URect::new(14, 4, 16, 8), URect::new(0, 4, 3, 8)]
+        );
+        // Wider than the map on X: collapses to the full span once.
+        let pieces = looping.wrap_rect(IVec2::new(-20, 4), IVec2::new(20, 8));
+        assert_eq!(pieces, vec![URect::new(0, 4, 16, 8)]);
+
+        let finite = TerrainField::flat(16, 16, 1.0, 0.0, 100.0, false, 0.0);
+        // Same overhang on a finite map: clamped to one in-bounds piece.
+        let pieces = finite.wrap_rect(IVec2::new(-2, 4), IVec2::new(3, 8));
+        assert_eq!(pieces, vec![URect::new(0, 4, 3, 8)]);
+        assert!(
+            finite
+                .wrap_rect(IVec2::new(-5, 4), IVec2::new(-2, 8))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn wrap_texel_wraps_or_rejects() {
+        let looping = TerrainField::flat(8, 8, 1.0, 0.0, 100.0, true, 0.0);
+        assert_eq!(looping.wrap_texel(-1, 9), Some((7, 1)));
+        let finite = TerrainField::flat(8, 8, 1.0, 0.0, 100.0, false, 0.0);
+        assert_eq!(finite.wrap_texel(3, 4), Some((3, 4)));
+        assert_eq!(finite.wrap_texel(-1, 4), None);
+        assert_eq!(finite.wrap_texel(3, 8), None);
     }
 
     #[test]

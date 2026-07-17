@@ -29,32 +29,40 @@ pub struct Editable;
 #[derive(Component)]
 pub struct EditableTerrain {
     pub field: TerrainField,
-    dirty: Option<URect>,
+    /// Dirty texel rects, kept separate rather than unioned: a toroidal brush
+    /// footprint dirties opposite edges, whose union would be nearly the whole
+    /// map — quantizing megatexels for a small wrapped stroke.
+    dirty: Vec<URect>,
 }
 
 impl EditableTerrain {
     pub fn new(field: TerrainField) -> Self {
-        Self { field, dirty: None }
+        Self {
+            field,
+            dirty: Vec::new(),
+        }
     }
 
     /// Like [`new`](Self::new), but with the whole field marked dirty so the
     /// first sync derives the entire display heightmap from the f32 field.
     pub fn fully_dirty(field: TerrainField) -> Self {
-        let dirty = Some(field.full_rect());
+        let dirty = vec![field.full_rect()];
         Self { field, dirty }
     }
 
-    /// Extend the dirty region by `rect` (texel space, max-exclusive). The
-    /// union is flushed to the display heightmap in `EditorSet::Apply`.
+    /// Queue `rect` (texel space, max-exclusive, in-bounds) for flushing to the
+    /// display heightmap in `EditorSet::Apply`. For a brush footprint that may
+    /// overhang the map, pass it through
+    /// [`TerrainField::wrap_rect`](crate::TerrainField::wrap_rect) first and
+    /// mark each piece.
     pub fn mark_dirty(&mut self, rect: URect) {
-        self.dirty = Some(match self.dirty {
-            Some(dirty) => dirty.union(rect),
-            None => rect,
-        });
+        if !rect.is_empty() {
+            self.dirty.push(rect);
+        }
     }
 
-    fn take_dirty(&mut self) -> Option<URect> {
-        self.dirty.take()
+    fn take_dirty(&mut self) -> Vec<URect> {
+        std::mem::take(&mut self.dirty)
     }
 }
 
@@ -114,19 +122,22 @@ pub(crate) fn sync_dirty_regions(
     mut changed: MessageWriter<TerrainRegionChanged>,
 ) {
     for (entity, mut terrain, clipmap) in &mut terrains {
-        let Some(rect) = terrain.take_dirty() else {
+        let rects = terrain.take_dirty();
+        if rects.is_empty() {
             continue;
-        };
+        }
         // `get_mut` only when actually dirty — it marks the asset modified,
         // which re-uploads the texture to the GPU.
         let Some(mut image) = images.get_mut(&clipmap.heightmap) else {
             continue;
         };
-        terrain.field.write_region(&mut image, rect);
-        changed.write(TerrainRegionChanged {
-            terrain: entity,
-            region: terrain.field.texel_rect_to_world(rect),
-        });
+        for rect in rects {
+            terrain.field.write_region(&mut image, rect);
+            changed.write(TerrainRegionChanged {
+                terrain: entity,
+                region: terrain.field.texel_rect_to_world(rect),
+            });
+        }
     }
 }
 

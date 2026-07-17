@@ -16,6 +16,7 @@ use bevy::prelude::*;
 
 mod cursor;
 mod field;
+mod sculpt;
 mod settings;
 mod terrain;
 mod tools;
@@ -63,6 +64,9 @@ impl Plugin for TerrainEditorPlugin {
                 (
                     terrain::init_editable_terrains.before(EditorSet::Pick),
                     cursor::update_terrain_cursor.in_set(EditorSet::Pick),
+                    sculpt::apply_sculpt
+                        .run_if(tool_active(ToolId::SCULPT))
+                        .in_set(EditorSet::Tools),
                     terrain::sync_dirty_regions.in_set(EditorSet::Apply),
                 ),
             );
