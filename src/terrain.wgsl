@@ -19,7 +19,7 @@
 
 // Shared with the fullscreen fog post-process, so the VR (inline) and flatscreen
 // (post-process) fog tiers use the exact same fog.
-#import bevy_clipmap::fog_functions::{HeightFog, apply_height_fog}
+#import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
 
 #ifdef MESHLET_MESH_MATERIAL_PASS
 #import bevy_pbr::meshlet_visibility_buffer_resolve::VertexOutput

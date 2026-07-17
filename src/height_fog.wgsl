@@ -3,7 +3,7 @@
 // position from depth and applies the shared fog math.
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
 #import bevy_render::view::View
-#import bevy_clipmap::fog_functions::{HeightFog, apply_height_fog}
+#import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var depth_texture: texture_2d<f32>;

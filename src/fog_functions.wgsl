@@ -2,7 +2,7 @@
 // fullscreen post-process (`height_fog.wgsl`, flatscreen tier, fogs the sky too)
 // and the terrain shader (`terrain.wgsl`, VR tier, inline / virtually free but
 // terrain-only), so the two tiers match.
-#define_import_path bevy_clipmap::fog_functions
+#define_import_path bevy_wilderness::fog_functions
 
 struct HeightFog {
     color: vec3<f32>,   // mist color, linear, exposure-applied HDR range (~0..1)

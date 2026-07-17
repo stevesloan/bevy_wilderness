@@ -37,7 +37,7 @@ if __name__ == "__main__":
         print('Done.')
 
     parser = argparse.ArgumentParser(
-        description='Heightmap processing tool for the bevy-clipmap plugin')
+        description='Heightmap processing tool for the bevy_wilderness plugin')
     parser.add_argument('filename', help='16-bit PNG heightmap')
 
     subparsers = parser.add_subparsers(dest='command', required=True)

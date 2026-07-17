@@ -361,13 +361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy-clipmap"
-version = "1.0.5"
-dependencies = [
- "bevy",
-]
-
-[[package]]
 name = "bevy_a11y"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1744,6 +1737,13 @@ dependencies = [
  "disqualified",
  "indexmap",
  "thread_local",
+]
+
+[[package]]
+name = "bevy_wilderness"
+version = "0.1.0"
+dependencies = [
+ "bevy",
 ]
 
 [[package]]

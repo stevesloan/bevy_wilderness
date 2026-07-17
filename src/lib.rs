@@ -14,11 +14,18 @@ use bevy::{
 };
 
 mod height_fog;
+mod heightfield;
 mod mesh;
 mod mesh_fog;
 mod rvt;
 mod texture;
 pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
+/// Public under `editing` so editor crates reuse the world↔texel + bilinear math
+/// that must stay in sync with the shaders (design doc §5.3).
+#[cfg(feature = "editing")]
+pub use heightfield::Heightfield;
+#[cfg(not(feature = "editing"))]
+use heightfield::Heightfield;
 use mesh::{ClipmapPart, ClipmapParts, build_clipmap_parts};
 pub use mesh_fog::HeightFogExtension;
 use rvt::{
@@ -61,6 +68,11 @@ impl Plugin for ClipmapPlugin {
                     warn_late_quality,
                 ),
             );
+
+        // Editable-terrain API (design doc §5): consume RebakeRequested before
+        // init_rvt so a re-armed bake re-spawns its cameras the same frame.
+        #[cfg(feature = "editing")]
+        app.add_systems(Update, rvt::process_rebake_requests.before(init_rvt));
 
         // Demo A/B keybinds for the AO/bent-normal experiment (B/N/V). Off by
         // default so the library ships no input systems; enable `dev-controls`.
@@ -207,7 +219,14 @@ pub struct Clipmap {
     /// The entity to follow.
     pub target: Entity,
 
-    /// Heightmap texture.
+    /// Heightmap texture: single-channel `R16Unorm`, `is_srgb = false`.
+    ///
+    /// A **CPU-resident heightmap is a supported mode**: keep the image
+    /// `RenderAssetUsages::MAIN_WORLD | RENDER_WORLD` (the loader default) and
+    /// [`SunVisibility`] / `Heightfield` queries work; an editor may own the
+    /// image, mutate its texels (the vertex shader displaces from it, so geometry
+    /// follows next frame with no mesh rebuild), and request a `RebakeRequested`
+    /// re-bake for the shading (both `editing`-feature API).
     pub heightmap: Handle<Image>,
 
     /// Albedo texture array (`2d_array`), one slice per layer. The alpha channel
@@ -629,7 +648,7 @@ pub struct ClipmapReady;
 ///
 /// ```no_run
 /// # use bevy::prelude::*;
-/// # use bevy_clipmap::SunVisibility;
+/// # use bevy_wilderness::SunVisibility;
 /// fn shade_flyers(sun: SunVisibility, flyers: Query<&GlobalTransform>) {
 ///     for xf in &flyers {
 ///         if let Some(vis) = sun.sample(xf.translation()) {
@@ -672,99 +691,19 @@ impl SunVisibility<'_, '_> {
     }
 }
 
-/// CPU view over a clipmap heightmap. Mirrors `bake.wgsl`'s `terrain_height` /
-/// `sun_visibility` so the CPU march agrees with the GPU bake — keep the two in sync.
-struct Heightfield<'a> {
-    texels: &'a [u8],
-    width: usize,
-    height: usize,
-    texel_size: f32,
-    min: f32,
-    max: f32,
-}
-
-impl<'a> Heightfield<'a> {
-    fn new(image: &'a Image, texel_size: f32, min: f32, max: f32) -> Option<Self> {
-        // Single-channel 16-bit heightmap (see `convert/clipmap.py`); other formats
-        // aren't decoded — the query reports `None`.
-        if image.texture_descriptor.format != TextureFormat::R16Unorm {
-            return None;
-        }
-        Some(Self {
-            texels: image.data.as_deref()?,
-            width: image.width() as usize,
-            height: image.height() as usize,
-            texel_size,
-            min,
-            max,
-        })
-    }
-
-    /// Half the world extent on each axis; the world is centered on the origin.
-    fn half_extent(&self) -> Vec2 {
-        Vec2::new(self.width as f32, self.height as f32) * self.texel_size * 0.5
-    }
-
-    fn contains(&self, p: Vec3) -> bool {
-        let h = self.half_extent();
-        p.x >= -h.x && p.x <= h.x && p.z >= -h.y && p.z <= h.y
-    }
-
-    /// One texel's normalized height (0..1), edge-clamped like the shader's
-    /// `clamp(p0, 0, hi)`.
-    fn texel(&self, x: i64, y: i64) -> f32 {
-        let x = x.clamp(0, self.width as i64 - 1) as usize;
-        let y = y.clamp(0, self.height as i64 - 1) as usize;
-        let i = (y * self.width + x) * 2;
-        u16::from_le_bytes([self.texels[i], self.texels[i + 1]]) as f32 / 65535.0
-    }
-
-    /// World-space terrain height at `xz` — bilinear, matching `terrain_height`.
-    fn height(&self, xz: Vec2) -> f32 {
-        let uv = xz / (Vec2::new(self.width as f32, self.height as f32) * self.texel_size) + 0.5;
-        let pos = uv * Vec2::new(self.width as f32, self.height as f32);
-        let base = pos.floor();
-        let f = pos - base;
-        let (x0, y0) = (base.x as i64, base.y as i64);
-        let h00 = self.texel(x0, y0);
-        let h10 = self.texel(x0 + 1, y0);
-        let h01 = self.texel(x0, y0 + 1);
-        let h11 = self.texel(x0 + 1, y0 + 1);
-        let h =
-            (h00 * (1.0 - f.x) + h10 * f.x) * (1.0 - f.y) + (h01 * (1.0 - f.x) + h11 * f.x) * f.y;
-        h * (self.max - self.min) + self.min
-    }
-
-    /// Soft-march toward the sun from `origin` — the CPU twin of `bake.wgsl`
-    /// `sun_visibility`, minus its surface normal bias (`origin` is a real 3D point).
-    fn sun_visibility(&self, origin: Vec3, sun_direction: Vec3) -> f32 {
-        const STEPS: u32 = 96;
-        const MAX_DIST: f32 = 6000.0;
-        const SOFTNESS: f32 = 10.0;
-        const STEP0: f32 = 3.0;
-        const GROWTH: f32 = 1.12;
-        let mut vis = 1.0f32;
-        let mut step = STEP0;
-        let mut t = STEP0;
-        for _ in 0..STEPS {
-            if t > MAX_DIST {
-                break;
-            }
-            let p = origin + sun_direction * t;
-            if p.y > self.max {
-                break; // above the highest terrain -> can't be occluded
-            }
-            let clearance = p.y - self.height(p.xz());
-            vis = vis.min((SOFTNESS * clearance / t).clamp(0.0, 1.0));
-            if vis <= 0.001 {
-                break;
-            }
-            step *= GROWTH;
-            t += step;
-        }
-        vis
-    }
-}
+/// Request a re-run of a [`Clipmap`]'s RVT bake (`editing` feature): insert this
+/// on the clipmap entity after mutating its heightmap (or moving the sun) and the
+/// baked material splat / self-shadow / AO re-bake to match. The bake re-runs the
+/// same sentinel-gated pipeline as the initial one; [`ClipmapReady`] is removed
+/// while it's in flight and re-inserted when it completes (observe
+/// `Added<ClipmapReady>` for the finish signal). The previous bake stays on
+/// screen until the new one lands — no unbaked flash.
+///
+/// A request made while a bake is already in flight is deferred, not dropped: it
+/// processes when the in-flight bake finishes.
+#[cfg(feature = "editing")]
+#[derive(Component)]
+pub struct RebakeRequested;
 
 /// Press V to cycle the terrain debug view: lit → macro AO → bent normal →
 /// cavity → lit. Renders the raw baked RVT-AO channel unlit so it reads as a
@@ -930,7 +869,7 @@ impl Default for TerrainQuality {
 /// materials on fast per-material uniforms (no shared buffer / SSBO cost on tiled
 /// VR GPUs). The crate's terrain + [`HeightFogExtension`] use it automatically.
 ///
-/// - **Opaque** (buildings, characters): `#import bevy_clipmap::fog_functions`,
+/// - **Opaque** (buildings, characters): `#import bevy_wilderness::fog_functions`,
 ///   embed a `#[uniform(N)] HeightFogParams`, copy this in on `.is_changed()`.
 ///   It's density-0 on `High` (the fullscreen pass fogs opaques there), so it's
 ///   correct on both tiers.
@@ -1003,75 +942,5 @@ fn fog_new_mesh_materials(
                 material.extension.fog = inline.clone();
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::asset::RenderAssetUsages;
-    use bevy::render::render_resource::{Extent3d, TextureDimension};
-
-    /// A 16×16 R16Unorm heightmap; `h(x,y)` gives each texel's raw 16-bit height.
-    fn heightmap(h: impl Fn(usize, usize) -> u16) -> Image {
-        const N: usize = 16;
-        let mut data = Vec::with_capacity(N * N * 2);
-        for y in 0..N {
-            for x in 0..N {
-                data.extend_from_slice(&h(x, y).to_le_bytes());
-            }
-        }
-        Image::new(
-            Extent3d {
-                width: N as u32,
-                height: N as u32,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            data,
-            TextureFormat::R16Unorm,
-            RenderAssetUsages::MAIN_WORLD,
-        )
-    }
-
-    #[test]
-    fn height_decodes_and_centers_on_origin() {
-        // Wall (max height) on the +X columns, flat (0) elsewhere. min..max = 0..100.
-        let img = heightmap(|x, _| if x >= 12 { u16::MAX } else { 0 });
-        let field = Heightfield::new(&img, 1.0, 0.0, 100.0).unwrap();
-        // texel_size 1, width 16 -> world spans [-8, 8]; column 13 is world x = 5.
-        assert!((field.height(Vec2::new(5.0, 0.0)) - 100.0).abs() < 1e-2);
-        assert!(field.height(Vec2::new(-5.0, 0.0)).abs() < 1e-2);
-        assert!(field.contains(Vec3::new(7.0, 0.0, 0.0)));
-        assert!(!field.contains(Vec3::new(9.0, 0.0, 0.0)));
-    }
-
-    #[test]
-    fn flat_terrain_is_fully_lit() {
-        let img = heightmap(|_, _| 0);
-        let field = Heightfield::new(&img, 1.0, 0.0, 100.0).unwrap();
-        let sun = Vec3::new(1.0, 0.3, 0.0).normalize();
-        // A point above flat ground sees the sun unobstructed.
-        assert!((field.sun_visibility(Vec3::new(0.0, 5.0, 0.0), sun) - 1.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn tall_wall_casts_shadow_toward_the_sun() {
-        // Wall along +X; sun is low in the +X sky, so points on the -X side of the
-        // wall are occluded.
-        let img = heightmap(|x, _| if x >= 12 { u16::MAX } else { 0 });
-        let field = Heightfield::new(&img, 1.0, 0.0, 100.0).unwrap();
-        let sun = Vec3::new(1.0, 0.3, 0.0).normalize();
-        let shadowed = field.sun_visibility(Vec3::new(-6.0, 2.0, 0.0), sun);
-        assert!(
-            shadowed < 0.5,
-            "expected shadow behind the wall, got {shadowed}"
-        );
-        // Above the wall's height, nothing occludes the same column.
-        let lit = field.sun_visibility(Vec3::new(-6.0, 150.0, 0.0), sun);
-        assert!(
-            (lit - 1.0).abs() < 1e-3,
-            "expected full sun above the wall, got {lit}"
-        );
     }
 }

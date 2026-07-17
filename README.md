@@ -1,14 +1,19 @@
-# Bevy Clipmap
+# Bevy Wilderness
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Doc](https://docs.rs/bevy-clipmap/badge.svg)](https://docs.rs/bevy-clipmap)
-[![Crate](https://img.shields.io/crates/v/bevy-clipmap.svg)](https://crates.io/crates/bevy-clipmap)
 
-![Screenshot](https://raw.githubusercontent.com/kirillsurkov/bevy-clipmap/refs/heads/main/screenshot.png)
+Beautiful, up close and from afar, nature-shaped terrain for Bevy.
+
+Forked from [bevy-clipmap](https://github.com/kirillsurkov/bevy-clipmap) by
+Kirill Surkov — thanks! The fork has diverged heavily (baked RVT shading,
+procedural splat, height fog, toroidal looping, editable-terrain API) and lives
+on under a new name.
+
+![Screenshot](screenshot.png)
 
 ## Overview
 
-This project implements GPU-Based Geometry Clipmaps from this paper: https://hhoppe.com/gpugcm.pdf
+The renderer implements GPU-Based Geometry Clipmaps from this paper: https://hhoppe.com/gpugcm.pdf
 
 This is an adaptive LOD technique that allows us to render huge worlds for cheap!
 
@@ -19,6 +24,10 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 - **Baked shading (RVT)** — albedo, normals, roughness, self-shadow, macro AO /
   bent normal / cavity, plus a near-range detail overlay.
 - **Height fog** with High/Low quality tiers (flatscreen + standalone VR).
+- **Toroidal looping** — optionally tile the heightmap for seamless infinite terrain.
+- **Editable-terrain API** (`editing` feature) — a `RebakeRequested` re-bake
+  trigger and the CPU `Heightfield` query, the hooks the terrain editor builds on
+  (see [docs/terrain-editor-design.md](docs/terrain-editor-design.md)).
 
 ## Usage
 
@@ -49,7 +58,7 @@ post-process, fogs the sky too) and `FogTier::Low` (inline, virtually free, for
 standalone VR) — so one binary serves flatscreen and VR. Add `HeightFogPlugin`,
 set the `TerrainFog` (look) and `TerrainQuality` (performance profile, `Low`/
 `Medium`/`High`) resources, and use `HeightFogExtension` (or the
-`bevy_clipmap::fog_functions` shader include + `InlineFog`) to fog your own meshes.
+`bevy_wilderness::fog_functions` shader include + `InlineFog`) to fog your own meshes.
 See [`examples/basic.rs`](examples/basic.rs).
 
 ## How to create textures
@@ -65,7 +74,7 @@ First of all, you have to install required libraries:
 > python clipmap.py --help
 usage: clipmap.py [-h] filename {ktx} ...
 
-Heightmap processing tool for the bevy-clipmap plugin
+Heightmap processing tool for the bevy_wilderness plugin
 
 positional arguments:
   filename       16-bit PNG heightmap
@@ -83,11 +92,9 @@ options:
 
 ## Compatible Bevy versions
 
-| `bevy-clipmap` | `bevy`   |
-| :--            | :--      |
-| `1.0.5`        | `0.19.0` |
-| `1.0.4`        | `0.18.0` |
-| `1.0.3`        | `0.17.3` |
+| `bevy_wilderness` | `bevy`   |
+| :--               | :--      |
+| `0.1`             | `0.19.0` |
 
 ## Contributing
 

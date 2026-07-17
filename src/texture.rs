@@ -61,7 +61,7 @@ pub(crate) fn terrain_tiling_sampler() -> ImageSampler {
 ///
 /// ```no_run
 /// # use bevy::prelude::*;
-/// # use bevy_clipmap::load_terrain_array;
+/// # use bevy_wilderness::load_terrain_array;
 /// # fn setup(mut images: ResMut<Assets<Image>>) {
 /// let albedo = load_terrain_array(
 ///     &mut images,

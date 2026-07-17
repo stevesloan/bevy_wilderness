@@ -11,6 +11,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
+#[cfg(feature = "editing")]
+use crate::RebakeRequested;
 use crate::{Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, TerrainQuality};
 
 /// Render layers isolating the RVT bake cameras/quads from the main view.
@@ -163,6 +165,36 @@ pub(crate) fn drive_rvt_bake(
     }
 }
 
+/// Handles [`RebakeRequested`] (`editing` feature): re-arm the clipmap's bake so
+/// `init_rvt` re-runs the full sentinel-gated pipeline next frame — same path as
+/// the initial bake, so it stays correct as that evolves. The initial bake's
+/// teardown already despawns every bake entity (`drive_rvt_bake`), so re-spawning
+/// is a clean slate, and the RVT targets keep their old content until the new
+/// bake overwrites them (no unbaked chrome-mirror flash).
+///
+/// Requests are deferred (component kept) while the clipmap hasn't finished its
+/// current bake — processing one mid-flight would reset `pending_bakes` under the
+/// in-flight cameras and corrupt the tally.
+#[cfg(feature = "editing")]
+pub(crate) fn process_rebake_requests(
+    mut commands: Commands,
+    mut clipmaps: Query<(Entity, &mut ClipmapRvt), With<RebakeRequested>>,
+) {
+    for (entity, mut rvt) in &mut clipmaps {
+        if !rvt.initialized || rvt.pending_bakes > 0 {
+            continue;
+        }
+        rvt.initialized = false;
+        rvt.sun_direction = Vec3::ZERO;
+        // Re-arm the stall diagnostic for this bake.
+        rvt.stall_secs = 0.0;
+        rvt.stall_warned = false;
+        commands
+            .entity(entity)
+            .remove::<(RebakeRequested, ClipmapReady)>();
+    }
+}
+
 /// Seconds a clipmap may go un-baked before the stall warning fires (generous, so a
 /// slow cold-start bake — pipeline compile + texture upload — doesn't trip it).
 const BAKE_STALL_WARN_SECS: f32 = 30.0;
@@ -194,7 +226,7 @@ pub(crate) fn warn_unbaked_terrain(
              (or the bake is just slow on this device)"
         };
         warn!(
-            "bevy-clipmap: terrain still unbaked after {:.0}s ({reason}); it renders as a \
+            "bevy_wilderness: terrain still unbaked after {:.0}s ({reason}); it renders as a \
              chrome mirror until baked",
             rvt.stall_secs
         );
@@ -221,7 +253,7 @@ pub(crate) fn warn_late_quality(
         {
             *warned = true;
             warn!(
-                "bevy-clipmap: a TerrainQuality bake-time field (rvt_size / ambient_gather / \
+                "bevy_wilderness: a TerrainQuality bake-time field (rvt_size / ambient_gather / \
                  detail_layers) changed after the terrain baked — no effect without a rebake; \
                  only `fog` applies live"
             );

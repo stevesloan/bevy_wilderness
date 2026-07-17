@@ -12,22 +12,52 @@ use bevy::{
 };
 
 use bevy::pbr::ExtendedMaterial;
-use bevy_clipmap::{
+use bevy_wilderness::{
     Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog, HeightFogExtension, HeightFogPlugin,
     HeightRule, SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 
 fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins)
         .add_plugins(FreeCameraPlugin)
         .add_plugins(ClipmapPlugin)
         // Installs the fullscreen fog path (`High` tier). The inline path (`Low`
         // tier) is always in the crate; the tier resource picks which is realized.
         .add_plugins(HeightFogPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_sun_color, toggle_tier, spawn_character))
-        .run();
+        .add_systems(Update, (update_sun_color, toggle_tier, spawn_character));
+    // Exercises the editable-terrain API (run with `--features editing`).
+    #[cfg(feature = "editing")]
+    app.add_systems(Update, rebake_on_r);
+    app.run();
+}
+
+/// Press R to swing the sun ~30° and request a re-bake (`editing` feature) — the
+/// acceptance check for the re-bake API: the *baked* terrain self-shadows/AO
+/// visibly move to the new sun a moment later. (The real-time diffuse shading
+/// moves instantly either way; without the re-bake the baked shadows would stay
+/// stale at the old sun angle.)
+#[cfg(feature = "editing")]
+fn rebake_on_r(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut suns: Query<&mut Transform, With<DirectionalLight>>,
+    clipmaps: Query<Entity, With<Clipmap>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyR) {
+        return;
+    }
+    for mut transform in &mut suns {
+        let position = Quat::from_rotation_y(0.5) * transform.translation;
+        *transform = Transform::from_translation(position).looking_at(Vec3::ZERO, Vec3::Y);
+    }
+    for clipmap in &clipmaps {
+        commands
+            .entity(clipmap)
+            .insert(bevy_wilderness::RebakeRequested);
+    }
+    info!("sun moved 0.5 rad; terrain re-bake requested");
 }
 
 /// Press C to drop a "character" (capsule) ~20 m in front of the camera. It uses

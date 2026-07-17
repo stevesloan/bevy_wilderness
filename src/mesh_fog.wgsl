@@ -7,7 +7,7 @@
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings::view,
 }
-#import bevy_clipmap::fog_functions::{HeightFog, apply_height_fog}
+#import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> fog: HeightFog;
 

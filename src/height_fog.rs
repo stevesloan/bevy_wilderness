@@ -295,7 +295,7 @@ fn height_fog(
     // bind fails. MSAA is the game's, so skip our own pass (don't override it) + warn.
     if depth.texture.sample_count() > 1 {
         warn_once!(
-            "bevy_clipmap: the fullscreen height-fog pass requires Msaa::Off on the fog \
+            "bevy_wilderness: the fullscreen height-fog pass requires Msaa::Off on the fog \
              camera (its depth binding is single-sampled) — skipping it. Set Msaa::Off, \
              or use TerrainQuality with FogTier::Low for MSAA-compatible inline fog."
         );
