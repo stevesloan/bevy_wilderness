@@ -16,6 +16,7 @@ use bevy::prelude::*;
 
 mod cursor;
 mod field;
+mod rebake;
 mod sculpt;
 mod settings;
 mod terrain;
@@ -68,6 +69,9 @@ impl Plugin for TerrainEditorPlugin {
                         .run_if(tool_active(ToolId::SCULPT))
                         .in_set(EditorSet::Tools),
                     terrain::sync_dirty_regions.in_set(EditorSet::Apply),
+                    // After the sync so a flush's re-armed timer isn't ticked
+                    // in the same frame it was set.
+                    rebake::tick_rebake_debounce.after(terrain::sync_dirty_regions),
                 ),
             );
 

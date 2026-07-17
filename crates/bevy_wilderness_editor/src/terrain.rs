@@ -33,6 +33,10 @@ pub struct EditableTerrain {
     /// footprint dirties opposite edges, whose union would be nearly the whole
     /// map — quantizing megatexels for a small wrapped stroke.
     dirty: Vec<URect>,
+    /// Whether the initial full-field sync has flushed. The first flush derives
+    /// the display map from freshly decoded (identical) data, so it shouldn't
+    /// schedule a re-bake on top of the initial bake.
+    synced_once: bool,
 }
 
 impl EditableTerrain {
@@ -40,6 +44,7 @@ impl EditableTerrain {
         Self {
             field,
             dirty: Vec::new(),
+            synced_once: false,
         }
     }
 
@@ -47,7 +52,11 @@ impl EditableTerrain {
     /// first sync derives the entire display heightmap from the f32 field.
     pub fn fully_dirty(field: TerrainField) -> Self {
         let dirty = vec![field.full_rect()];
-        Self { field, dirty }
+        Self {
+            field,
+            dirty,
+            synced_once: false,
+        }
     }
 
     /// Queue `rect` (texel space, max-exclusive, in-bounds) for flushing to the
@@ -117,6 +126,7 @@ pub(crate) fn init_editable_terrains(
 /// geometry follows next frame) and emit [`TerrainRegionChanged`]. Runs in
 /// `EditorSet::Apply`, after all tools have edited.
 pub(crate) fn sync_dirty_regions(
+    mut commands: Commands,
     mut terrains: Query<(Entity, &mut EditableTerrain, &Clipmap)>,
     mut images: ResMut<Assets<Image>>,
     mut changed: MessageWriter<TerrainRegionChanged>,
@@ -137,6 +147,17 @@ pub(crate) fn sync_dirty_regions(
                 terrain: entity,
                 region: terrain.field.texel_rect_to_world(rect),
             });
+        }
+        // (Re-)arm the re-bake debounce (D5): inserting replaces the existing
+        // timer, so the bake fires ~200 ms after the *last* flush of a stroke.
+        // The initial full-field sync is skipped — it derives identical data
+        // and the initial bake is already on its way.
+        if terrain.synced_once {
+            commands
+                .entity(entity)
+                .insert(crate::rebake::RebakeDebounce::default());
+        } else {
+            terrain.synced_once = true;
         }
     }
 }
