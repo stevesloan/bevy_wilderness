@@ -1,11 +1,13 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **All phases (0–8) complete** — workspace + editing API; editor core;
+Status: **Phases 0–8 complete** — workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
 overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
-export; new-terrain-by-default + runtime load (D9) · Project name:
-**`bevy_wilderness`** · Last updated: 2026-07-17
+export; new-terrain-by-default + runtime load (D9). **Phases 9–12 planned**
+(D10/D11: rebake control, clay display mode, PNG stamp tool + library;
+conditional progressive re-bake) · Project name: **`bevy_wilderness`** ·
+Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -328,6 +330,23 @@ the requested path's extension —
 Round-trip requires the same `min`/`max` encode range on the loading
 `Clipmap` (inherent to R16, same as the shipped asset).
 
+### D8 — Undo/history: tile-based region snapshots *(settled 2026-07-16)*
+Not full-field copies (67 MB each at 4096²). The field divides into fixed tiles
+(64² texels ≈ 16 KB); an input gesture (stroke press→release, one erosion run)
+opens an **undo entry** that copies each touched tile's *pre-edit* data on first
+touch, then seals on release. **Undo** writes the saved tiles back and
+`mark_dirty`s them — the existing sync path then handles re-quantize,
+`TerrainRegionChanged` (prop re-snap), and the D5 re-bake debounce, so undo gets
+correct shading for free. **Redo** saves the current tiles into the entry before
+restoring. History is a ring buffer capped by **total bytes** (~256 MB), evicting
+oldest — one fat erosion entry and fifty thin brush dabs cost what they touch.
+Two early commitments:
+- **Entries span buffers**: an entry is a set of *(buffer, tile, old data)*, not
+  height-specific — the Phase 4 mask (and any later layer) is undoable with the
+  same machinery.
+- **Core API, not UI** (P2): an `UndoHistory` resource with undo/redo methods;
+  the UI (or a Ctrl+Z keybind in the example) merely calls them.
+
 ### D9 — New terrain is the default state; loading is opt-in *(settled 2026-07-17)*
 
 A **new terrain** — a flat plain at the D1 4096² working resolution — is the
@@ -354,22 +373,72 @@ leaves the current terrain untouched. The default UI adds a "New" button (with
 a resolution combo) and a "Load terrain…" button backed by a native file
 dialog (`rfd`, xdg-portal backend — no GTK dependency).
 
-### D8 — Undo/history: tile-based region snapshots *(settled 2026-07-16)*
-Not full-field copies (67 MB each at 4096²). The field divides into fixed tiles
-(64² texels ≈ 16 KB); an input gesture (stroke press→release, one erosion run)
-opens an **undo entry** that copies each touched tile's *pre-edit* data on first
-touch, then seals on release. **Undo** writes the saved tiles back and
-`mark_dirty`s them — the existing sync path then handles re-quantize,
-`TerrainRegionChanged` (prop re-snap), and the D5 re-bake debounce, so undo gets
-correct shading for free. **Redo** saves the current tiles into the entry before
-restoring. History is a ring buffer capped by **total bytes** (~256 MB), evicting
-oldest — one fat erosion entry and fifty thin brush dabs cost what they touch.
-Two early commitments:
-- **Entries span buffers**: an entry is a set of *(buffer, tile, old data)*, not
-  height-specific — the Phase 4 mask (and any later layer) is undoable with the
-  same machinery.
-- **Core API, not UI** (P2): an `UndoHistory` resource with undo/redo methods;
-  the UI (or a Ctrl+Z keybind in the example) merely calls them.
+### D10 — Rebake control + clay display mode *(settled 2026-07-17, planned: Phases 9–10)*
+
+Real-time modeling needs the bake out of the interaction loop. Today the D5
+debounce fires a **full 8192² re-bake ~200 ms after every pause**, mid-session
+— a potential hitch right in the middle of an edit — and until it lands, old
+shading smears over new geometry. Two pieces:
+
+1. **Rebake control.** A `RebakeSettings { auto: bool }` resource (default
+   `true` = current D5 behavior). When off, dirty flushes don't arm the
+   debounce. Manual trigger is the *already-public* `RebakeRequested` — no new
+   renderer API; the default UI gets an auto toggle + "Bake" button. Workflow:
+   batch a modeling session, bake once.
+2. **Clay display mode.** While shading is stale (debounce pending, auto off
+   with unbaked edits, or the initial bake still in flight) the terrain
+   renders as **neutral grey clay**: a `flags` bit (packed per §10 — no new
+   bindings) switches the fragment shader to screen-space-derivative normals
+   + simple N·L, ignoring the stale RVT. **Why grey, not stale shading:**
+   "geometry is truthful, materials are pending" is a coherent statement;
+   old rock splat stretched over a new mountain is not (ZBrush's clay is the
+   model). **Whole-terrain, not stale-region-only:** modeling mode is a
+   mental state, not a region; region-clay needs a stale-mask texture
+   (binding friction) and mixed clay/shaded terrain reads as broken.
+   Side effect: clay supersedes the §10 "unbaked terrain is a chrome mirror"
+   gotcha — it's the principled fallback for *any* unbaked state, including
+   first load.
+
+### D11 — PNG stamp tool: GPU floating preview + UI stamp library *(settled 2026-07-17, planned: Phase 11)*
+
+Stamp a grayscale heightfield PNG (**both 8- and 16-bit**; the 16-bit load
+path exists via the R16Uint retag) into the terrain as a displacement
+(add/subtract, adjustable strength/scale/rotation), with a **live preview
+floating under the cursor** before commit.
+
+- **Preview is GPU-side, by necessity.** Stamps may cover **half the map**, so
+  the CPU "floating edit" (save footprint → apply → restore next frame) is
+  out: ~8 M texels of restore + re-quantize + re-upload per moved frame. The
+  vertex shader composites instead: sample heightmap, then if the stamp flag
+  bit is set, project world XZ through the stamp transform and add
+  `strength × sample`. Zero per-frame CPU at any stamp size.
+- **Bindings fit under the §10 ceiling.** The stamp texture is an
+  editing-gated binding behind a shader def — the exact `edit_overlay`
+  precedent. The transform params (position/scale/rotation/strength/mode)
+  **grow an existing uniform struct** rather than adding one: ⚠️ the ceiling
+  is *binding slots*, not uniform sizes.
+- **Mask-weighted, preview and commit alike — for free.** Commit weights
+  deltas by `mask_weight` (erosion's pattern, feathered edge included). The
+  preview honors the mask by sampling `edit_overlay` — the mask's
+  visualization texture, *already bound in the material* — so preview matches
+  commit by construction, no new binding.
+- **Commit = one CPU apply** into the f32 field, same math as the shader
+  (bilinear sample + weighted add — keep them trivially identical so nothing
+  pops the frame the preview flag drops). One D8 undo gesture (a half-map
+  snapshot ≈ 33 MB fits the 256 MB ring). Toroidal: stamp UV math wraps, so a
+  seam-crossing stamp previews and commits on the far side (D6).
+- During preview, `TerrainHeight`/raycast see the *base* terrain (the field is
+  untouched until commit) — fine: the user is aiming, not standing on it.
+- **Controls:** wheel = strength, Ctrl+wheel = scale, Shift+wheel = rotate.
+  ⚠️ The free camera uses plain wheel for fly speed — while the stamp tool's
+  preview is floating, the wheel belongs to the stamp (tool-scoped input
+  priority, same spirit as `PointerBlocked`).
+- **Stamp library is UI-only (P2).** The core holds just the active stamp
+  (image + `StampSettings`) — a host can feed stamps from anywhere. The
+  default UI owns a configurable stamps folder (the `UiExportPath` pattern),
+  scans it for PNGs, shows the current stamp as a clickable thumbnail, and
+  clicking opens a gallery grid. Ship a few CC0 example stamps so the gallery
+  isn't empty on first run.
 
 ---
 
@@ -470,6 +539,32 @@ env override so the round-trip is one restart:
 `WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 cargo run -p
 bevy_wilderness_editor_ui --example editor`.
 
+**Phase 9 — Rebake control (D10.1).** `RebakeSettings { auto }`; when off,
+dirty flushes skip the debounce; UI toggle + "Bake" button writing
+`RebakeRequested`. *Accept:* with auto off, a sculpt session never re-bakes;
+the Bake button re-shades; flipping auto back on restores D5 behavior.
+
+**Phase 10 — Clay display mode (D10.2).** Flags-bit clay fallback (derivative
+normals + N·L grey) whenever shading is stale. *Accept:* editing with auto
+off turns the terrain readable grey clay (geometry clearly legible while
+dragging); Bake returns full shading; a freshly spawned terrain shows clay,
+not chrome, until its first bake lands.
+
+**Phase 11 — Stamp tool + library (D11).** Core stamp tool (GPU floating
+preview, wheel controls, mask-weighted, toroidal, 8/16-bit PNG) + UI gallery.
+*Accept:* pick a stamp from the gallery; the preview floats under the cursor
+at full framerate with a half-map-scale stamp; wheel / Ctrl+wheel /
+Shift+wheel adjust strength / scale / rotation live; a feathered mask
+attenuates it; click commits with **no visible pop** (preview ≡ committed
+geometry); Ctrl+Z reverts the whole stamp as one entry; a stamp crossing the
+looping seam wraps correctly in preview and commit.
+
+**Phase 12 (conditional) — Progressive strip re-bake.** Only if measurement
+shows the full bake hitches interactively: split the same bake work into N
+per-frame strips (the escalation path already blessed in the header note —
+no correctness risk, unlike regional). ⚠️ **Measure first** — profile the
+actual full-bake cost at default `rvt_size` before building this.
+
 ---
 
 ## 10. Gotchas (read before coding)
@@ -477,9 +572,18 @@ bevy_wilderness_editor_ui --example editor`.
 - **R16 precision** — never accumulate erosion in R16; keep the f32 field (P1).
 - **Bake is one-shot self-despawning** (`src/rvt.rs:160`) — must be re-triggerable
   (§5.1) or edits never update shading.
-- **Unbaked terrain is a chrome mirror** — no cheap "unbaked" look to fall back to.
+- **Unbaked terrain is a chrome mirror** — no cheap "unbaked" look to fall
+  back to *(until Phase 10's clay mode lands — which then becomes the
+  fallback for every unbaked state)*.
 - **`GridMaterial` at the bind-group ceiling** (`src/lib.rs:509`) — don't add
-  bindings; pack into `flags`.
+  bindings; pack into `flags`. Precisely: the ceiling is **binding slots**.
+  An editing-gated *texture* binding behind a shader def is fine
+  (`edit_overlay` precedent), and **growing an existing uniform struct** is
+  fine — a *new uniform slot* is what silently breaks (D11 relies on this
+  distinction).
+- **Stamp preview and commit must share their math** (D11) — the shader
+  composite and the CPU apply are two implementations of one function
+  (bilinear sample + mask-weighted add); any divergence pops on click.
 - **Droplet writes scatter** — multithread via per-batch delta buffers, not shared.
 - **Mask edge feathering** — skip it → hard rectangular seam.
 - **Toroidal everything on looping** — brush footprint, erosion neighbor reads, and
@@ -492,6 +596,12 @@ bevy_wilderness_editor_ui --example editor`.
 
 ## 11. Open questions
 
+- **Does the full re-bake actually hitch?** Phase 12 is gated on measuring
+  the bake's real per-frame cost at default `rvt_size` — don't build the
+  strip split on assumption.
+- **8-bit stamp terracing** (D11): 256 height levels terrace on tall
+  features. Pre-blur/upsample on import, or leave it and let the smooth
+  brush handle it? Decide when the tool exists to compare.
 - ~~**Export format**~~ *(settled in Phase 8)*: both — KTX2 engine master +
   16-bit PNG interchange, by extension. See D7.
 - ~~**Erosion parameter exposure**~~ *(settled in Phase 7)*: five sliders —
