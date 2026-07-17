@@ -143,6 +143,13 @@ pub struct Clipmap {
 
     /// Tile the heightmap toroidally so the terrain repeats
     pub looping: bool,
+
+    /// Editor visualization overlay (`editing` feature): a single-channel 0..1
+    /// texture covering the terrain like the heightmap does, tinted into the
+    /// surface color — the terrain editor writes its paint mask here. `None`
+    /// renders nothing. Assign (or swap) it any time; the materials follow.
+    #[cfg(feature = "editing")]
+    pub edit_overlay: Option<Handle<Image>>,
 }
 
 #[derive(Component)]
@@ -223,6 +230,20 @@ pub(crate) fn init_clipmaps(
         let ao_size = if quality.ambient_gather { size } else { 4 };
         let rvt_ao = make_rvt_target(ao_size, ao_size, TextureFormat::Rgba8Unorm);
 
+        // Editor overlay: the clipmap's texture, or a 1×1 zero stub so the
+        // binding is always valid (an editor typically assigns the real one
+        // after the heightmap loads; `sync_edit_overlay` picks that up).
+        #[cfg(feature = "editing")]
+        let edit_overlay = clipmap.edit_overlay.clone().unwrap_or_else(|| {
+            images.add(Image::new(
+                bevy::render::render_resource::Extent3d::default(),
+                bevy::render::render_resource::TextureDimension::D2,
+                vec![0],
+                TextureFormat::R8Unorm,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            ))
+        });
+
         // Quality bits packed into `flags` alongside the per-material wireframe bit
         // (bit1 = ambient gather, bit2 = single-layer detail, bit3 = looping).
         let quality_bits = ((quality.ambient_gather as u32) << 1)
@@ -244,6 +265,8 @@ pub(crate) fn init_clipmaps(
                     detail_normal_array: clipmap.detail.normal_array.clone(),
                     detail: DetailParams::from_config(&clipmap.detail),
                     detail_orm_array: clipmap.detail.orm_array.clone(),
+                    #[cfg(feature = "editing")]
+                    edit_overlay: edit_overlay.clone(),
                     texel_size: clipmap.texel_size,
                     minmax: Vec2::new(clipmap.min, clipmap.max),
                     flags: wireframe | quality_bits,
@@ -428,6 +451,33 @@ pub(crate) fn update_grids(
         }
         if trim_transform.rotation != trim_rotation {
             trim_transform.rotation = trim_rotation;
+        }
+    }
+}
+
+/// Applies a changed [`Clipmap::edit_overlay`] to the clipmap's materials
+/// (`editing` feature). The materials are built at spawn, before an editor has
+/// typically created the overlay texture (it needs the loaded heightmap's
+/// dimensions) — this picks up the later assignment.
+#[cfg(feature = "editing")]
+pub(crate) fn sync_edit_overlay(
+    clipmaps: Query<(&Clipmap, &ClipmapMaterials), Changed<Clipmap>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (clipmap, mats) in &clipmaps {
+        let Some(overlay) = &clipmap.edit_overlay else {
+            continue;
+        };
+        for handle in [&mats.solid, &mats.wireframe] {
+            // Check before `get_mut`: mutable access alone marks the material
+            // modified and rebuilds its bind group.
+            if materials
+                .get(handle)
+                .is_some_and(|m| m.extension.edit_overlay != *overlay)
+                && let Some(mut material) = materials.get_mut(handle)
+            {
+                material.extension.edit_overlay = overlay.clone();
+            }
         }
     }
 }

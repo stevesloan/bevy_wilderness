@@ -348,5 +348,8 @@ fn setup(
         max: 1312.5,
         wireframe: false,
         looping: true,
+        // The editor assigns this when embedding; unused in the plain example.
+        #[cfg(feature = "editing")]
+        edit_overlay: None,
     });
 }

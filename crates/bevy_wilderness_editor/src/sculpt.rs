@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use crate::cursor::TerrainCursor;
 use crate::settings::{BrushSettings, SculptMode};
 use crate::terrain::EditableTerrain;
-use crate::undo::UndoHistory;
+use crate::undo::{UndoBuffer, UndoHistory};
 
 /// Per-stroke state: the flatten target is the terrain height under the cursor
 /// when the stroke starts, so a whole drag levels toward one plane.
@@ -81,8 +81,13 @@ pub(crate) fn sculpt_at(
 
     // Snapshot first-touch undo tiles *before* mutating (D8).
     for rect in terrain.field.wrap_rect(min, max) {
-        history.capture(&terrain.field, rect);
+        history.capture(terrain, UndoBuffer::Height, rect);
     }
+
+    // A painted mask confines the op (D4): deltas weight by the feathered mask
+    // value, so edits blend softly into unmasked ground. No mask = no
+    // confinement.
+    let masked = terrain.mask_active();
 
     for y in min.y..max.y {
         for x in min.x..max.x {
@@ -94,10 +99,18 @@ pub(crate) fn sculpt_at(
             let Some((tx, ty)) = terrain.field.wrap_texel(x as i64, y as i64) else {
                 continue;
             };
+            let mask_weight = if masked {
+                terrain.mask_weight(x as i64, y as i64)
+            } else {
+                1.0
+            };
+            if mask_weight <= 0.0 {
+                continue;
+            }
             // Smoothstep falloff: full strength at the center, eased to zero
             // at the rim (no hard brush edge).
             let t = 1.0 - d;
-            let falloff = t * t * (3.0 - 2.0 * t);
+            let falloff = t * t * (3.0 - 2.0 * t) * mask_weight;
             let h = terrain.field.get(x as i64, y as i64);
             let new_h = match brush.mode {
                 SculptMode::Raise => h + brush.strength * falloff * dt,

@@ -17,7 +17,6 @@
 
 use bevy::{platform::collections::HashMap, prelude::*};
 
-use crate::field::TerrainField;
 use crate::terrain::EditableTerrain;
 
 /// Snapshot tile edge, in texels (64² × f32 ≈ 16 KB per height tile).
@@ -26,11 +25,37 @@ pub const UNDO_TILE_SIZE: u32 = 64;
 /// History byte budget before the oldest entries are evicted.
 const DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
 
-/// Which editable buffer a tile snapshot belongs to. Height only until the
-/// mask (Phase 4) joins.
+/// Which editable buffer a tile snapshot belongs to (D8: one entry can span
+/// several buffers — a tool that moves ground *and* paints mask undoes as one
+/// gesture).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum UndoBuffer {
+pub enum UndoBuffer {
+    /// The f32 height field.
     Height,
+    /// The 0..1 paint mask (D4).
+    Mask,
+}
+
+impl UndoBuffer {
+    fn copy_rect(&self, terrain: &EditableTerrain, rect: URect) -> Vec<f32> {
+        match self {
+            UndoBuffer::Height => terrain.field.copy_rect(rect),
+            UndoBuffer::Mask => terrain.mask_copy_rect(rect),
+        }
+    }
+
+    fn paste_rect(&self, terrain: &mut EditableTerrain, rect: URect, data: &[f32]) {
+        match self {
+            UndoBuffer::Height => {
+                terrain.field.paste_rect(rect, data);
+                terrain.mark_dirty(rect);
+            }
+            UndoBuffer::Mask => {
+                terrain.mask_paste_rect(rect, data);
+                terrain.mark_mask_dirty(rect);
+            }
+        }
+    }
 }
 
 /// One tile's saved contents.
@@ -97,22 +122,23 @@ impl UndoHistory {
         });
     }
 
-    /// Record `rect` (texel space, in-bounds — pass brush footprints through
-    /// [`TerrainField::wrap_rect`] first) as about-to-change. Must be called
-    /// **before** mutating the field: tiles already captured this gesture are
-    /// skipped, so only first-touch data is copied. No-op without an open
-    /// entry. `field` must be the terrain's field this entry was begun for.
-    pub fn capture(&mut self, field: &TerrainField, rect: URect) {
+    /// Record `buffer`'s `rect` (texel space, in-bounds — pass brush footprints
+    /// through [`TerrainField::wrap_rect`](crate::TerrainField::wrap_rect)
+    /// first) as about-to-change. Must be called **before** mutating: tiles
+    /// already captured this gesture are skipped, so only first-touch data is
+    /// copied. No-op without an open entry. `terrain` must be the one this
+    /// entry was begun for.
+    pub fn capture(&mut self, terrain: &EditableTerrain, buffer: UndoBuffer, rect: URect) {
         let Some(pending) = &mut self.pending else {
             return;
         };
-        for (tile, tile_rect) in tiles_in(rect, field.dimensions()) {
+        for (tile, tile_rect) in tiles_in(rect, terrain.field.dimensions()) {
             pending
                 .old
-                .entry((UndoBuffer::Height, tile))
+                .entry((buffer, tile))
                 .or_insert_with(|| TileSnapshot {
                     rect: tile_rect,
-                    data: field.copy_rect(tile_rect),
+                    data: buffer.copy_rect(terrain, tile_rect),
                 });
         }
     }
@@ -154,16 +180,15 @@ impl UndoHistory {
                     .map(|(key, snap)| {
                         let current = TileSnapshot {
                             rect: snap.rect,
-                            data: terrain.field.copy_rect(snap.rect),
+                            data: key.0.copy_rect(&terrain, snap.rect),
                         };
                         (*key, current)
                     })
                     .collect(),
             );
         }
-        for snap in entry.old.values() {
-            terrain.field.paste_rect(snap.rect, &snap.data);
-            terrain.mark_dirty(snap.rect);
+        for (key, snap) in &entry.old {
+            key.0.paste_rect(&mut terrain, snap.rect, &snap.data);
         }
         self.cursor -= 1;
         Some(entry.label.clone())
@@ -174,9 +199,8 @@ impl UndoHistory {
     pub fn redo(&mut self, terrains: &mut Query<&mut EditableTerrain>) -> Option<String> {
         let entry = self.entries.get(self.cursor)?;
         let mut terrain = terrains.get_mut(entry.terrain).ok()?;
-        for snap in entry.new.as_ref()?.values() {
-            terrain.field.paste_rect(snap.rect, &snap.data);
-            terrain.mark_dirty(snap.rect);
+        for (key, snap) in entry.new.as_ref()? {
+            key.0.paste_rect(&mut terrain, snap.rect, &snap.data);
         }
         self.cursor += 1;
         Some(entry.label.clone())
@@ -217,6 +241,7 @@ fn tiles_in(rect: URect, dims: UVec2) -> impl Iterator<Item = (UVec2, URect)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field::TerrainField;
     use bevy::ecs::system::SystemState;
 
     fn world_with_terrain(width: u32) -> (World, Entity) {
@@ -250,7 +275,7 @@ mod tests {
         history.begin(entity, "Sculpt (Raise)");
         {
             let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(&terrain.field, URect::new(10, 10, 20, 20));
+            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
         }
         set_height(&mut world, entity, 12, 12, 50.0);
         history.seal();
@@ -276,7 +301,7 @@ mod tests {
         history.begin(entity, "first");
         {
             let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(&terrain.field, URect::new(0, 0, 8, 8));
+            history.capture(terrain, UndoBuffer::Height, URect::new(0, 0, 8, 8));
         }
         set_height(&mut world, entity, 1, 1, 10.0);
         history.seal();
@@ -286,7 +311,7 @@ mod tests {
         history.begin(entity, "second");
         {
             let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(&terrain.field, URect::new(0, 0, 8, 8));
+            history.capture(terrain, UndoBuffer::Height, URect::new(0, 0, 8, 8));
         }
         set_height(&mut world, entity, 2, 2, 20.0);
         history.seal();
@@ -310,14 +335,14 @@ mod tests {
         history.begin(entity, "stroke");
         {
             let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(&terrain.field, URect::new(10, 10, 20, 20));
+            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
         }
         set_height(&mut world, entity, 12, 12, 50.0);
         // Second capture of the same tile mid-gesture must keep the original
         // pre-stroke data, not the half-edited state.
         {
             let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(&terrain.field, URect::new(10, 10, 20, 20));
+            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
         }
         set_height(&mut world, entity, 12, 12, 80.0);
         history.seal();
@@ -340,7 +365,11 @@ mod tests {
             history.begin(entity, format!("stroke {i}"));
             {
                 let terrain = world.get::<EditableTerrain>(entity).unwrap();
-                history.capture(&terrain.field, URect::new(i * 64, 0, i * 64 + 8, 8));
+                history.capture(
+                    terrain,
+                    UndoBuffer::Height,
+                    URect::new(i * 64, 0, i * 64 + 8, 8),
+                );
             }
             set_height(&mut world, entity, i * 64, 0, i as f32 + 1.0);
             history.seal();

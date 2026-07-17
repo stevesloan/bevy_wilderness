@@ -7,12 +7,16 @@
 //! ```
 //!
 //! Controls (WASD + right-drag to fly):
-//! - **Left mouse (held)** — sculpt under the brush ring
-//! - **1 / 2 / 3 / 4** — Raise / Lower / Smooth / Flatten
+//! - **Left mouse (held)** — apply the active tool under the brush ring
+//! - **S / M / P** — sculpt / mask paint / demo probe tool
+//! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
+//! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
 //! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
-//! - **P** — switch to the demo probe tool (logs edit events); **S** back to sculpt
+//!
+//! A painted mask (orange tint) confines sculpting to it, feathered at the
+//! edge — and will confine erosion in Phase 5.
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -33,7 +37,8 @@ use bevy_wilderness::{
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, SculptMode,
-    TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoHistory, tool_active,
+    TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory,
+    tool_active,
 };
 
 /// The demo third-party tool: proves a host-registered tool receives the shared
@@ -54,7 +59,13 @@ fn main() {
         .add_systems(Startup, (setup, register_probe_tool))
         .add_systems(
             Update,
-            (update_sun_color, brush_controls, undo_keys, draw_brush_ring),
+            (
+                update_sun_color,
+                brush_controls,
+                undo_keys,
+                clear_mask_key,
+                draw_brush_ring,
+            ),
         )
         .add_systems(
             Update,
@@ -111,9 +122,33 @@ fn brush_controls(
         active.0 = Some(ToolId::SCULPT);
         info!("tool: sculpt");
     }
+    if keys.just_pressed(KeyCode::KeyM) {
+        active.0 = Some(ToolId::MASK);
+        info!("tool: mask paint (Shift+LMB erases, C clears)");
+    }
     if keys.just_pressed(KeyCode::KeyP) {
         active.0 = Some(PROBE);
         info!("tool: demo probe");
+    }
+}
+
+/// C clears the whole mask — as an undoable gesture, like any other edit.
+fn clear_mask_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut history: ResMut<UndoHistory>,
+    mut terrains: Query<(Entity, &mut EditableTerrain)>,
+) {
+    if !keys.just_pressed(KeyCode::KeyC) {
+        return;
+    }
+    for (entity, mut terrain) in &mut terrains {
+        if terrain.mask_active() {
+            history.begin(entity, "Clear Mask");
+            history.capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
+            terrain.clear_mask();
+            history.seal();
+            info!("mask cleared");
+        }
     }
 }
 
@@ -373,6 +408,9 @@ fn setup(
             max: 1312.5,
             wireframe: false,
             looping: true,
+            // The editor creates and assigns the mask overlay texture once the
+            // heightmap loads.
+            edit_overlay: None,
         },
         // The one line that makes the terrain editable.
         Editable,

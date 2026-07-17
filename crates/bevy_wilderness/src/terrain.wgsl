@@ -73,6 +73,14 @@ struct DetailParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(129) var<uniform> detail: DetailParams;
 @group(#{MATERIAL_BIND_GROUP}) @binding(130) var detail_orm_array: texture_2d_array<f32>;
 
+// Editor visualization overlay (`editing` feature): 0..1 mask tinted into the
+// surface albedo. Shares the heightmap sampler — no new sampler/uniform slots.
+// The def is pushed by GridMaterial::specialize only in editing builds, so the
+// declaration matches the bind-group layout on both sides.
+#ifdef WILDERNESS_EDIT_OVERLAY
+@group(#{MATERIAL_BIND_GROUP}) @binding(115) var edit_overlay_texture: texture_2d<f32>;
+#endif
+
 // Cheap per-point 2D hash in [0, 1)^2, seeded by world XZ. Used to stochastically
 // jitter the NEAREST material-id read so its RVT-texel grid dithers into fine
 // noise instead of a hard mosaic. Keyed on world position (not screen space) so
@@ -414,6 +422,15 @@ fn fragment(
         ao = mix(1.0, dorm.r, detail_fade);
     }
     in_modified.world_normal = world_normal;
+
+#ifdef WILDERNESS_EDIT_OVERLAY
+    // Editor mask visualization: tint the albedo where the overlay is painted.
+    // Applied to albedo (not post-lighting) so it shades plausibly and works in
+    // the deferred path too. `fract` wraps the sample on looping terrain.
+    let overlay_uv = select(clamp(uv, vec2(0.0), vec2(1.0)), fract(uv), (flags & 8u) != 0u);
+    let overlay = textureSample(edit_overlay_texture, heightmap_sampler, overlay_uv).r;
+    albedo = mix(albedo, vec3<f32>(1.0, 0.25, 0.05), overlay * 0.5);
+#endif
 
     var pbr_input = pbr_input_from_standard_material(in_modified, is_front);
     pbr_input.material.base_color = vec4<f32>(albedo, 1.0);

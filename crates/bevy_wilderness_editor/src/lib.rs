@@ -17,6 +17,7 @@ use bevy::prelude::*;
 
 mod cursor;
 mod field;
+mod mask;
 mod rebake;
 mod sculpt;
 mod settings;
@@ -29,7 +30,7 @@ pub use field::TerrainField;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
-pub use undo::{UNDO_TILE_SIZE, UndoHistory};
+pub use undo::{UNDO_TILE_SIZE, UndoBuffer, UndoHistory};
 
 /// The editor's `Update` phases. Host tool systems go in
 /// [`Tools`](EditorSet::Tools), between the shared pick and the flush:
@@ -72,7 +73,11 @@ impl Plugin for TerrainEditorPlugin {
                     sculpt::apply_sculpt
                         .run_if(tool_active(ToolId::SCULPT))
                         .in_set(EditorSet::Tools),
-                    terrain::sync_dirty_regions.in_set(EditorSet::Apply),
+                    mask::apply_mask_paint
+                        .run_if(tool_active(ToolId::MASK))
+                        .in_set(EditorSet::Tools),
+                    (terrain::sync_dirty_regions, terrain::sync_dirty_masks)
+                        .in_set(EditorSet::Apply),
                     // After the sync so a flush's re-armed timer isn't ticked
                     // in the same frame it was set.
                     rebake::tick_rebake_debounce.after(terrain::sync_dirty_regions),

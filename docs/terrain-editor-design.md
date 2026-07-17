@@ -1,14 +1,27 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **In progress — Phases 0–2 done** (workspace + rename + editing API;
-editor core skeleton; sculpt tool) · Project name: **`bevy_wilderness`** ·
-Last updated: 2026-07-16
+Status: **In progress — Phases 0–4 done** (workspace + editing API; editor core;
+sculpt; debounced re-bake; undo/history; feathered mask + overlay
+visualization) · Next: **Phase 5, erosion** · Project name:
+**`bevy_wilderness`** · Last updated: 2026-07-16
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
 > former `lib.rs` grab-bag is split into `clipmap.rs` / `material.rs` /
 > `quality.rs` / `dev_controls.rs`. The editor core lives in
 > `crates/bevy_wilderness_editor`.
+>
+> Decisions made in flight: mask visualization is `Clipmap::edit_overlay`
+> (`editing` feature) — an extra *texture* binding on `GridMaterial` sharing the
+> heightmap sampler, gated by a shader def pushed in `specialize`, so it
+> compiles out of non-editing builds byte-identically (the §10 bind-group
+> ceiling is about *uniform* slots, which stayed untouched). Sculpt is
+> mask-confined too, not just erosion (D4's intent generalized). Partial /
+> region-scoped RVT re-bake was considered and **rejected for now** — the sun
+> shadow is non-local (anti-sun corridor bounds are the classic seam-bug
+> factory); if the full re-bake ever measures too slow, do *progressive strip*
+> re-bake first (same total work, no hitch, zero correctness risk), regional
+> only as a last resort.
 
 ## How to use this document
 
@@ -327,16 +340,16 @@ the derived R16 map; a no-op registered tool receives raycast hits + edit events
 **Phase 2 ✅ — Sculpt tool.** Raise/lower/smooth/flatten editing the f32 field (D2).
 *Accept:* dragging deforms terrain live; radius/strength adjustable.
 
-**Phase 3 — Re-bake on release.** Debounced re-bake + `TerrainRegionChanged`
+**Phase 3 ✅ — Re-bake on release.** Debounced re-bake + `TerrainRegionChanged`
 (D5). *Accept:* sculpt a hill, release, shadows/AO/rock-placement update to match.
 
-**Phase 3.5 — Undo/history.** Tile-based region snapshots + byte-capped ring
+**Phase 3.5 ✅ — Undo/history.** Tile-based region snapshots + byte-capped ring
 buffer (D8). Placed before erosion deliberately: a 5-second erosion run you
 don't like is exactly what undo exists for. *Accept:* sculpt, undo (Ctrl+Z in
 the example) — terrain, shading, and prop re-snap all revert; redo restores;
 history survives deep strokes without unbounded memory.
 
-**Phase 4 — Mask tool.** Feathered mask paint (D4), undoable via D8's
+**Phase 4 ✅ — Mask tool.** Feathered mask paint (D4), undoable via D8's
 multi-buffer entries. *Accept:* a mask confines a subsequent op with a soft,
 seamless edge.
 

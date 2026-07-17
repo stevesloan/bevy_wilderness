@@ -69,7 +69,13 @@ impl Plugin for ClipmapPlugin {
         // Editable-terrain API (design doc §5): consume RebakeRequested before
         // init_rvt so a re-armed bake re-spawns its cameras the same frame.
         #[cfg(feature = "editing")]
-        app.add_systems(Update, rvt::process_rebake_requests.before(init_rvt));
+        app.add_systems(
+            Update,
+            (
+                rvt::process_rebake_requests.before(init_rvt),
+                clipmap::sync_edit_overlay,
+            ),
+        );
 
         // Demo A/B keybinds for the AO/bent-normal experiment (B/N/V). Off by
         // default so the library ships no input systems; enable `dev-controls`.

@@ -112,6 +112,15 @@ pub(crate) struct GridMaterial {
     pub(crate) detail: DetailParams,
     #[texture(130, dimension = "2d_array")]
     pub(crate) detail_orm_array: Handle<Image>,
+    /// Editor visualization overlay (`editing` feature; see
+    /// `Clipmap::edit_overlay`). A **texture** binding sharing the heightmap's
+    /// sampler (103): textures have headroom here — it's *uniform buffers* that
+    /// sit at the silent-break ceiling (banner above) — and the binding
+    /// compiles out of non-editing builds entirely (the shader reads it behind
+    /// the def pushed in `specialize`).
+    #[cfg(feature = "editing")]
+    #[texture(115)]
+    pub(crate) edit_overlay: Handle<Image>,
     #[uniform(108)]
     pub(crate) texel_size: f32,
     #[uniform(109)]
@@ -157,6 +166,13 @@ impl MaterialExtension for GridMaterial {
         if key.bind_group_data.wireframe {
             descriptor.primitive.polygon_mode = bevy::render::render_resource::PolygonMode::Line;
             descriptor.depth_stencil.as_mut().unwrap().bias.slope_scale = 1.0;
+        }
+        // The edit-overlay binding exists only in editing builds; gate the
+        // shader's declaration + sample on a def so the same terrain.wgsl
+        // compiles against both bind-group layouts.
+        #[cfg(feature = "editing")]
+        if let Some(fragment) = descriptor.fragment.as_mut() {
+            fragment.shader_defs.push("WILDERNESS_EDIT_OVERLAY".into());
         }
         Ok(())
     }
