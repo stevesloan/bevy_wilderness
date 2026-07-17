@@ -1,9 +1,10 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **In progress — Phases 0–5 done** (workspace + editing API; editor core;
+Status: **In progress — Phases 0–6 done** (workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
-visualization; background droplet + thermal erosion) · Next: **Phase 6,
-looping seams** · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
+visualization; background droplet + thermal erosion; looping seams + boundary
+overlay) · Next: **Phase 7, default UI + demo tool** · Project name:
+**`bevy_wilderness`** · Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -372,9 +373,21 @@ default 0.1) — an absolute count over-eroded small maps/masks by their area
 ratio, so the knob is a density; spawn positions are rejection-thinned by the
 feathered mask weight.
 
-**Phase 6 — Looping seams.** Toroidal edits + wrapped erosion + boundary overlay
+**Phase 6 ✅ — Looping seams.** Toroidal edits + wrapped erosion + boundary overlay
 (D6). *Accept:* with `looping` on, a stroke/erosion across an edge is continuous
 and the tile still repeats seamlessly.
+Decisions in flight: toroidal edits and wrapped erosion were pre-paid in
+Phases 2/4/5 (`wrap_texel`/`wrap_rect`, droplet re-entry, wrapped thermal
+neighbors — all tested), so this phase delivered the D6 visibility aid plus
+validation. D6's "ghosted neighbor copies" idea is moot — a looping clipmap
+*renders* the repeats, so edits near an edge already show on the far side
+live; the aid that was actually missing is the invisible-by-design wrap line.
+`SeamOverlay` resource (default on) draws a gizmo ring hugging the surface
+around the tile instance under the camera — neighboring instances share
+edges, so one ring marks every nearby seam and follows the camera from repeat
+to repeat. Also validated: sculpting while standing on a *repeat* lands on
+identical base-tile texels (the cursor's texel coords are a whole tile offset;
+`wrap_texel` resolves them).
 
 **Phase 7 — Default UI + demo tool.** `bevy_wilderness_editor_ui` egui panels;
 `examples/editor.rs` host app + generic prop-placement tool (§6). *Accept:* the

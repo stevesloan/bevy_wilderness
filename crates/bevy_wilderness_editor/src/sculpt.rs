@@ -211,6 +211,39 @@ mod tests {
     }
 
     #[test]
+    fn stroke_on_a_neighboring_repeat_edits_the_base_tile() {
+        // A looping terrain renders repeats everywhere; the cursor's texel
+        // coordinates there are a whole tile offset from the base. Sculpting
+        // on a repeat must land on exactly the texels the base-tile stroke
+        // would (D6: edits are continuous across the seam wherever you stand).
+        let stroke = |center: Vec2| {
+            let field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, true, 0.0);
+            let mut terrain = EditableTerrain::new(field);
+            sculpt_at(
+                &mut terrain,
+                center,
+                &brush(SculptMode::Raise),
+                1.0,
+                0.0,
+                &mut UndoHistory::default(),
+            );
+            terrain
+        };
+        let base = stroke(Vec2::new(16.0, 16.0));
+        // One tile east, two tiles north of the base instance.
+        let repeat = stroke(Vec2::new(16.0 + 32.0, 16.0 - 64.0));
+        for y in 0..32 {
+            for x in 0..32 {
+                assert_eq!(
+                    base.field.get(x, y),
+                    repeat.field.get(x, y),
+                    "texel ({x},{y}) differs between base and repeat strokes"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn flatten_pulls_toward_the_stroke_target() {
         let mut field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, false, 0.0);
         for y in 0..32 {

@@ -14,6 +14,8 @@
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
 //! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
+//! - **B** — toggle the tile-boundary ring (the terrain loops; edits and
+//!   erosion wrap across it)
 //!
 //! A painted mask (orange tint) confines sculpting *and* erosion to it,
 //! feathered at the edge. With the erode tool active, a click starts a
@@ -40,8 +42,8 @@ use bevy_wilderness::{
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
-    SculptMode, TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoBuffer,
-    UndoHistory, tool_active,
+    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId,
+    UndoBuffer, UndoHistory, tool_active,
 };
 
 /// The demo third-party tool: proves a host-registered tool receives the shared
@@ -93,7 +95,15 @@ fn brush_controls(
     keys: Res<ButtonInput<KeyCode>>,
     mut brush: ResMut<BrushSettings>,
     mut active: ResMut<ActiveTool>,
+    mut seam: ResMut<SeamOverlay>,
 ) {
+    if keys.just_pressed(KeyCode::KeyB) {
+        seam.enabled = !seam.enabled;
+        info!(
+            "tile boundary ring: {}",
+            if seam.enabled { "on" } else { "off" }
+        );
+    }
     let mode = [
         (KeyCode::Digit1, SculptMode::Raise),
         (KeyCode::Digit2, SculptMode::Lower),

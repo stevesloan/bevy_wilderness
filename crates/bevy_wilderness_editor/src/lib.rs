@@ -13,6 +13,7 @@
 //! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
 //! - [`ErosionRequested`] / [`ErosionRun`] — start an erosion run / watch its
 //!   progress (D3).
+//! - [`SeamOverlay`] — toggle the looping tile-boundary visualization (D6).
 //! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
 
 use bevy::prelude::*;
@@ -23,6 +24,7 @@ mod field;
 mod mask;
 mod rebake;
 mod sculpt;
+mod seam;
 mod settings;
 mod terrain;
 mod tools;
@@ -30,6 +32,7 @@ mod undo;
 
 pub use cursor::{TerrainCursor, TerrainHit};
 pub use erosion::{ErosionRequested, ErosionRun};
+pub use seam::SeamOverlay;
 pub use field::TerrainField;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
@@ -64,6 +67,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
             .init_resource::<UndoHistory>()
+            .init_resource::<SeamOverlay>()
             .add_message::<TerrainRegionChanged>()
             .add_message::<ErosionRequested>()
             .configure_sets(
@@ -93,6 +97,7 @@ impl Plugin for TerrainEditorPlugin {
                         .before(EditorSet::Apply),
                     (terrain::sync_dirty_regions, terrain::sync_dirty_masks)
                         .in_set(EditorSet::Apply),
+                    seam::draw_seam_overlay,
                     // After the sync so a flush's re-armed timer isn't ticked
                     // in the same frame it was set.
                     rebake::tick_rebake_debounce.after(terrain::sync_dirty_regions),
