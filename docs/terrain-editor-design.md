@@ -1,10 +1,10 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **In progress — Phases 0–6 done** (workspace + editing API; editor core;
+Status: **In progress — Phases 0–7 done** (workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
-overlay) · Next: **Phase 7, default UI + demo tool** · Project name:
-**`bevy_wilderness`** · Last updated: 2026-07-17
+overlay; default egui UI + prop-placement demo tool) · Next: **Phase 8,
+export** · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -242,9 +242,10 @@ bevy_wilderness            (OSS lib)  terrain render + opt-in editable-terrain A
 bevy_wilderness_editor     (OSS lib)  sculpt/mask/erosion/overlay core + UI-agnostic
                                       API + extension points (§6). Deps bevy_wilderness.
 bevy_wilderness_editor_ui  (OSS lib)  default egui UI driving the editor API (P2).
-                                      Optional — game may replace it.
-examples/editor.rs         (OSS)      minimal host app: plugins + default UI + demo
-                                      prop-placement tool. Exercises the embed path.
+                                      Optional — game may replace it. Hosts
+                                      examples/editor.rs: the minimal host app
+                                      (plugins + default UI + demo prop-placement
+                                      tool) exercising the embed path.
 ─────────────────────────────────────────────────────────────────────────────────
 your game                  (closed)   adds editor plugin (+ own or default UI),
                                       registers RON→glTF placement as a tool on §6 API.
@@ -389,10 +390,24 @@ to repeat. Also validated: sculpting while standing on a *repeat* lands on
 identical base-tile texels (the cursor's texel coords are a whole tile offset;
 `wrap_texel` resolves them).
 
-**Phase 7 — Default UI + demo tool.** `bevy_wilderness_editor_ui` egui panels;
+**Phase 7 ✅ — Default UI + demo tool.** `bevy_wilderness_editor_ui` egui panels;
 `examples/editor.rs` host app + generic prop-placement tool (§6). *Accept:* the
 example drives every tool via the UI; the prop tool places + re-snaps a glTF on
 `TerrainRegionChanged`, proving the extension API.
+Decisions in flight: `bevy_egui` 0.41 (egui 0.35 — panels attach to a root
+`Ui`, not the `Context`; UI systems run in `EguiPrimaryContextPass`). The one
+core-API gap dogfooding exposed: input focus — added `PointerBlocked`, a
+resource any UI writes before `EditorSet::Pick` so the shared pick (and thus
+every tool) goes quiet while the pointer is over panels; that's the whole
+UI↔core input handshake, and egui types stay out of the core (P2). The panel's
+tool list renders from the `EditorTools` registry, so host-registered tools
+appear with zero UI changes. The example moved to
+`crates/bevy_wilderness_editor_ui/examples/editor.rs` (it needs all three
+crates; dev-dep direction stays acyclic). Demo prop tool places cubes (plain
+mesh, no asset dependency) via the shared pick and re-snaps them from
+`TerrainRegionChanged` + `TerrainHeight` — the game's glTF tool is this shape
+plus a manifest. Erosion sliders exposed: droplet density, capacity,
+erode/deposit rate, talus angle (§11's "a few sliders").
 
 **Phase 8 — Export.** Write the R16 heightmap to file (D7). *Accept:* export,
 restart loading the exported file, terrain matches.
@@ -420,8 +435,8 @@ restart loading the exported file, terrain matches.
 ## 11. Open questions
 
 - **Export format**: 16-bit PNG vs KTX2? (D7.)
-- **Erosion parameter exposure**: how many knobs in the UI (inertia, capacity,
-  deposition/erosion rates, evaporation, droplet count)? Start with defaults + a
-  few sliders.
-- **editor-ui: feature or crate** at the start (§7) — lean crate; revisit if the
-  early friction argues otherwise.
+- ~~**Erosion parameter exposure**~~ *(settled in Phase 7)*: five sliders —
+  droplet density, sediment capacity, erode/deposit rate, talus angle. The rest
+  stay `ErosionSettings` fields a host can still set in code.
+- ~~**editor-ui: feature or crate**~~ *(settled in Phase 7)*: a crate, per the
+  §7 lean.

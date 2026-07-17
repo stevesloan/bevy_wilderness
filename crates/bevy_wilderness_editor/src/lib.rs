@@ -8,6 +8,8 @@
 //! Extension points for host tools (design doc §6):
 //! - [`EditorTools`] / [`ActiveTool`] / [`tool_active`] — the tool registry.
 //! - [`TerrainCursor`] — the shared cursor→terrain pick every tool uses.
+//! - [`PointerBlocked`] — a UI sets it while it owns the pointer; the pick
+//!   goes empty so tools don't paint through panels.
 //! - [`TerrainHeight`] — height at (x, z), for snapping props to the surface.
 //! - [`TerrainRegionChanged`] — emitted when terrain changes; re-snap props.
 //! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
@@ -30,7 +32,7 @@ mod terrain;
 mod tools;
 mod undo;
 
-pub use cursor::{TerrainCursor, TerrainHit};
+pub use cursor::{PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionRequested, ErosionRun};
 pub use seam::SeamOverlay;
 pub use field::TerrainField;
@@ -64,6 +66,7 @@ impl Plugin for TerrainEditorPlugin {
         app.init_resource::<EditorTools>()
             .init_resource::<ActiveTool>()
             .init_resource::<TerrainCursor>()
+            .init_resource::<PointerBlocked>()
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
             .init_resource::<UndoHistory>()

@@ -1,14 +1,16 @@
-//! Minimal editor host app (design doc §7): adds the renderer + editor plugins,
-//! marks the terrain [`Editable`], and registers a third-party "probe" tool to
-//! prove the extension API — the same embedding path a game uses.
+//! The editor host app (design doc §7): adds the renderer + editor + default
+//! UI plugins, marks the terrain [`Editable`], and registers a third-party
+//! prop-placement tool to prove the extension API — the same embedding path a
+//! game uses (its glTF-placement tool is this tool with a manifest).
 //!
 //! ```sh
-//! cargo run -p bevy_wilderness_editor --example editor
+//! cargo run -p bevy_wilderness_editor_ui --example editor
 //! ```
 //!
-//! Controls (WASD + right-drag to fly):
+//! Everything is driven from the side panel; keyboard shortcuts mirror it
+//! (WASD + right-drag to fly):
 //! - **Left mouse (held)** — apply the active tool under the brush ring
-//! - **S / M / E / P** — sculpt / mask paint / erode / demo probe tool
+//! - **S / M / E / P** — sculpt / mask paint / erode / place-prop tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
@@ -18,10 +20,11 @@
 //!   erosion wrap across it)
 //!
 //! A painted mask (orange tint) confines sculpting *and* erosion to it,
-//! feathered at the edge. With the erode tool active, a click starts a
-//! background erosion run over the mask (the whole map if none) — geometry
-//! updates when it lands a few seconds later, then the re-bake turns the
-//! fresh cliffs rocky.
+//! feathered at the edge. Erosion runs in the background over the mask (the
+//! whole map if none); when it lands, the re-bake turns fresh cliffs rocky.
+//! The place-prop tool (P) drops cubes that snap to the surface and *re-snap*
+//! whenever the ground under them changes — sculpt or erode under one and
+//! watch it follow.
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -42,13 +45,23 @@ use bevy_wilderness::{
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
-    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId,
-    UndoBuffer, UndoHistory, tool_active,
+    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainHeight,
+    TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory, tool_active,
 };
+use bevy_wilderness_editor_ui::TerrainEditorUiPlugin;
 
-/// The demo third-party tool: proves a host-registered tool receives the shared
-/// pick and edit events without the editor knowing anything about it.
-const PROBE: ToolId = ToolId("example.probe");
+/// The demo third-party tool (design doc §6): places props that snap to the
+/// terrain and re-snap when it changes — proving a host-registered tool gets
+/// the shared pick, the height query, and the edit events without the editor
+/// knowing anything about it. The game's glTF-placement tool is this shape.
+const PLACE: ToolId = ToolId("example.place_prop");
+
+/// Half-height of the demo prop cube (its base sits on the surface).
+const PROP_HALF: f32 = 6.0;
+
+/// A placed demo prop; re-snapped by [`resnap_props`].
+#[derive(Component)]
+struct DemoProp;
 
 fn main() {
     App::new()
@@ -61,7 +74,8 @@ fn main() {
         .add_plugins(ClipmapPlugin)
         .add_plugins(HeightFogPlugin)
         .add_plugins(TerrainEditorPlugin)
-        .add_systems(Startup, (setup, register_probe_tool))
+        .add_plugins(TerrainEditorUiPlugin)
+        .add_systems(Startup, (setup, register_place_tool))
         .add_systems(
             Update,
             (
@@ -71,22 +85,71 @@ fn main() {
                 clear_mask_key,
                 draw_brush_ring,
                 erosion_progress,
+                resnap_props,
             ),
         )
         .add_systems(
             Update,
-            probe_tool
-                .run_if(tool_active(PROBE))
+            place_prop_tool
+                .run_if(tool_active(PLACE))
                 .in_set(EditorSet::Tools),
         )
         .run();
 }
 
 /// Register the demo tool — exactly what a game does for its own tools (e.g.
-/// glTF placement). Sculpt starts active; P switches to the probe.
-fn register_probe_tool(mut tools: ResMut<EditorTools>, mut active: ResMut<ActiveTool>) {
-    tools.register(PROBE, "Demo Probe");
+/// glTF placement). Sculpt starts active; P (or the panel) switches to it.
+fn register_place_tool(mut tools: ResMut<EditorTools>, mut active: ResMut<ActiveTool>) {
+    tools.register(PLACE, "Place Prop");
     active.0 = Some(ToolId::SCULPT);
+}
+
+/// Drop a cube where the shared pick hits — the same cursor every brush uses,
+/// so the prop lands exactly where the ring shows.
+fn place_prop_tool(
+    mut commands: Commands,
+    buttons: Res<ButtonInput<MouseButton>>,
+    cursor: Res<TerrainCursor>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Some(hit) = cursor.0 else {
+        return;
+    };
+    commands.spawn((
+        DemoProp,
+        Mesh3d(meshes.add(Cuboid::from_length(PROP_HALF * 2.0))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.25, 0.2),
+            perceptual_roughness: 0.6,
+            ..default()
+        })),
+        Transform::from_translation(hit.position + Vec3::Y * PROP_HALF),
+    ));
+    info!("placed prop at {:?}", hit.position);
+}
+
+/// The extension-API hook (design doc §6): when terrain changes under a placed
+/// prop — sculpt, erosion, undo, anything — re-snap it to the new surface via
+/// the core's height query.
+fn resnap_props(
+    mut changed: MessageReader<TerrainRegionChanged>,
+    height: TerrainHeight,
+    mut props: Query<&mut Transform, With<DemoProp>>,
+) {
+    for event in changed.read() {
+        for mut transform in &mut props {
+            let xz = transform.translation.xz();
+            if event.region.contains(xz)
+                && let Some(h) = height.sample(xz)
+            {
+                transform.translation.y = h + PROP_HALF;
+            }
+        }
+    }
 }
 
 /// A UI stand-in: keybinds writing the editor's state resources — the same
@@ -145,8 +208,8 @@ fn brush_controls(
         info!("tool: erode (click to run over the mask, or the whole map if none)");
     }
     if keys.just_pressed(KeyCode::KeyP) {
-        active.0 = Some(PROBE);
-        info!("tool: demo probe");
+        active.0 = Some(PLACE);
+        info!("tool: place prop (click to drop a cube that re-snaps to the terrain)");
     }
 }
 
@@ -228,19 +291,6 @@ fn erosion_progress(runs: Query<&ErosionRun>, mut last: Local<Option<u32>>) {
                 info!("erosion: result applied");
             }
         }
-    }
-}
-
-/// The no-op third-party tool: logs the edit events sculpting produces (and
-/// the one full-terrain event at startup, when the display map is first
-/// derived from the f32 field).
-fn probe_tool(cursor: Res<TerrainCursor>, mut changed: MessageReader<TerrainRegionChanged>) {
-    for event in changed.read() {
-        let under_cursor = cursor.0.map(|hit| hit.position);
-        info!(
-            "probe tool: terrain {:?} changed over {:?} (cursor at {under_cursor:?})",
-            event.terrain, event.region
-        );
     }
 }
 

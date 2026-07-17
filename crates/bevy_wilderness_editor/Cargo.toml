@@ -12,5 +12,3 @@ bevy_wilderness = { path = "../bevy_wilderness", version = "0.1.0", features = [
     "editing",
 ] }
 
-[dev-dependencies]
-bevy = { version = "0.19.0", features = ["free_camera"] }

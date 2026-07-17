@@ -15,6 +15,13 @@ const MAX_PICK_DISTANCE: f32 = 50_000.0;
 #[derive(Resource, Default, PartialEq, Debug)]
 pub struct TerrainCursor(pub Option<TerrainHit>);
 
+/// Whether a UI layer owns the pointer this frame (design doc §6: shared input
+/// focus). A UI writes this before `EditorSet::Pick` — the default egui UI does
+/// it from `wants_pointer_input` — and while `true` the shared pick reports no
+/// hit, so no tool paints or places through a panel.
+#[derive(Resource, Default, PartialEq, Debug)]
+pub struct PointerBlocked(pub bool);
+
 /// One cursor-terrain intersection.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TerrainHit {
@@ -34,11 +41,12 @@ pub(crate) fn update_terrain_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     terrains: Query<(Entity, &EditableTerrain, &Clipmap)>,
+    blocked: Res<PointerBlocked>,
     mut cursor: ResMut<TerrainCursor>,
 ) {
-    let hit = windows
-        .single()
-        .ok()
+    let hit = (!blocked.0)
+        .then(|| windows.single().ok())
+        .flatten()
         .and_then(|window| window.cursor_position())
         .and_then(|cursor_pos| {
             terrains.iter().find_map(|(entity, terrain, clipmap)| {

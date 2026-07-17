@@ -1,0 +1,16 @@
+[package]
+name = "bevy_wilderness_editor_ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Default egui UI for bevy_wilderness_editor — optional and replaceable; drives the editor purely through its public API"
+repository = "https://github.com/stevesloan/bevy_wilderness"
+
+[dependencies]
+bevy = "0.19.0"
+bevy_egui = "0.41"
+bevy_wilderness_editor = { path = "../bevy_wilderness_editor", version = "0.1.0" }
+
+[dev-dependencies]
+bevy = { version = "0.19.0", features = ["free_camera"] }
+bevy_wilderness = { path = "../bevy_wilderness" }
