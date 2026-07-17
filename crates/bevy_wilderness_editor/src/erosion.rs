@@ -93,7 +93,9 @@ pub(crate) fn request_on_click(
     if runs.contains(hit.terrain) {
         return; // one run per terrain at a time
     }
-    requests.write(ErosionRequested { terrain: hit.terrain });
+    requests.write(ErosionRequested {
+        terrain: hit.terrain,
+    });
 }
 
 /// Snapshot each requested terrain and spawn its simulation task.
@@ -255,8 +257,8 @@ impl ErosionJob {
             let brush = &brush;
             let deltas = pool.scope(|scope| {
                 for batch in 0..batches as u32 {
-                    let count = quota * (batch + 1) / batches as u32
-                        - quota * batch / batches as u32;
+                    let count =
+                        quota * (batch + 1) / batches as u32 - quota * batch / batches as u32;
                     if count == 0 {
                         continue;
                     }
@@ -677,11 +679,9 @@ mod tests {
         let outcome = run_job(&terrain, &settings);
         for y in 0..128u32 {
             for x in 0..128u32 {
-                let h = terrain.field.get(x as i64, y as i64) + outcome.delta[(y * 128 + x) as usize];
-                assert!(
-                    (-0.01..=400.01).contains(&h),
-                    "({x},{y}) out of range: {h}"
-                );
+                let h =
+                    terrain.field.get(x as i64, y as i64) + outcome.delta[(y * 128 + x) as usize];
+                assert!((-0.01..=400.01).contains(&h), "({x},{y}) out of range: {h}");
             }
         }
     }

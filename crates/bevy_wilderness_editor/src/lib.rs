@@ -39,8 +39,8 @@ mod undo;
 pub use cursor::{PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
-pub use seam::SeamOverlay;
 pub use field::TerrainField;
+pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
@@ -88,7 +88,9 @@ impl Plugin for TerrainEditorPlugin {
             .add_systems(
                 Update,
                 (
-                    terrain::init_editable_terrains.before(EditorSet::Pick),
+                    (terrain::init_editable_terrains, terrain::init_edit_overlays)
+                        .chain()
+                        .before(EditorSet::Pick),
                     cursor::update_terrain_cursor.in_set(EditorSet::Pick),
                     sculpt::apply_sculpt
                         .run_if(tool_active(ToolId::SCULPT))

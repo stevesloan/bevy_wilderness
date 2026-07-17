@@ -36,6 +36,18 @@
 //! WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 \
 //!     cargo run -p bevy_wilderness_editor_ui --example editor
 //! ```
+//!
+//! To start a **new terrain from scratch** instead of loading one, set
+//! `WILDERNESS_NEW` to the resolution in texels — e.g. the design-target
+//! 4096² working map (D1):
+//!
+//! ```sh
+//! WILDERNESS_NEW=4096 cargo run -p bevy_wilderness_editor_ui --example editor
+//! ```
+//!
+//! The fresh terrain is a flat plain over the same 8192 m world footprint
+//! (resolution changes texel density, not world size). Sculpt it, erode it,
+//! export it — the exports are the new terrain's master files.
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -56,7 +68,7 @@ use bevy_wilderness::{
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
-    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainHeight,
+    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField, TerrainHeight,
     TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory, tool_active,
 };
 use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath};
@@ -423,14 +435,33 @@ fn setup(
     let detail_normal_array = normal_array.clone();
     let detail_orm_array = orm_array.clone();
 
-    commands.spawn((
-        Clipmap {
-            half_width: 128,
-            levels: 8,
-            base_scale: 1.0,
-            texel_size: 8.0,
-            target,
-            heightmap: asset_server
+    // Terrain heights and world footprint, shared by every source below.
+    const HEIGHT_MIN: f32 = -1312.5;
+    const HEIGHT_MAX: f32 = 1312.5;
+    const WORLD_SIZE_M: f32 = 8192.0;
+
+    // Terrain source: WILDERNESS_NEW=<texels> starts a fresh flat terrain from
+    // scratch (the editor-core path: build a TerrainField, add its image, and
+    // insert EditableTerrain directly); WILDERNESS_HEIGHTMAP loads an
+    // alternate asset (e.g. a previous export); default is the shipped 1024²
+    // map. A fresh terrain keeps the same world footprint — resolution
+    // changes texel density, not scale.
+    let (texel_size, heightmap, from_scratch) = match std::env::var("WILDERNESS_NEW") {
+        Ok(size) => {
+            let size: u32 = size
+                .parse()
+                .expect("WILDERNESS_NEW must be a texel count like 4096");
+            let texel_size = WORLD_SIZE_M / size as f32;
+            let field = TerrainField::flat(
+                size, size, texel_size, HEIGHT_MIN, HEIGHT_MAX, true, // looping
+                0.0,  // a flat plain at sea level
+            );
+            let heightmap = images.add(field.to_image());
+            (texel_size, heightmap, Some(EditableTerrain::new(field)))
+        }
+        Err(_) => (
+            8.0,
+            asset_server
                 .load_builder()
                 .with_settings(|settings: &mut ImageLoaderSettings| {
                     settings.is_srgb = false;
@@ -441,86 +472,100 @@ fn setup(
                     std::env::var("WILDERNESS_HEIGHTMAP")
                         .unwrap_or_else(|_| "heightmap_1024x1024.ktx2".into()),
                 ),
-            albedo_array,
-            normal_array,
-            orm_array,
-            layers: vec![
-                TerrainLayer {
-                    tiling_scale: 150.0,
-                    height_blend: 0.3,
-                    normal_strength: 1.0,
-                    roughness: 0.99,
-                    slope: None,
-                    height: Some(HeightRule {
-                        min: -2000.0,
-                        max: 700.0,
-                        blend: 250.0,
-                    }),
-                },
-                TerrainLayer {
-                    tiling_scale: 300.0,
-                    height_blend: 0.5,
-                    normal_strength: 1.3,
-                    roughness: 0.96,
-                    slope: Some(SlopeRule {
-                        min_deg: 25.0,
-                        max_deg: 55.0,
-                        blend_deg: 10.0,
-                    }),
-                    height: Some(HeightRule {
-                        min: -2000.0,
-                        max: 700.0,
-                        blend: 250.0,
-                    }),
-                },
-                TerrainLayer {
-                    tiling_scale: 150.0,
-                    height_blend: 0.95,
-                    normal_strength: 1.3,
-                    roughness: 0.94,
-                    slope: Some(SlopeRule {
-                        min_deg: 45.0,
-                        max_deg: 90.0,
-                        blend_deg: 12.0,
-                    }),
-                    height: None,
-                },
-                TerrainLayer {
-                    tiling_scale: 100.0,
-                    height_blend: 0.4,
-                    normal_strength: 0.4,
-                    roughness: 0.7,
-                    slope: Some(SlopeRule {
-                        min_deg: 0.0,
-                        max_deg: 35.0,
-                        blend_deg: 12.0,
-                    }),
-                    height: Some(HeightRule {
-                        min: 500.0,
-                        max: 800.0,
-                        blend: 250.0,
-                    }),
-                },
-            ],
-            detail: DetailConfig {
-                albedo_array: detail_albedo_array,
-                normal_array: detail_normal_array,
-                orm_array: detail_orm_array,
-                tiling: 50.0,
-                normal_strength: 0.8,
-                albedo_strength: 0.8,
-                near: 60.0,
-                far: 600.0,
+            None,
+        ),
+    };
+
+    let mut terrain = commands.spawn(Clipmap {
+        half_width: 128,
+        levels: 8,
+        base_scale: 1.0,
+        texel_size,
+        target,
+        heightmap,
+        albedo_array,
+        normal_array,
+        orm_array,
+        layers: vec![
+            TerrainLayer {
+                tiling_scale: 150.0,
+                height_blend: 0.3,
+                normal_strength: 1.0,
+                roughness: 0.99,
+                slope: None,
+                height: Some(HeightRule {
+                    min: -2000.0,
+                    max: 700.0,
+                    blend: 250.0,
+                }),
             },
-            min: -1312.5,
-            max: 1312.5,
-            wireframe: false,
-            looping: true,
-            // The editor creates and assigns the mask overlay texture once the
-            // heightmap loads.
-            edit_overlay: None,
+            TerrainLayer {
+                tiling_scale: 300.0,
+                height_blend: 0.5,
+                normal_strength: 1.3,
+                roughness: 0.96,
+                slope: Some(SlopeRule {
+                    min_deg: 25.0,
+                    max_deg: 55.0,
+                    blend_deg: 10.0,
+                }),
+                height: Some(HeightRule {
+                    min: -2000.0,
+                    max: 700.0,
+                    blend: 250.0,
+                }),
+            },
+            TerrainLayer {
+                tiling_scale: 150.0,
+                height_blend: 0.95,
+                normal_strength: 1.3,
+                roughness: 0.94,
+                slope: Some(SlopeRule {
+                    min_deg: 45.0,
+                    max_deg: 90.0,
+                    blend_deg: 12.0,
+                }),
+                height: None,
+            },
+            TerrainLayer {
+                tiling_scale: 100.0,
+                height_blend: 0.4,
+                normal_strength: 0.4,
+                roughness: 0.7,
+                slope: Some(SlopeRule {
+                    min_deg: 0.0,
+                    max_deg: 35.0,
+                    blend_deg: 12.0,
+                }),
+                height: Some(HeightRule {
+                    min: 500.0,
+                    max: 800.0,
+                    blend: 250.0,
+                }),
+            },
+        ],
+        detail: DetailConfig {
+            albedo_array: detail_albedo_array,
+            normal_array: detail_normal_array,
+            orm_array: detail_orm_array,
+            tiling: 50.0,
+            normal_strength: 0.8,
+            albedo_strength: 0.8,
+            near: 60.0,
+            far: 600.0,
         },
-        // The one line that makes the terrain editable.
-        Editable,
-    ));
+        min: HEIGHT_MIN,
+        max: HEIGHT_MAX,
+        wireframe: false,
+        looping: true,
+        // The editor creates and assigns the mask overlay texture.
+        edit_overlay: None,
+    });
+    match from_scratch {
+        // From-scratch terrain: the field exists already, insert it directly.
+        Some(editable) => terrain.insert(editable),
+        // Loaded terrain: the marker makes the editor decode the image into
+        // the authoritative field once it arrives.
+        None => terrain.insert(Editable),
+    };
 }

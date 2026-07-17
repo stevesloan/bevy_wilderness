@@ -46,11 +46,11 @@ impl Plugin for TerrainEditorUiPlugin {
         app.init_resource::<UiExportPath>()
             .add_systems(EguiPrimaryContextPass, editor_panel)
             .add_systems(
-            Update,
-            // Before the shared pick, so a brush stroke can't land through a
-            // panel the same frame the pointer moves onto it.
-            block_pointer_over_ui.before(EditorSet::Pick),
-        );
+                Update,
+                // Before the shared pick, so a brush stroke can't land through a
+                // panel the same frame the pointer moves onto it.
+                block_pointer_over_ui.before(EditorSet::Pick),
+            );
     }
 }
 
@@ -177,15 +177,14 @@ fn editor_panel(
             ui.label("Mask");
             ui.horizontal(|ui| {
                 let any_mask = terrains.p0().iter().any(|t| t.mask_active());
-                if ui.add_enabled(any_mask, egui::Button::new("Clear mask")).clicked() {
+                if ui
+                    .add_enabled(any_mask, egui::Button::new("Clear mask"))
+                    .clicked()
+                {
                     for (entity, mut terrain) in &mut terrains.p1() {
                         if terrain.mask_active() {
                             history.begin(entity, "Clear Mask");
-                            history.capture(
-                                &terrain,
-                                UndoBuffer::Mask,
-                                terrain.field.full_rect(),
-                            );
+                            history.capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
                             terrain.clear_mask();
                             history.seal();
                         }

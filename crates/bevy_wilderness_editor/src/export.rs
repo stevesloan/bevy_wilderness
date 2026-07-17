@@ -266,7 +266,11 @@ mod tests {
         );
         let decoded = image::open(&path).expect("must reopen").into_luma16();
         assert_eq!(decoded.dimensions(), (32, 32));
-        assert_eq!(decoded.into_raw(), texels, "PNG round-trip must be lossless");
+        assert_eq!(
+            decoded.into_raw(),
+            texels,
+            "PNG round-trip must be lossless"
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -280,9 +284,15 @@ mod tests {
         assert_eq!(write_export(&ktx2_path, dims, texels.clone()), None);
         assert_eq!(write_export(&png_path, dims, texels), None);
         let ktx2_bytes = std::fs::read(&ktx2_path).unwrap();
-        assert!(ktx2_bytes.starts_with(&[0xAB, 0x4B, 0x54, 0x58]), "KTX2 magic");
+        assert!(
+            ktx2_bytes.starts_with(&[0xAB, 0x4B, 0x54, 0x58]),
+            "KTX2 magic"
+        );
         let png_bytes = std::fs::read(&png_path).unwrap();
-        assert!(png_bytes.starts_with(&[0x89, b'P', b'N', b'G']), "PNG magic");
+        assert!(
+            png_bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+            "PNG magic"
+        );
         std::fs::remove_file(&ktx2_path).ok();
         std::fs::remove_file(&png_path).ok();
     }

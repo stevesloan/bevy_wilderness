@@ -52,6 +52,10 @@ pub struct EditableTerrain {
 }
 
 impl EditableTerrain {
+    /// An editable terrain whose display heightmap already matches `field`
+    /// (e.g. the clipmap's image came from [`TerrainField::to_image`]).
+    /// Considered synced: the first edit flush arms the re-bake debounce like
+    /// any other.
     pub fn new(field: TerrainField) -> Self {
         let mask = vec![0.0; (field.dimensions().x * field.dimensions().y) as usize];
         Self {
@@ -60,15 +64,18 @@ impl EditableTerrain {
             mask_nonzero: 0,
             dirty: Vec::new(),
             dirty_mask: Vec::new(),
-            synced_once: false,
+            synced_once: true,
         }
     }
 
     /// Like [`new`](Self::new), but with the whole field marked dirty so the
     /// first sync derives the entire display heightmap from the f32 field.
+    /// That initial full flush doesn't schedule a re-bake (the spawn bake is
+    /// already on its way).
     pub fn fully_dirty(field: TerrainField) -> Self {
         let mut terrain = Self::new(field);
         terrain.dirty = vec![terrain.field.full_rect()];
+        terrain.synced_once = false;
         terrain
     }
 
@@ -187,18 +194,17 @@ pub struct TerrainRegionChanged {
 #[allow(clippy::type_complexity)]
 pub(crate) fn init_editable_terrains(
     mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    mut clipmaps: Query<(Entity, &mut Clipmap), (With<Editable>, Without<EditableTerrain>)>,
+    images: Res<Assets<Image>>,
+    clipmaps: Query<(Entity, &Clipmap), (With<Editable>, Without<EditableTerrain>)>,
 ) {
-    for (entity, mut clipmap) in &mut clipmaps {
+    for (entity, clipmap) in &clipmaps {
         let Some(image) = images.get(&clipmap.heightmap) else {
             continue; // still loading
         };
         // A PNG heightmap can appear tagged `R16Uint` for a frame before the
         // renderer's `PreUpdate` retag relabels it — pending, not broken.
         // Never treat it as a failure (that would strip `Editable` for good).
-        if image.texture_descriptor.format
-            == bevy::render::render_resource::TextureFormat::R16Uint
+        if image.texture_descriptor.format == bevy::render::render_resource::TextureFormat::R16Uint
         {
             continue;
         }
@@ -216,10 +222,26 @@ pub(crate) fn init_editable_terrains(
             commands.entity(entity).remove::<Editable>();
             continue;
         };
-        // The mask overlay visualization texture: one R8 texel per heightmap
-        // texel, zeroed. Assigning it to the clipmap routes it into the
-        // terrain material (the renderer's editing API).
-        let dims = field.dimensions();
+        commands
+            .entity(entity)
+            .insert(EditableTerrain::fully_dirty(field));
+    }
+}
+
+/// Give every editable terrain a mask overlay visualization texture (one R8
+/// texel per heightmap texel, zeroed); assigning it to the clipmap routes it
+/// into the terrain material (the renderer's editing API). Runs for any
+/// [`EditableTerrain`] — the [`Editable`]-decode path and directly-inserted
+/// from-scratch terrains alike.
+pub(crate) fn init_edit_overlays(
+    mut images: ResMut<Assets<Image>>,
+    mut terrains: Query<(&EditableTerrain, &mut Clipmap)>,
+) {
+    for (terrain, mut clipmap) in &mut terrains {
+        if clipmap.edit_overlay.is_some() {
+            continue;
+        }
+        let dims = terrain.field.dimensions();
         let overlay = images.add(Image::new(
             bevy::render::render_resource::Extent3d {
                 width: dims.x,
@@ -233,9 +255,6 @@ pub(crate) fn init_editable_terrains(
                 | bevy::asset::RenderAssetUsages::RENDER_WORLD,
         ));
         clipmap.edit_overlay = Some(overlay);
-        commands
-            .entity(entity)
-            .insert(EditableTerrain::fully_dirty(field));
     }
 }
 
