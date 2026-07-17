@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use crate::cursor::TerrainCursor;
 use crate::settings::{BrushSettings, SculptMode};
 use crate::terrain::EditableTerrain;
+use crate::undo::UndoHistory;
 
 /// Per-stroke state: the flatten target is the terrain height under the cursor
 /// when the stroke starts, so a whole drag levels toward one plane.
@@ -18,17 +19,21 @@ pub(crate) struct StrokeState {
 }
 
 /// Apply the brush to the terrain under the cursor while LMB is held. Runs in
-/// `EditorSet::Tools`, gated on the sculpt tool being active.
+/// `EditorSet::Tools`, gated on the sculpt tool being active. Each stroke is
+/// one undo entry: begun on press, captured as it touches tiles, sealed on
+/// release.
 pub(crate) fn apply_sculpt(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     cursor: Res<TerrainCursor>,
     brush: Res<BrushSettings>,
+    mut history: ResMut<UndoHistory>,
     mut terrains: Query<&mut EditableTerrain>,
     mut stroke: Local<StrokeState>,
 ) {
     if !buttons.pressed(MouseButton::Left) {
         stroke.flatten_target = None;
+        history.seal();
         return;
     }
     let Some(hit) = cursor.0 else {
@@ -37,6 +42,10 @@ pub(crate) fn apply_sculpt(
     let Ok(mut terrain) = terrains.get_mut(hit.terrain) else {
         return;
     };
+    if stroke.flatten_target.is_none() {
+        // First frame of the stroke (or first frame back over terrain).
+        history.begin(hit.terrain, format!("Sculpt ({:?})", brush.mode));
+    }
     let flatten_target = *stroke
         .flatten_target
         .get_or_insert_with(|| terrain.field.height_at(hit.position.xz()));
@@ -46,6 +55,7 @@ pub(crate) fn apply_sculpt(
         &brush,
         time.delta_secs(),
         flatten_target,
+        &mut history,
     );
 }
 
@@ -59,6 +69,7 @@ pub(crate) fn sculpt_at(
     brush: &BrushSettings,
     dt: f32,
     flatten_target: f32,
+    history: &mut UndoHistory,
 ) {
     let radius_texels = brush.radius / terrain.field.texel_size();
     if radius_texels <= 0.0 {
@@ -67,6 +78,11 @@ pub(crate) fn sculpt_at(
     let min = (center - radius_texels).floor().as_ivec2();
     let max = (center + radius_texels).ceil().as_ivec2() + IVec2::ONE;
     let (encode_min, encode_max) = terrain.field.min_max();
+
+    // Snapshot first-touch undo tiles *before* mutating (D8).
+    for rect in terrain.field.wrap_rect(min, max) {
+        history.capture(&terrain.field, rect);
+    }
 
     for y in min.y..max.y {
         for x in min.x..max.x {
@@ -139,6 +155,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
+            &mut UndoHistory::default(),
         );
         let center = terrain.field.get(16, 16);
         let mid = terrain.field.get(18, 16);
@@ -159,6 +176,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
+            &mut UndoHistory::default(),
         );
         assert!(terrain.field.get(0, 16) > 9.9);
         assert!(
@@ -174,6 +192,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
+            &mut UndoHistory::default(),
         );
         assert_eq!(terrain.field.get(30, 16), 0.0);
     }
@@ -195,6 +214,7 @@ mod tests {
             &brush(SculptMode::Flatten),
             20.0,
             5.0,
+            &mut UndoHistory::default(),
         );
         let after = terrain.field.get(16, 16);
         assert!(
@@ -214,6 +234,7 @@ mod tests {
             &brush(SculptMode::Raise),
             10.0,
             0.0,
+            &mut UndoHistory::default(),
         );
         // 15 + 10*10 would be 115; the field clamps to the R16 max so the
         // display map can't silently diverge from the authoritative field.

@@ -11,6 +11,7 @@
 //! - [`TerrainHeight`] — height at (x, z), for snapping props to the surface.
 //! - [`TerrainRegionChanged`] — emitted when terrain changes; re-snap props.
 //! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
+//! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
 
 use bevy::prelude::*;
 
@@ -21,12 +22,14 @@ mod sculpt;
 mod settings;
 mod terrain;
 mod tools;
+mod undo;
 
 pub use cursor::{TerrainCursor, TerrainHit};
 pub use field::TerrainField;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
+pub use undo::{UNDO_TILE_SIZE, UndoHistory};
 
 /// The editor's `Update` phases. Host tool systems go in
 /// [`Tools`](EditorSet::Tools), between the shared pick and the flush:
@@ -55,6 +58,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<TerrainCursor>()
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
+            .init_resource::<UndoHistory>()
             .add_message::<TerrainRegionChanged>()
             .configure_sets(
                 Update,

@@ -11,6 +11,7 @@
 //! - **1 / 2 / 3 / 4** — Raise / Lower / Smooth / Flatten
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
+//! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
 //! - **P** — switch to the demo probe tool (logs edit events); **S** back to sculpt
 
 use bevy::{
@@ -31,8 +32,8 @@ use bevy_wilderness::{
     SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, Editable, EditorSet, EditorTools, SculptMode, TerrainCursor,
-    TerrainEditorPlugin, TerrainRegionChanged, ToolId, tool_active,
+    ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, SculptMode,
+    TerrainCursor, TerrainEditorPlugin, TerrainRegionChanged, ToolId, UndoHistory, tool_active,
 };
 
 /// The demo third-party tool: proves a host-registered tool receives the shared
@@ -51,7 +52,10 @@ fn main() {
         .add_plugins(HeightFogPlugin)
         .add_plugins(TerrainEditorPlugin)
         .add_systems(Startup, (setup, register_probe_tool))
-        .add_systems(Update, (update_sun_color, brush_controls, draw_brush_ring))
+        .add_systems(
+            Update,
+            (update_sun_color, brush_controls, undo_keys, draw_brush_ring),
+        )
         .add_systems(
             Update,
             probe_tool
@@ -110,6 +114,31 @@ fn brush_controls(
     if keys.just_pressed(KeyCode::KeyP) {
         active.0 = Some(PROBE);
         info!("tool: demo probe");
+    }
+}
+
+/// Ctrl+Z / Ctrl+Shift+Z driving the editor's undo history — the same
+/// `UndoHistory` calls a UI's buttons will make.
+fn undo_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut history: ResMut<UndoHistory>,
+    mut terrains: Query<&mut EditableTerrain>,
+) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if !ctrl || !keys.just_pressed(KeyCode::KeyZ) {
+        return;
+    }
+    if shift {
+        match history.redo(&mut terrains) {
+            Some(label) => info!("redo: {label}"),
+            None => info!("nothing to redo"),
+        }
+    } else {
+        match history.undo(&mut terrains) {
+            Some(label) => info!("undo: {label}"),
+            None => info!("nothing to undo"),
+        }
     }
 }
 

@@ -130,6 +130,31 @@ impl TerrainField {
         (((h - self.min) / (self.max - self.min)).clamp(0.0, 1.0) * 65535.0).round() as u16
     }
 
+    /// Copy `rect`'s heights (texel space, max-exclusive, in-bounds) row-major —
+    /// the undo system's tile snapshots.
+    pub fn copy_rect(&self, rect: URect) -> Vec<f32> {
+        debug_assert!(rect.max.x <= self.width && rect.max.y <= self.height);
+        let mut out = Vec::with_capacity((rect.width() * rect.height()) as usize);
+        for y in rect.min.y..rect.max.y {
+            let row = (y * self.width + rect.min.x) as usize;
+            out.extend_from_slice(&self.heights[row..row + rect.width() as usize]);
+        }
+        out
+    }
+
+    /// Write `data` (row-major, `rect`-sized) back into `rect` — the undo
+    /// system's restore. The inverse of [`Self::copy_rect`].
+    pub fn paste_rect(&mut self, rect: URect, data: &[f32]) {
+        debug_assert!(rect.max.x <= self.width && rect.max.y <= self.height);
+        debug_assert_eq!(data.len(), (rect.width() * rect.height()) as usize);
+        for (i, y) in (rect.min.y..rect.max.y).enumerate() {
+            let row = (y * self.width + rect.min.x) as usize;
+            let src = i * rect.width() as usize;
+            self.heights[row..row + rect.width() as usize]
+                .copy_from_slice(&data[src..src + rect.width() as usize]);
+        }
+    }
+
     /// Field dimensions in texels.
     pub fn dimensions(&self) -> UVec2 {
         UVec2::new(self.width, self.height)
