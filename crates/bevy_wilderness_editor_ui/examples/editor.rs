@@ -30,7 +30,7 @@
 //! assets dir in both formats: `heightmap_export.ktx2` (the engine master)
 //! and `heightmap_export.png` (16-bit interchange, e.g. for a physics
 //! pipeline's collision heightfield). To prove the round-trip, restart
-//! loading the KTX2:
+//! loading either export (the renderer retags the PNG's `R16Uint` in place):
 //!
 //! ```sh
 //! WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 \

@@ -316,7 +316,13 @@ the requested path's extension —
 - **16-bit grayscale PNG** (interchange): required by the game — its physics
   pipeline builds the Avian collision heightfield from the PNG via standard
   image decoding (which is lossless for R16, just off the engine's loader
-  path). Also opens in DCC tools.
+  path). Also opens in DCC tools. The *renderer* loads it too:
+  `R16Uint` is byte-identical to `R16Unorm`, so `ClipmapPlugin` retags a
+  clipmap's Uint heightmap in `PreUpdate` (a relabel, not a transcode),
+  before `init_clipmaps` or render extraction read it. So a game can ship
+  *one* PNG for both terrain and physics: same VRAM/runtime cost as KTX2,
+  smaller on disk (zlib), at a one-time decode cost on load (~100 ms at
+  4096²). KTX2 remains the memcpy-fast option.
 
 Round-trip requires the same `min`/`max` encode range on the loading
 `Clipmap` (inherent to R16, same as the shipped asset).

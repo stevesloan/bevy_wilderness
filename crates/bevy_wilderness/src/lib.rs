@@ -27,7 +27,7 @@ pub use mesh_fog::HeightFogExtension;
 pub use quality::{FogTier, InlineFog, TerrainFog, TerrainQuality};
 pub use texture::{build_terrain_array, load_terrain_array};
 
-use clipmap::{init_clipmaps, init_grids, update_grids};
+use clipmap::{init_clipmaps, init_grids, retag_png_heightmaps, update_grids};
 use material::GridMaterial;
 use rvt::{BakeMaterial, drive_rvt_bake, init_rvt, warn_late_quality, warn_unbaked_terrain};
 
@@ -52,7 +52,23 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
-            .add_systems(PreUpdate, (init_clipmaps, init_grids))
+            .add_systems(
+                PreUpdate,
+                (
+                    // PNG heightmaps arrive tagged R16Uint; retag before
+                    // anything reads the image (see the system's docs).
+                    // ⚠️ Must run *after* bevy applies freshly loaded assets
+                    // (`handle_internal_asset_events`, which is
+                    // `ambiguous_with_all`) — without the explicit ordering
+                    // the load-frame image can slip past the retag and reach
+                    // consumers still tagged Uint.
+                    retag_png_heightmaps
+                        .after(bevy::asset::AssetTrackingSystems)
+                        .before(init_clipmaps),
+                    init_clipmaps,
+                    init_grids,
+                ),
+            )
             .add_systems(
                 Update,
                 (

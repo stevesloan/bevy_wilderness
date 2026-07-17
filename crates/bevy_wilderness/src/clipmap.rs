@@ -195,6 +195,42 @@ pub struct ClipmapReady;
 #[derive(Component)]
 pub struct RebakeRequested;
 
+/// Flip an `R16Uint` tag to `R16Unorm` in place. The two formats share a
+/// byte-identical texel layout — one 16-bit value per texel — differing only
+/// in how samplers interpret it, so this is a relabel, not a transcode.
+/// Returns whether the image was retagged.
+fn retag_r16uint(image: &mut Image) -> bool {
+    if image.texture_descriptor.format == TextureFormat::R16Uint {
+        image.texture_descriptor.format = TextureFormat::R16Unorm;
+        true
+    } else {
+        false
+    }
+}
+
+/// bevy decodes a 16-bit grayscale PNG heightmap as `R16Uint`, which would
+/// break every terrain binding (they want Float-filterable samplers) and the
+/// CPU readers (`Heightfield` requires `R16Unorm`). Retag it in `PreUpdate`,
+/// before `init_clipmaps` or the render world's extraction consume the image
+/// — so a PNG heightmap is a first-class asset and a host can ship one file
+/// for both terrain and physics (e.g. an Avian collision heightfield reads
+/// the same PNG through a standard image decoder).
+pub(crate) fn retag_png_heightmaps(
+    mut images: ResMut<Assets<Image>>,
+    clipmaps: Query<&Clipmap>,
+) {
+    for clipmap in &clipmaps {
+        // `get_mut` only on a mismatch — it marks the asset modified, which
+        // would re-upload every heightmap every frame otherwise.
+        let needs_retag = images
+            .get(&clipmap.heightmap)
+            .is_some_and(|image| image.texture_descriptor.format == TextureFormat::R16Uint);
+        if needs_retag && let Some(mut image) = images.get_mut(&clipmap.heightmap) {
+            retag_r16uint(&mut image);
+        }
+    }
+}
+
 pub(crate) fn init_clipmaps(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -535,5 +571,34 @@ impl SunVisibility<'_, '_> {
             return Some(field.sun_visibility(world_pos, rvt.sun_direction));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::asset::RenderAssetUsages;
+    use bevy::render::render_resource::{Extent3d, TextureDimension};
+
+    #[test]
+    fn r16uint_heightmap_retags_to_unorm() {
+        // Simulate what bevy's PNG decoder produces: R16 bytes tagged R16Uint.
+        let mut image = Image::new(
+            Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![0; 32],
+            TextureFormat::R16Uint,
+            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        );
+        let data_before = image.data.clone();
+        assert!(retag_r16uint(&mut image));
+        assert_eq!(image.texture_descriptor.format, TextureFormat::R16Unorm);
+        assert_eq!(image.data, data_before, "a relabel, not a transcode");
+        // Already-Unorm images are left untouched (no spurious re-upload).
+        assert!(!retag_r16uint(&mut image));
     }
 }

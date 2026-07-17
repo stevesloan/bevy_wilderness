@@ -13,6 +13,10 @@ use crate::field::TerrainField;
 ///
 /// The heightmap must be `R16Unorm` with CPU-resident data
 /// (`RenderAssetUsages::MAIN_WORLD | RENDER_WORLD` — the loader default).
+/// A 16-bit grayscale PNG works too: bevy decodes it as `R16Uint` — the same
+/// bytes, wrongly tagged for sampling — and `ClipmapPlugin` retags it to
+/// `R16Unorm` in `PreUpdate`, before either the renderer or this editor
+/// reads it.
 ///
 /// To start from scratch instead of a file, build a [`TerrainField`] yourself
 /// (e.g. [`TerrainField::flat`]), `images.add(field.to_image())` for the
@@ -190,6 +194,14 @@ pub(crate) fn init_editable_terrains(
         let Some(image) = images.get(&clipmap.heightmap) else {
             continue; // still loading
         };
+        // A PNG heightmap can appear tagged `R16Uint` for a frame before the
+        // renderer's `PreUpdate` retag relabels it — pending, not broken.
+        // Never treat it as a failure (that would strip `Editable` for good).
+        if image.texture_descriptor.format
+            == bevy::render::render_resource::TextureFormat::R16Uint
+        {
+            continue;
+        }
         let Some(field) = TerrainField::from_image(
             image,
             clipmap.texel_size,
