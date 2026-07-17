@@ -206,6 +206,15 @@ impl UndoHistory {
         Some(entry.label.clone())
     }
 
+    /// Drop all history (undo, redo, and any open gesture). Called when the
+    /// whole field is replaced — a new or loaded terrain — since the tile
+    /// snapshots describe a field that no longer exists.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.cursor = 0;
+        self.pending = None;
+    }
+
     /// Whether a gesture is currently open (between [`begin`](Self::begin) and
     /// [`seal`](Self::seal)). Deferred appliers (the erosion result landing
     /// from its background task) check this and wait a frame, so they never

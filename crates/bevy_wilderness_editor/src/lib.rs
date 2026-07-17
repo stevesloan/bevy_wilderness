@@ -19,6 +19,9 @@
 //! - [`ExportRequested`] / [`HeightmapExported`] — write the heightmap to an
 //!   R16 KTX2 (round-trips through the asset loader) and/or a 16-bit PNG
 //!   interchange copy, by extension (D7).
+//! - [`NewTerrainRequested`] / [`LoadRequested`] / [`TerrainLoaded`] — reset a
+//!   terrain to a fresh flat plain (the default starting state) or load a
+//!   heightmap file into it at runtime.
 //! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
 
 use bevy::prelude::*;
@@ -32,6 +35,7 @@ mod rebake;
 mod sculpt;
 mod seam;
 mod settings;
+mod swap;
 mod terrain;
 mod tools;
 mod undo;
@@ -42,6 +46,7 @@ pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
 pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
+pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{UNDO_TILE_SIZE, UndoBuffer, UndoHistory};
@@ -81,6 +86,9 @@ impl Plugin for TerrainEditorPlugin {
             .add_message::<ErosionRequested>()
             .add_message::<ExportRequested>()
             .add_message::<HeightmapExported>()
+            .add_message::<NewTerrainRequested>()
+            .add_message::<LoadRequested>()
+            .add_message::<TerrainLoaded>()
             .configure_sets(
                 Update,
                 (EditorSet::Pick, EditorSet::Tools, EditorSet::Apply).chain(),
@@ -88,7 +96,15 @@ impl Plugin for TerrainEditorPlugin {
             .add_systems(
                 Update,
                 (
-                    (terrain::init_editable_terrains, terrain::init_edit_overlays)
+                    // New/load swaps run first so the fresh EditableTerrain and
+                    // reset overlay are in place before init and the pick; the
+                    // chained sync point makes their inserts visible downstream.
+                    (
+                        swap::apply_new_terrain,
+                        swap::apply_load,
+                        terrain::init_editable_terrains,
+                        terrain::init_edit_overlays,
+                    )
                         .chain()
                         .before(EditorSet::Pick),
                     cursor::update_terrain_cursor.in_set(EditorSet::Pick),

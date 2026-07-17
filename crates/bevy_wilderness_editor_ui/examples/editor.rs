@@ -26,6 +26,12 @@
 //! whenever the ground under them changes — sculpt or erode under one and
 //! watch it follow.
 //!
+//! The editor opens on a **new terrain** by default: a flat plain at the D1
+//! 4096² working resolution over an 8192 m world footprint. Sculpt it, erode
+//! it, export it — the exports are the new terrain's master files. The panel's
+//! **New** button starts over (at a chosen resolution) and **Load terrain…**
+//! opens an existing heightmap through a file dialog, both without a restart.
+//!
 //! The panel's Export button saves the heightmap into the renderer crate's
 //! assets dir in both formats: `heightmap_export.ktx2` (the engine master)
 //! and `heightmap_export.png` (16-bit interchange, e.g. for a physics
@@ -37,17 +43,13 @@
 //!     cargo run -p bevy_wilderness_editor_ui --example editor
 //! ```
 //!
-//! To start a **new terrain from scratch** instead of loading one, set
-//! `WILDERNESS_NEW` to the resolution in texels — e.g. the design-target
-//! 4096² working map (D1):
+//! `WILDERNESS_NEW=<texels>` changes the default terrain's starting resolution
+//! (the world footprint is unchanged — resolution is texel density, not
+//! scale):
 //!
 //! ```sh
-//! WILDERNESS_NEW=4096 cargo run -p bevy_wilderness_editor_ui --example editor
+//! WILDERNESS_NEW=2048 cargo run -p bevy_wilderness_editor_ui --example editor
 //! ```
-//!
-//! The fresh terrain is a flat plain over the same 8192 m world footprint
-//! (resolution changes texel density, not world size). Sculpt it, erode it,
-//! export it — the exports are the new terrain's master files.
 
 use bevy::{
     camera::{Exposure, Hdr},
@@ -440,17 +442,33 @@ fn setup(
     const HEIGHT_MAX: f32 = 1312.5;
     const WORLD_SIZE_M: f32 = 8192.0;
 
-    // Terrain source: WILDERNESS_NEW=<texels> starts a fresh flat terrain from
-    // scratch (the editor-core path: build a TerrainField, add its image, and
-    // insert EditableTerrain directly); WILDERNESS_HEIGHTMAP loads an
-    // alternate asset (e.g. a previous export); default is the shipped 1024²
-    // map. A fresh terrain keeps the same world footprint — resolution
-    // changes texel density, not scale.
-    let (texel_size, heightmap, from_scratch) = match std::env::var("WILDERNESS_NEW") {
-        Ok(size) => {
-            let size: u32 = size
-                .parse()
-                .expect("WILDERNESS_NEW must be a texel count like 4096");
+    // Terrain source: the editor opens on a **new terrain** by default — a flat
+    // plain built through the editor-core path (a TerrainField, its image, an
+    // EditableTerrain inserted directly). WILDERNESS_NEW=<texels> changes the
+    // starting resolution; WILDERNESS_HEIGHTMAP=<file> opens an existing
+    // heightmap instead (e.g. a previous export — the D7 round-trip). A fresh
+    // terrain keeps the same world footprint — resolution changes texel
+    // density, not scale. The "New" and "Load terrain…" buttons do the same at
+    // runtime.
+    let (texel_size, heightmap, from_scratch) = match std::env::var("WILDERNESS_HEIGHTMAP") {
+        Ok(path) => (
+            8.0,
+            asset_server
+                .load_builder()
+                .with_settings(|settings: &mut ImageLoaderSettings| {
+                    settings.is_srgb = false;
+                })
+                .load(path),
+            None,
+        ),
+        Err(_) => {
+            let size: u32 = std::env::var("WILDERNESS_NEW")
+                .ok()
+                .map(|size| {
+                    size.parse()
+                        .expect("WILDERNESS_NEW must be a texel count like 4096")
+                })
+                .unwrap_or(4096); // the D1 working resolution
             let texel_size = WORLD_SIZE_M / size as f32;
             let field = TerrainField::flat(
                 size, size, texel_size, HEIGHT_MIN, HEIGHT_MAX, true, // looping
@@ -459,21 +477,6 @@ fn setup(
             let heightmap = images.add(field.to_image());
             (texel_size, heightmap, Some(EditableTerrain::new(field)))
         }
-        Err(_) => (
-            8.0,
-            asset_server
-                .load_builder()
-                .with_settings(|settings: &mut ImageLoaderSettings| {
-                    settings.is_srgb = false;
-                })
-                // WILDERNESS_HEIGHTMAP overrides the heightmap asset path —
-                // point it at an export to prove the D7 round-trip.
-                .load(
-                    std::env::var("WILDERNESS_HEIGHTMAP")
-                        .unwrap_or_else(|_| "heightmap_1024x1024.ktx2".into()),
-                ),
-            None,
-        ),
     };
 
     let mut terrain = commands.spawn(Clipmap {

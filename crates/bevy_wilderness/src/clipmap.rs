@@ -491,28 +491,41 @@ pub(crate) fn update_grids(
     }
 }
 
-/// Applies a changed [`Clipmap::edit_overlay`] to the clipmap's materials
-/// (`editing` feature). The materials are built at spawn, before an editor has
-/// typically created the overlay texture (it needs the loaded heightmap's
-/// dimensions) — this picks up the later assignment.
+/// Applies editor-driven [`Clipmap`] changes to the clipmap's materials
+/// (`editing` feature). The materials are built once at spawn, so anything an
+/// editor mutates afterward must be re-synced here: the `edit_overlay`
+/// assignment (created after the heightmap loads — it needs its dimensions),
+/// and the `heightmap` / `texel_size` / `min`/`max` swap a runtime new/load
+/// performs — without this the vertex shader keeps displacing from the *old*
+/// heightmap while the bake reads the new one, and the terrain looks flat.
 #[cfg(feature = "editing")]
-pub(crate) fn sync_edit_overlay(
+pub(crate) fn sync_editable_materials(
     clipmaps: Query<(&Clipmap, &ClipmapMaterials), Changed<Clipmap>>,
     mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
 ) {
     for (clipmap, mats) in &clipmaps {
-        let Some(overlay) = &clipmap.edit_overlay else {
-            continue;
-        };
+        let minmax = Vec2::new(clipmap.min, clipmap.max);
         for handle in [&mats.solid, &mats.wireframe] {
             // Check before `get_mut`: mutable access alone marks the material
             // modified and rebuilds its bind group.
-            if materials
-                .get(handle)
-                .is_some_and(|m| m.extension.edit_overlay != *overlay)
-                && let Some(mut material) = materials.get_mut(handle)
-            {
-                material.extension.edit_overlay = overlay.clone();
+            let in_sync = materials.get(handle).is_some_and(|m| {
+                m.extension.heightmap == clipmap.heightmap
+                    && m.extension.texel_size == clipmap.texel_size
+                    && m.extension.minmax == minmax
+                    && clipmap
+                        .edit_overlay
+                        .as_ref()
+                        .is_none_or(|overlay| m.extension.edit_overlay == *overlay)
+            });
+            if !in_sync && let Some(mut material) = materials.get_mut(handle) {
+                material.extension.heightmap = clipmap.heightmap.clone();
+                material.extension.texel_size = clipmap.texel_size;
+                material.extension.minmax = minmax;
+                // `None` keeps the current binding (spawn's stub or a previous
+                // overlay) — an editor resets it right before re-creating.
+                if let Some(overlay) = &clipmap.edit_overlay {
+                    material.extension.edit_overlay = overlay.clone();
+                }
             }
         }
     }

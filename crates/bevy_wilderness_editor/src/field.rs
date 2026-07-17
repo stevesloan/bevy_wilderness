@@ -60,7 +60,29 @@ impl TerrainField {
         })
     }
 
-    /// A flat field at `initial` meters, e.g. to start a new terrain from scratch.
+    /// Build a field directly from raw `R16` texels (row-major, `dims.x *
+    /// dims.y` of them) — the load path for a 16-bit grayscale PNG, whose
+    /// decoder hands back `u16` samples rather than a bevy `Image`. The
+    /// `to_r16` inverse.
+    pub fn from_r16(texels: &[u16], dims: UVec2, texel_size: f32, min: f32, max: f32, looping: bool) -> Self {
+        debug_assert_eq!(texels.len(), (dims.x * dims.y) as usize);
+        let heights = texels
+            .iter()
+            .map(|&t| t as f32 / 65535.0 * (max - min) + min)
+            .collect();
+        Self {
+            heights,
+            width: dims.x,
+            height: dims.y,
+            texel_size,
+            min,
+            max,
+            looping,
+        }
+    }
+
+    /// A flat field at `initial` meters — the editor's default starting state
+    /// (a new terrain), or any host wanting a blank plain to sculpt.
     pub fn flat(
         width: u32,
         height: u32,
@@ -390,6 +412,30 @@ mod tests {
                     (a - b).abs() < 200.0 / 65535.0,
                     "texel ({x},{y}): {a} vs {b}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn from_r16_inverts_to_r16() {
+        // The PNG load path: raw u16 texels → field → raw u16 must round-trip
+        // (the same encoding to_image/to_r16 produce, just from a decoder's
+        // buffer instead of a bevy Image).
+        let field = ramp_field();
+        let texels = field.to_r16();
+        let back = TerrainField::from_r16(
+            &texels,
+            field.dimensions(),
+            field.texel_size(),
+            0.0,
+            200.0,
+            false,
+        );
+        assert_eq!(back.to_r16(), texels);
+        for y in 0..16 {
+            for x in 0..16 {
+                let (a, b) = (field.get(x, y), back.get(x, y));
+                assert!((a - b).abs() < 200.0 / 65535.0, "texel ({x},{y}): {a} vs {b}");
             }
         }
     }

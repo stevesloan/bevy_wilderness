@@ -15,8 +15,9 @@ use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, EditableTerrain, EditorSet, EditorTools, ErosionRequested,
-    ErosionRun, ErosionSettings, ExportRequested, HeightmapExported, PointerBlocked, SculptMode,
-    SeamOverlay, ToolId, UndoBuffer, UndoHistory,
+    ErosionRun, ErosionSettings, ExportRequested, HeightmapExported, LoadRequested,
+    NewTerrainRequested, PointerBlocked, SculptMode, SeamOverlay, TerrainLoaded, ToolId, UndoBuffer,
+    UndoHistory,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -86,11 +87,23 @@ fn editor_panel(
     )>,
     runs: Query<&ErosionRun>,
     mut erode: MessageWriter<ErosionRequested>,
-    export_path: Res<UiExportPath>,
-    mut export: MessageWriter<ExportRequested>,
-    mut exported: MessageReader<HeightmapExported>,
+    // Grouped into tuples: bevy systems cap at 16 top-level params.
+    export: (
+        Res<UiExportPath>,
+        MessageWriter<ExportRequested>,
+        MessageReader<HeightmapExported>,
+    ),
+    swap: (
+        MessageWriter<NewTerrainRequested>,
+        MessageWriter<LoadRequested>,
+        MessageReader<TerrainLoaded>,
+    ),
     mut export_status: Local<Vec<String>>,
+    mut new_size: Local<u32>,
+    mut terrain_status: Local<Vec<String>>,
 ) -> Result {
+    let (export_path, mut export, mut exported) = export;
+    let (mut new_terrain, mut load, mut loaded) = swap;
     for done in exported.read() {
         // Replace the "exporting…" placeholder with per-file results.
         export_status.retain(|line| !line.ends_with('…'));
@@ -98,6 +111,17 @@ fn editor_panel(
             None => format!("saved {}", done.path.display()),
             Some(error) => format!("failed {}: {error}", done.path.display()),
         });
+    }
+    for done in loaded.read() {
+        terrain_status.clear();
+        terrain_status.push(match &done.error {
+            None => format!("loaded {}", done.path.display()),
+            Some(error) => format!("load failed: {error}"),
+        });
+    }
+    // Local<u32> defaults to 0; seed the new-terrain resolution once.
+    if *new_size == 0 {
+        *new_size = 4096;
     }
     let ctx = contexts.ctx_mut()?;
     // egui 0.35: panels attach to a root `Ui` spanning the viewport.
@@ -112,6 +136,53 @@ fn editor_panel(
         .default_size(230.0)
         .show(&mut root, |ui| {
             ui.heading("Terrain Editor");
+
+            ui.separator();
+            ui.label("Terrain");
+            // The editor opens on a fresh terrain by default; these get back to
+            // one, or open an existing heightmap, without a restart.
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("new_terrain_size")
+                    .selected_text(format!("{}²", *new_size))
+                    .show_ui(ui, |ui| {
+                        for size in [512u32, 1024, 2048, 4096] {
+                            ui.selectable_value(&mut *new_size, size, format!("{size}²"));
+                        }
+                    });
+                if ui
+                    .button("New")
+                    .on_hover_text("Discard the current terrain and start a fresh flat plain")
+                    .clicked()
+                {
+                    for (entity, _) in &terrains.p1() {
+                        new_terrain.write(NewTerrainRequested {
+                            terrain: entity,
+                            size: *new_size,
+                            height: 0.0,
+                        });
+                    }
+                    terrain_status.clear();
+                }
+            });
+            if ui
+                .button("Load terrain…")
+                .on_hover_text("Replace the terrain from an R16 KTX2 or 16-bit PNG heightmap")
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Heightmap", &["ktx2", "png"])
+                    .pick_file()
+            {
+                for (entity, _) in &terrains.p1() {
+                    load.write(LoadRequested {
+                        terrain: entity,
+                        path: path.clone(),
+                    });
+                }
+                terrain_status.clear();
+            }
+            for status in terrain_status.iter() {
+                ui.small(status);
+            }
 
             ui.separator();
             ui.label("Tool");

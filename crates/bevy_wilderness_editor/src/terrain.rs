@@ -18,10 +18,13 @@ use crate::field::TerrainField;
 /// `R16Unorm` in `PreUpdate`, before either the renderer or this editor
 /// reads it.
 ///
-/// To start from scratch instead of a file, build a [`TerrainField`] yourself
-/// (e.g. [`TerrainField::flat`]), `images.add(field.to_image())` for the
-/// clipmap's heightmap, and insert [`EditableTerrain::new`] directly — no
-/// marker needed.
+/// This marker is the *load-from-file* path. The default is a **new terrain**:
+/// build a flat [`TerrainField`] ([`TerrainField::flat`]),
+/// `images.add(field.to_image())` for the clipmap's heightmap, and insert
+/// [`EditableTerrain::new`] directly — no marker needed. Either way, a host can
+/// later reset or replace the terrain at runtime via
+/// [`NewTerrainRequested`](crate::NewTerrainRequested) /
+/// [`LoadRequested`](crate::LoadRequested).
 #[derive(Component, Default)]
 pub struct Editable;
 

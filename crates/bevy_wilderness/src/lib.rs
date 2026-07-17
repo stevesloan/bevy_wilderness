@@ -89,7 +89,7 @@ impl Plugin for ClipmapPlugin {
             Update,
             (
                 rvt::process_rebake_requests.before(init_rvt),
-                clipmap::sync_edit_overlay,
+                clipmap::sync_editable_materials,
             ),
         );
 

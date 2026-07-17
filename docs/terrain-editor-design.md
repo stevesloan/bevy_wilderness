@@ -4,7 +4,8 @@ Status: **All phases (0–8) complete** — workspace + editing API; editor core
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
 overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
-export · Project name: **`bevy_wilderness`** · Last updated: 2026-07-17
+export; new-terrain-by-default + runtime load (D9) · Project name:
+**`bevy_wilderness`** · Last updated: 2026-07-17
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -326,6 +327,32 @@ the requested path's extension —
 
 Round-trip requires the same `min`/`max` encode range on the loading
 `Clipmap` (inherent to R16, same as the shipped asset).
+
+### D9 — New terrain is the default state; loading is opt-in *(settled 2026-07-17)*
+
+A **new terrain** — a flat plain at the D1 4096² working resolution — is the
+editor's **default starting state**, not a special mode. Authoring usually
+*begins* from scratch, so that's what the editor should open on; loading an
+existing heightmap is the exception you ask for. This reframes the earlier
+`WILDERNESS_NEW`-gated "from scratch" path: the example now opens a new terrain
+with no env var, `WILDERNESS_NEW=<texels>` merely picks its starting
+resolution, and `WILDERNESS_HEIGHTMAP=<file>` is the opt-in load (still the D7
+round-trip).
+
+Runtime new/load are core API, UI-agnostic like the rest (P2): messages
+`NewTerrainRequested { terrain, size, height }`, `LoadRequested { terrain,
+path }` → `TerrainLoaded { terrain, path, error }`. Both swap the field and
+display heightmap on a live `Clipmap`, **keeping the world footprint and R16
+encode range** (a different-resolution map just re-derives `texel_size`), then
+mark the whole field dirty so the normal Apply path re-quantizes, re-snaps
+props (`TerrainRegionChanged` over the full map), rebuilds the mask overlay at
+the new resolution, and re-bakes; the undo history clears (its tile snapshots
+belong to the replaced field). Load reads the file **synchronously off the
+filesystem** — not the asset server — so a host's file dialog can hand it an
+*absolute* path (asset paths are rooted at the assets dir), and a failed decode
+leaves the current terrain untouched. The default UI adds a "New" button (with
+a resolution combo) and a "Load terrain…" button backed by a native file
+dialog (`rfd`, xdg-portal backend — no GTK dependency).
 
 ### D8 — Undo/history: tile-based region snapshots *(settled 2026-07-16)*
 Not full-field copies (67 MB each at 4096²). The field divides into fixed tiles
