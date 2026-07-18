@@ -31,9 +31,6 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 
 ## Usage
 
-The example usage can be seen in the [examples](crates/bevy_wilderness/examples/basic.rs) directory.
-This example uses a very low-resolution heightmap to save space when cloning this repository. For better visual results, create your own higher-resolution textures.
-
 The example's terrain material uses CC0 texture sets that are not committed to the
 repo. Fetch them once before running it:
 
@@ -104,35 +101,6 @@ set the `TerrainFog` (look) and `TerrainQuality` (performance profile, `Low`/
 `Medium`/`High`) resources, and use `HeightFogExtension` (or the
 `bevy_wilderness::fog_functions` shader include + `InlineFog`) to fog your own meshes.
 See [`examples/basic.rs`](crates/bevy_wilderness/examples/basic.rs).
-
-## How to create textures
-
-To create heightmap textures you can use the [clipmap.py](convert/clipmap.py) script.
-
-First of all, you have to install required libraries:
-```sh
-> pip install -r requirements.txt
-```
-
-```sh
-> python clipmap.py --help
-usage: clipmap.py [-h] filename {ktx} ...
-
-Heightmap processing tool for the bevy_wilderness plugin
-
-positional arguments:
-  filename       16-bit PNG heightmap
-  {ktx}
-    ktx          Convert the heightmap to KTX2
-
-options:
-  -h, --help     show this help message and exit
-```
-
-### Example usage:
-```sh
-> python clipmap.py heightmap.png ktx 8192 8192 # Convert 16-bit PNG to 8192x8192 KTX
-```
 
 ## Compatible Bevy versions
 
