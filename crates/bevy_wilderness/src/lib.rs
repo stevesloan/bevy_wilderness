@@ -85,11 +85,13 @@ impl Plugin for ClipmapPlugin {
         // Editable-terrain API (design doc §5): consume RebakeRequested before
         // init_rvt so a re-armed bake re-spawns its cameras the same frame.
         #[cfg(feature = "editing")]
-        app.add_systems(
+        app.init_resource::<clipmap::ClayShadowState>().add_systems(
             Update,
             (
                 rvt::process_rebake_requests.before(init_rvt),
                 clipmap::sync_editable_materials,
+                clipmap::sync_clay_flag,
+                clipmap::sync_clay_shadows,
             ),
         );
 

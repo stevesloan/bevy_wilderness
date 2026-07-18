@@ -561,8 +561,10 @@ fn setup(
         max: HEIGHT_MAX,
         wireframe: false,
         looping: true,
-        // The editor creates and assigns the mask overlay texture.
+        // The editor creates and assigns the mask overlay texture, and drives
+        // clay mode (D10) from re-bake staleness.
         edit_overlay: None,
+        clay: false,
     });
     match from_scratch {
         // From-scratch terrain: the field exists already, insert it directly.

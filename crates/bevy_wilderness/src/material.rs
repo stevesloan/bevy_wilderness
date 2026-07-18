@@ -125,11 +125,19 @@ pub(crate) struct GridMaterial {
     pub(crate) texel_size: f32,
     #[uniform(109)]
     pub(crate) minmax: Vec2,
-    /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail.
-    /// Quality knobs ride here rather than adding uniforms (this material is at the
-    /// bind-group binding limit — extra uniforms silently break its pipeline).
+    /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail,
+    /// bit3 looping, bit4 clay display mode (D10, `editing`). Quality knobs ride
+    /// here rather than adding uniforms (this material is at the bind-group binding
+    /// limit — extra uniforms silently break its pipeline).
     #[uniform(111)]
     pub(crate) flags: u32,
+}
+
+impl GridMaterial {
+    /// `flags` bit4: clay display mode (D10) — grey + screen-derivative
+    /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
+    #[cfg(feature = "editing")]
+    pub(crate) const FLAG_CLAY: u32 = 1 << 4;
 }
 
 impl MaterialExtension for GridMaterial {
@@ -140,6 +148,18 @@ impl MaterialExtension for GridMaterial {
     }
 
     fn deferred_vertex_shader() -> ShaderRef {
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+        )
+    }
+
+    /// The shadow pass renders casters with the *prepass* vertex shader;
+    /// without this override it would use the default mesh vertex and cast the
+    /// flat, undisplaced grid. Needed for clay mode's dynamic shadows (D10) —
+    /// the terrain only ever casts while clay (`sync_clay_shadows`), but the
+    /// pipeline must displace whenever it does. Same shader file: `fn vertex`
+    /// already compiles under `PREPASS_PIPELINE` (the deferred path uses it).
+    fn prepass_vertex_shader() -> ShaderRef {
         ShaderRef::Path(
             AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
         )
@@ -166,6 +186,30 @@ impl MaterialExtension for GridMaterial {
         if key.bind_group_data.wireframe {
             descriptor.primitive.polygon_mode = bevy::render::render_resource::PolygonMode::Line;
             descriptor.depth_stencil.as_mut().unwrap().bias.slope_scale = 1.0;
+        }
+        // terrain.wgsl's fragment machinery only compiles in pipelines that
+        // shade: the forward pass and the deferred g-buffer pass. Depth-only
+        // pipelines — the shadow pass casting the terrain's displaced
+        // silhouette (clay mode, D10) and depth/normal prepasses — compile
+        // `fn vertex` alone; `pbr_fragment` doesn't build against their
+        // trimmed VertexOutput and their layouts lack the light bindings.
+        let has_def = |defs: &[bevy::shader::ShaderDefVal], name: &str| {
+            use bevy::shader::ShaderDefVal;
+            defs.iter().any(|def| match def {
+                ShaderDefVal::Bool(n, _) | ShaderDefVal::Int(n, _) | ShaderDefVal::UInt(n, _) => {
+                    n == name
+                }
+            })
+        };
+        let defs = &descriptor.vertex.shader_defs;
+        if !has_def(defs, "PREPASS_PIPELINE") || has_def(defs, "DEFERRED_PREPASS") {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WILDERNESS_SHADE".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WILDERNESS_SHADE".into());
+            }
         }
         // The edit-overlay binding exists only in editing builds; gate the
         // shader's declaration + sample on a def so the same terrain.wgsl

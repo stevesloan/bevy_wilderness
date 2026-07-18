@@ -22,6 +22,9 @@
 //! - [`NewTerrainRequested`] / [`LoadRequested`] / [`TerrainLoaded`] — reset a
 //!   terrain to a fresh flat plain (the default starting state) or load a
 //!   heightmap file into it at runtime.
+//! - [`RebakeSettings`] — auto re-bake on/off (D10); with it off, bake
+//!   manually by inserting [`RebakeRequested`] on the terrain
+//!   ([`ClipmapReady`]'s absence = a bake is in flight).
 //! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
 
 use bevy::prelude::*;
@@ -44,12 +47,16 @@ pub use cursor::{PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
+pub use rebake::RebakeSettings;
 pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{UNDO_TILE_SIZE, UndoBuffer, UndoHistory};
+// The manual-bake trigger and bake-completion marker (design doc §5/D10),
+// re-exported so a UI crate can drive bakes without depending on the renderer.
+pub use bevy_wilderness::{ClipmapReady, RebakeRequested};
 
 /// The editor's `Update` phases. Host tool systems go in
 /// [`Tools`](EditorSet::Tools), between the shared pick and the flush:
@@ -80,6 +87,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
             .init_resource::<UndoHistory>()
+            .init_resource::<RebakeSettings>()
             .init_resource::<SeamOverlay>()
             .init_resource::<export::ExportTasks>()
             .add_message::<TerrainRegionChanged>()
@@ -132,8 +140,13 @@ impl Plugin for TerrainEditorPlugin {
                     (export::start_requested_exports, export::poll_export_tasks)
                         .after(EditorSet::Tools),
                     // After the sync so a flush's re-armed timer isn't ticked
-                    // in the same frame it was set.
-                    rebake::tick_rebake_debounce.after(terrain::sync_dirty_regions),
+                    // in the same frame it was set. The auto-toggle handler
+                    // runs between them: it must see this frame's toggle
+                    // before any armed timer gets a chance to expire.
+                    rebake::debounce_on_auto_toggle.after(terrain::sync_dirty_regions),
+                    rebake::tick_rebake_debounce.after(rebake::debounce_on_auto_toggle),
+                    // Leave clay the frame the bake lands (Added<ClipmapReady>).
+                    rebake::clear_clay_on_bake,
                 ),
             );
 

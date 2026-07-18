@@ -1,6 +1,15 @@
 #import bevy_pbr::mesh_functions
-#import bevy_pbr::pbr_fragment::pbr_input_from_standard_material
 #import bevy_pbr::view_transformations::position_world_to_clip
+
+// Fragment-shading machinery, gated to the pipelines that shade (the forward
+// fragment and the deferred g-buffer fragment). Depth-only pipelines — the
+// shadow pass rendering the terrain's displaced silhouette for clay mode's
+// dynamic shadows (D10), or a depth/normal prepass — compile this module too
+// for `fn vertex`, but `pbr_fragment` doesn't build against `prepass_io`'s
+// trimmed VertexOutput and their layouts lack the light/cluster bindings.
+// `WILDERNESS_SHADE` is pushed in `GridMaterial::specialize`.
+#ifdef WILDERNESS_SHADE
+#import bevy_pbr::pbr_fragment::pbr_input_from_standard_material
 #import bevy_pbr::mesh_view_bindings::{view, lights, clustered_lights}
 #import bevy_pbr::{
     pbr_types,
@@ -20,12 +29,15 @@
 // Shared with the fullscreen fog post-process, so the VR (inline) and flatscreen
 // (post-process) fog tiers use the exact same fog.
 #import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
+#endif  // WILDERNESS_SHADE
 
 #ifdef MESHLET_MESH_MATERIAL_PASS
 #import bevy_pbr::meshlet_visibility_buffer_resolve::VertexOutput
 #else ifdef PREPASS_PIPELINE
 #import bevy_pbr::prepass_io::{Vertex, VertexOutput, FragmentOutput}
+#ifdef DEFERRED_PREPASS
 #import bevy_pbr::pbr_deferred_functions::deferred_output;
+#endif  // DEFERRED_PREPASS
 #else   // PREPASS_PIPELINE
 #import bevy_pbr::forward_io::{Vertex, VertexOutput, FragmentOutput}
 #import bevy_pbr::pbr_functions::main_pass_post_lighting_processing
@@ -55,8 +67,11 @@ struct DevParams {
     debug_view: u32,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var<uniform> dev: DevParams;
-// Inline height fog params (VR tier). density == 0 skips it.
+// Inline height fog params (VR tier). density == 0 skips it. Shading-only:
+// the HeightFog type comes from the gated fog_functions import above.
+#ifdef WILDERNESS_SHADE
 @group(#{MATERIAL_BIND_GROUP}) @binding(114) var<uniform> fog: HeightFog;
+#endif
 @group(#{MATERIAL_BIND_GROUP}) @binding(125) var detail_albedo_array: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(126) var detail_albedo_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(127) var detail_normal_array: texture_2d_array<f32>;
@@ -159,6 +174,11 @@ fn oct_decode(f: vec2<f32>) -> vec3<f32> {
     let xy = n.xy + select(vec2(t), vec2(-t), n.xy >= vec2(0.0));
     return normalize(vec3<f32>(xy, n.z));
 }
+
+// Everything below is fragment shading — compiled only for the pipelines that
+// shade (see the WILDERNESS_SHADE import note at the top). Depth-only
+// pipelines end at `fn vertex` above.
+#ifdef WILDERNESS_SHADE
 
 // Terrain PBR lighting with baked sun-visibility injected on the directional sun.
 // Compact fork of `apply_pbr_lighting`: base layer only, directional + clustered
@@ -329,6 +349,39 @@ fn fragment(
     let world_size = texture_size * texel_size;
     let uv = in.world_position.xz / world_size + 0.5;
 
+    // Clay display mode (flags bit4, D10): shading is stale — unbaked edits,
+    // or no bake has landed yet — so ignore the baked RVT entirely and render
+    // neutral grey clay lit by the real lights, with normals from position
+    // derivatives (faceted, deliberately: it reads as sculpting clay and
+    // needs nothing baked). The mask overlay stays visible — masking is part
+    // of the modeling session clay exists for.
+    if (flags & 16u) != 0u {
+        var clay_in = in;
+        var n = normalize(cross(dpdy(in.world_position.xyz), dpdx(in.world_position.xyz)));
+        n = select(n, -n, n.y < 0.0);
+        clay_in.world_normal = n;
+        var albedo = vec3<f32>(0.5);
+#ifdef WILDERNESS_EDIT_OVERLAY
+        let clay_overlay_uv = select(clamp(uv, vec2(0.0), vec2(1.0)), fract(uv), (flags & 8u) != 0u);
+        let clay_overlay = textureSample(edit_overlay_texture, heightmap_sampler, clay_overlay_uv).r;
+        albedo = mix(albedo, vec3<f32>(1.0, 0.25, 0.05), clay_overlay * 0.5);
+#endif
+        var clay_pbr = pbr_input_from_standard_material(clay_in, is_front);
+        clay_pbr.material.base_color = vec4<f32>(albedo, 1.0);
+        clay_pbr.material.perceptual_roughness = 0.95;
+        clay_pbr.material.metallic = 0.0;
+        clay_pbr.diffuse_occlusion = vec3<f32>(1.0);
+#ifdef PREPASS_PIPELINE
+        let out = deferred_output(clay_in, clay_pbr);
+#else
+        var out: FragmentOutput;
+        // Sun visibility 1.0: there's no valid bake to shadow with.
+        out.color = terrain_apply_lighting(clay_pbr, 1.0, n);
+        out.color = main_pass_post_lighting_processing(clay_pbr, out.color);
+#endif
+        return out;
+    }
+
     // Sample the baked RVT instead of blending the splat per-fragment:
     // albedo + baked sun-visibility (alpha); octahedral world normal + roughness
     // + packed material ids (alpha, read NEAREST below).
@@ -462,3 +515,5 @@ fn fragment(
 
     return out;
 }
+
+#endif  // WILDERNESS_SHADE

@@ -267,11 +267,12 @@ pub(crate) fn init_edit_overlays(
 /// `EditorSet::Apply`, after all tools have edited.
 pub(crate) fn sync_dirty_regions(
     mut commands: Commands,
-    mut terrains: Query<(Entity, &mut EditableTerrain, &Clipmap)>,
+    mut terrains: Query<(Entity, &mut EditableTerrain, &mut Clipmap)>,
     mut images: ResMut<Assets<Image>>,
     mut changed: MessageWriter<TerrainRegionChanged>,
+    rebake: Res<crate::rebake::RebakeSettings>,
 ) {
-    for (entity, mut terrain, clipmap) in &mut terrains {
+    for (entity, mut terrain, mut clipmap) in &mut terrains {
         let rects = terrain.take_dirty();
         if rects.is_empty() {
             continue;
@@ -291,13 +292,18 @@ pub(crate) fn sync_dirty_regions(
         // (Re-)arm the re-bake debounce (D5): inserting replaces the existing
         // timer, so the bake fires ~200 ms after the *last* flush of a stroke.
         // The initial full-field sync is skipped — it derives identical data
-        // and the initial bake is already on its way.
-        if terrain.synced_once {
+        // and the initial bake is already on its way. With auto re-bake off
+        // (D10) edits never schedule a bake; instead the terrain goes clay
+        // ("shading is stale") until the host bakes manually. Auto mode stays
+        // out of clay — the ~400 ms of staleness per stroke would strobe.
+        if !terrain.synced_once {
+            terrain.synced_once = true;
+        } else if rebake.auto {
             commands
                 .entity(entity)
                 .insert(crate::rebake::RebakeDebounce::default());
-        } else {
-            terrain.synced_once = true;
+        } else if !clipmap.clay {
+            clipmap.clay = true;
         }
     }
 }

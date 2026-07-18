@@ -97,6 +97,11 @@ pub(crate) struct ClipmapRvt {
     pub(crate) normal: Handle<Image>,
     pub(crate) ao: Handle<Image>,
     pub(crate) initialized: bool,
+    /// Whether any bake has ever *completed* for this clipmap. Never reset —
+    /// unlike `initialized`, which re-arms per re-bake — so it distinguishes
+    /// "never shaded" (the D10 clay fallback) from "re-baking with the
+    /// previous bake still on screen".
+    pub(crate) ever_baked: bool,
     /// Bake targets not yet finished. Set when the bake cameras spawn; each
     /// decrements as it completes, and [`ClipmapReady`] is inserted at zero.
     pub(crate) pending_bakes: u32,
@@ -153,6 +158,7 @@ pub(crate) fn drive_rvt_bake(
             if let Ok(mut rvt) = rvts.get_mut(state.clipmap) {
                 rvt.pending_bakes = rvt.pending_bakes.saturating_sub(1);
                 if rvt.pending_bakes == 0 {
+                    rvt.ever_baked = true;
                     commands.entity(state.clipmap).try_insert(ClipmapReady);
                 }
             }

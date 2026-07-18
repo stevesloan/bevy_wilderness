@@ -150,6 +150,16 @@ pub struct Clipmap {
     /// renders nothing. Assign (or swap) it any time; the materials follow.
     #[cfg(feature = "editing")]
     pub edit_overlay: Option<Handle<Image>>,
+
+    /// Clay display mode (`editing` feature, D10): render neutral grey with
+    /// screen-derivative normals instead of the baked RVT — the "shading is
+    /// stale" look for modeling sessions. An editor sets this while unbaked
+    /// edits exist; independent of it, terrain renders clay until its *first*
+    /// bake ever completes, so a fresh spawn is grey clay rather than a
+    /// chrome mirror (re-bakes don't clay — the previous bake stays on
+    /// screen).
+    #[cfg(feature = "editing")]
+    pub clay: bool,
 }
 
 #[derive(Component)]
@@ -320,6 +330,7 @@ pub(crate) fn init_clipmaps(
                 normal: rvt_normal,
                 ao: rvt_ao,
                 initialized: false,
+                ever_baked: false,
                 pending_bakes: 0,
                 sun_direction: Vec3::ZERO,
                 quality: *quality,
@@ -524,6 +535,180 @@ pub(crate) fn sync_editable_materials(
                     material.extension.edit_overlay = overlay.clone();
                 }
             }
+        }
+    }
+}
+
+/// Keeps the clay-mode flag bit (D10) in the materials matching its two
+/// sources: `Clipmap::clay` (editor-driven staleness) and a bake never having
+/// *completed* (`ClipmapRvt::ever_baked` — replacing the chrome-mirror spawn
+/// look). Deliberately not `ClipmapReady`: that's also absent during every
+/// auto-mode *re*-bake, which keeps the previous bake on screen — gating clay
+/// on it would strobe grey on every stroke. Runs unfiltered — the RVT state
+/// changes without touching `Clipmap`, so a `Changed` filter would miss it;
+/// the check-before-`get_mut` keeps the steady state free.
+#[cfg(feature = "editing")]
+pub(crate) fn sync_clay_flag(
+    clipmaps: Query<(&Clipmap, &ClipmapMaterials, &ClipmapRvt)>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (clipmap, mats, rvt) in &clipmaps {
+        let clay = clipmap.clay || !rvt.ever_baked;
+        for handle in [&mats.solid, &mats.wireframe] {
+            let in_sync = materials
+                .get(handle)
+                .is_none_or(|m| (m.extension.flags & GridMaterial::FLAG_CLAY != 0) == clay);
+            if !in_sync && let Some(mut material) = materials.get_mut(handle) {
+                if clay {
+                    material.extension.flags |= GridMaterial::FLAG_CLAY;
+                } else {
+                    material.extension.flags &= !GridMaterial::FLAG_CLAY;
+                }
+            }
+        }
+    }
+}
+
+/// Remembers what `sync_clay_shadows` changed so leaving clay restores the
+/// host's own light configuration instead of stomping it.
+#[cfg(feature = "editing")]
+#[derive(Resource, Default)]
+pub(crate) struct ClayShadowState {
+    /// Whether clay-mode dynamic shadows are currently forced on.
+    forced: bool,
+    /// Each directional light's `shadow_maps_enabled` and cascade config
+    /// before we forced them.
+    prev: Vec<(Entity, bool, bevy::light::CascadeShadowConfig)>,
+}
+
+/// Dynamic shadows while clay, baked shadows otherwise (D10). Clay renders
+/// with sun-visibility 1.0 — the baked self-shadow is stale or absent — so
+/// while any terrain is clay this enables the directional lights' CSM and
+/// lets the *solid* terrain parts cast (their material's prepass vertex
+/// shader displaces, so the cast silhouette is the real terrain; wireframe
+/// overlays stay non-casters — a line-rasterized shadow is noise). Leaving
+/// clay restores each light's previous setting and re-marks the parts
+/// `NotShadowCaster` — the baked sun-visibility resumes and the scene pays
+/// no shadow-map cost, per the renderer's static-shadows design.
+///
+/// The caster toggle runs continuously against the current `forced` state
+/// (not only on transitions): grid parts spawn over several frames, so a
+/// part appearing mid-clay must still be swept in.
+///
+/// While forced, the solid material's base `alpha_mode` flips to
+/// `Mask(0.0)` (nothing discards at cutoff 0 — visually identical). This is
+/// what makes the displaced shadow *possible*: bevy renders opaque shadow
+/// casters through a depth-only path whose pipeline layout **omits the
+/// material bind group entirely**, so the prepass vertex shader couldn't
+/// read the heightmap (pipeline validation fails). `MAY_DISCARD` (any
+/// alpha-masked material) is what routes a caster through the
+/// material-bound shadow path instead — the `PREPASS_READS_MATERIAL` key
+/// bit would say exactly what we mean, but bevy 0.19 has no API that sets
+/// it. Restored to `Opaque` on exit, so shipped scenes keep the sorted
+/// opaque path.
+#[cfg(feature = "editing")]
+#[allow(clippy::type_complexity)]
+pub(crate) fn sync_clay_shadows(
+    mut state: ResMut<ClayShadowState>,
+    mut commands: Commands,
+    images: Res<Assets<Image>>,
+    clipmaps: Query<(&Clipmap, &ClipmapRvt, &ClipmapMaterials)>,
+    mut suns: Query<(
+        Entity,
+        &mut DirectionalLight,
+        &mut bevy::light::CascadeShadowConfig,
+    )>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+    parts: Query<(
+        Entity,
+        &MeshMaterial3d<ExtendedMaterial<StandardMaterial, GridMaterial>>,
+        Has<NotShadowCaster>,
+    )>,
+) {
+    let any_clay = clipmaps
+        .iter()
+        .any(|(clipmap, rvt, _)| clipmap.clay || !rvt.ever_baked);
+    if any_clay != state.forced {
+        state.forced = any_clay;
+        let alpha_mode = if any_clay {
+            AlphaMode::Mask(0.0)
+        } else {
+            AlphaMode::Opaque
+        };
+        for (_, _, mats) in &clipmaps {
+            if let Some(mut material) = materials.get_mut(&mats.solid) {
+                material.base.alpha_mode = alpha_mode;
+            }
+        }
+        if any_clay {
+            // Terrain-scale cascades: bevy's default config tops out ~1 km —
+            // character scale — and editing happens from much further. The
+            // same 4 cascade renders stretched over the terrain's footprint
+            // costs the same per frame; far shadows just get coarser texels,
+            // the right trade for a modeling aid. Sized from the largest
+            // terrain's world extent (fallback if its heightmap hasn't
+            // decoded on the first forced frame).
+            let world = clipmaps
+                .iter()
+                .filter_map(|(clipmap, _, _)| {
+                    let image = images.get(&clipmap.heightmap)?;
+                    Some(image.width() as f32 * clipmap.texel_size)
+                })
+                .fold(0.0, f32::max);
+            let max_distance = if world > 0.0 { world } else { 8192.0 };
+            let clay_cascades: bevy::light::CascadeShadowConfig =
+                bevy::light::CascadeShadowConfigBuilder {
+                    num_cascades: 4,
+                    minimum_distance: 0.1,
+                    maximum_distance: max_distance,
+                    // Geometric splits from ~max/64: hovering hundreds of
+                    // meters up shouldn't waste a cascade on the first 5 m.
+                    first_cascade_far_bound: max_distance / 64.0,
+                    overlap_proportion: 0.2,
+                }
+                .into();
+            state.prev = suns
+                .iter()
+                .map(|(entity, light, cascades)| {
+                    (entity, light.shadow_maps_enabled, cascades.clone())
+                })
+                .collect();
+            for (_, mut light, mut cascades) in &mut suns {
+                light.shadow_maps_enabled = true;
+                *cascades = clay_cascades.clone();
+            }
+        } else {
+            for (entity, mut light, mut cascades) in &mut suns {
+                let prev = state
+                    .prev
+                    .iter()
+                    .find(|(prev_entity, ..)| *prev_entity == entity);
+                let (enabled, config) = match prev {
+                    Some((_, enabled, config)) => (*enabled, config.clone()),
+                    None => (false, Default::default()),
+                };
+                if light.shadow_maps_enabled != enabled {
+                    light.shadow_maps_enabled = enabled;
+                }
+                *cascades = config;
+            }
+            state.prev.clear();
+        }
+    }
+    // Solid terrain parts cast exactly while forced; late-spawned parts catch
+    // up here. Wireframe-material parts keep `NotShadowCaster` always.
+    let solid: Vec<_> = clipmaps
+        .iter()
+        .map(|(_, _, mats)| mats.solid.id())
+        .collect();
+    for (entity, material, not_caster) in &parts {
+        if !solid.contains(&material.0.id()) {
+            continue;
+        }
+        if state.forced && not_caster {
+            commands.entity(entity).remove::<NotShadowCaster>();
+        } else if !state.forced && !not_caster {
+            commands.entity(entity).insert(NotShadowCaster);
         }
     }
 }

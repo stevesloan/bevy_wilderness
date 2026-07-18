@@ -1,13 +1,13 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **Phases 0–8 complete** — workspace + editing API; editor core;
+Status: **Phases 0–10 complete** — workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
 overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
-export; new-terrain-by-default + runtime load (D9). **Phases 9–12 planned**
-(D10/D11: rebake control, clay display mode, PNG stamp tool + library;
-conditional progressive re-bake) · Project name: **`bevy_wilderness`** ·
-Last updated: 2026-07-17
+export; new-terrain-by-default + runtime load (D9); rebake control + clay
+display mode with dynamic terrain-scale shadows (D10). **Phases 11–12
+planned** (D11: PNG stamp tool + library; conditional progressive re-bake) ·
+Project name: **`bevy_wilderness`** · Last updated: 2026-07-18
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -398,6 +398,31 @@ shading smears over new geometry. Two pieces:
    Side effect: clay supersedes the §10 "unbaked terrain is a chrome mirror"
    gotcha — it's the principled fallback for *any* unbaked state, including
    first load.
+3. **Dynamic shadows while clay** *(added in flight)*. Clay renders with
+   sun-visibility 1.0 (no valid bake to shadow with), so while any terrain
+   is clay the renderer turns on the directional lights' CSM, makes the
+   solid terrain parts cast, and swaps in **terrain-scale cascades**
+   (`maximum_distance` = the terrain's world footprint; bevy's ~1 km default
+   is character-scale and editing happens from altitude). Same 4 cascade
+   renders either way — extending range costs texel density, not framerate.
+   Everything is saved and *restored* on exit, so a host's own light config
+   survives. Two supporting pieces:
+   - `GridMaterial` gained a **prepass vertex shader** (the shadow pass
+     renders casters with it; without it terrain would cast its flat,
+     undisplaced grid), and `terrain.wgsl`'s fragment machinery is gated
+     behind a `WILDERNESS_SHADE` def pushed in `specialize` — depth-only
+     pipelines compile the displacement vertex alone.
+   - ⚠️ **Known bevy-internals coupling (re-verify on every bevy
+     upgrade):** bevy 0.19 renders *opaque* shadow casters through a
+     depth-only path whose pipeline layout omits the material bind group —
+     the displacing vertex shader can't read the heightmap there. The only
+     route into the material-bound shadow path is `MAY_DISCARD`, so while
+     clay is forced the solid material's base `alpha_mode` flips to
+     `Mask(0.0)` (nothing discards at cutoff 0; visually identical),
+     restored to `Opaque` on exit. The unused `PREPASS_READS_MATERIAL` key
+     bit looks like the future official API — switch to it when bevy
+     exposes one. Entering/leaving clay re-specializes pipelines (small
+     one-time hitch per session).
 
 ### D11 — PNG stamp tool: GPU floating preview + UI stamp library *(settled 2026-07-17, planned: Phase 11)*
 
@@ -539,16 +564,29 @@ env override so the round-trip is one restart:
 `WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 cargo run -p
 bevy_wilderness_editor_ui --example editor`.
 
-**Phase 9 — Rebake control (D10.1).** `RebakeSettings { auto }`; when off,
+**Phase 9 ✅ — Rebake control (D10.1).** `RebakeSettings { auto }`; when off,
 dirty flushes skip the debounce; UI toggle + "Bake" button writing
 `RebakeRequested`. *Accept:* with auto off, a sculpt session never re-bakes;
 the Bake button re-shades; flipping auto back on restores D5 behavior.
+Decisions in flight: `RebakeRequested`/`ClipmapReady` are re-exported from
+the editor core so a UI drives bakes without a renderer dependency; flipping
+auto *off* cancels an armed debounce, flipping it *on* arms one for every
+terrain sitting in clay (else they'd stay stale until the next edit); the
+Bake button doubles as the in-flight indicator ("Baking…", disabled).
 
-**Phase 10 — Clay display mode (D10.2).** Flags-bit clay fallback (derivative
-normals + N·L grey) whenever shading is stale. *Accept:* editing with auto
-off turns the terrain readable grey clay (geometry clearly legible while
-dragging); Bake returns full shading; a freshly spawned terrain shows clay,
-not chrome, until its first bake lands.
+**Phase 10 ✅ — Clay display mode (D10.2 + D10.3).** Flags-bit clay fallback
+(derivative normals + N·L grey) whenever shading is stale, with dynamic
+terrain-scale shadows while clay. *Accept:* editing with auto off turns the
+terrain readable grey clay (geometry clearly legible while dragging); Bake
+returns full shading; a freshly spawned terrain shows clay, not chrome,
+until its first bake lands.
+Decisions in flight: "never baked" is `ClipmapRvt::ever_baked` (set once on
+first bake completion, never reset) — **not** `ClipmapReady`, which is also
+absent during every auto-mode *re*-bake and would strobe clay grey on every
+stroke; auto mode never shows clay (the previous bake stays on screen);
+the mask overlay tint stays visible on clay (masking is part of the
+modeling session). Dynamic shadows per D10.3, including the `Mask(0.0)`
+alpha-mode coupling documented there.
 
 **Phase 11 — Stamp tool + library (D11).** Core stamp tool (GPU floating
 preview, wheel controls, mask-weighted, toroidal, 8/16-bit PNG) + UI gallery.
@@ -584,6 +622,10 @@ actual full-bake cost at default `rvt_size` before building this.
 - **Stamp preview and commit must share their math** (D11) — the shader
   composite and the CPU apply are two implementations of one function
   (bilinear sample + mask-weighted add); any divergence pops on click.
+- **Clay's dynamic shadows lean on bevy internals** (D10.3) — the
+  `Mask(0.0)` alpha flip is what gets the material bind group into the
+  shadow pipeline. Re-verify on every bevy upgrade; move to
+  `PREPASS_READS_MATERIAL` when bevy grows an API for it.
 - **Droplet writes scatter** — multithread via per-batch delta buffers, not shared.
 - **Mask edge feathering** — skip it → hard rectangular seam.
 - **Toroidal everything on looping** — brush footprint, erosion neighbor reads, and

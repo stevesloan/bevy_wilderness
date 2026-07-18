@@ -14,10 +14,10 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, EditableTerrain, EditorSet, EditorTools, ErosionRequested,
-    ErosionRun, ErosionSettings, ExportRequested, HeightmapExported, LoadRequested,
-    NewTerrainRequested, PointerBlocked, SculptMode, SeamOverlay, TerrainLoaded, ToolId,
-    UndoBuffer, UndoHistory,
+    ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
+    ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, HeightmapExported,
+    LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
+    SculptMode, SeamOverlay, TerrainLoaded, ToolId, UndoBuffer, UndoHistory,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -98,12 +98,18 @@ fn editor_panel(
         MessageWriter<LoadRequested>,
         MessageReader<TerrainLoaded>,
     ),
+    bake: (
+        ResMut<RebakeSettings>,
+        Commands,
+        Query<Has<ClipmapReady>, With<EditableTerrain>>,
+    ),
     mut export_status: Local<Vec<String>>,
     mut new_size: Local<u32>,
     mut terrain_status: Local<Vec<String>>,
 ) -> Result {
     let (export_path, mut export, mut exported) = export;
     let (mut new_terrain, mut load, mut loaded) = swap;
+    let (mut rebake, mut commands, ready) = bake;
     for done in exported.read() {
         // Replace the "exporting…" placeholder with per-file results.
         export_status.retain(|line| !line.ends_with('…'));
@@ -295,6 +301,27 @@ fn editor_panel(
                     }
                 }
             }
+
+            ui.separator();
+            ui.label("Bake");
+            ui.horizontal(|ui| {
+                // D10: with auto off, edits never schedule the D5 re-bake —
+                // model freely, then bake once. ClipmapReady is absent while a
+                // bake is in flight, so the button doubles as its indicator.
+                ui.checkbox(&mut rebake.auto, "auto re-bake")
+                    .on_hover_text("Re-bake shading ~200 ms after each edit settles");
+                let baking = ready.iter().any(|ready| !ready);
+                let label = if baking { "Baking…" } else { "Bake" };
+                if ui
+                    .add_enabled(!baking, egui::Button::new(label))
+                    .on_hover_text("Re-bake shading (sun shadow, AO, material splat) now")
+                    .clicked()
+                {
+                    for (entity, _) in &terrains.p1() {
+                        commands.entity(entity).insert(RebakeRequested);
+                    }
+                }
+            });
 
             ui.separator();
             ui.label("Export");
