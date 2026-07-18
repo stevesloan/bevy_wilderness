@@ -51,6 +51,21 @@ const MAX_BATCHES: usize = 4;
 /// spawn-point shot noise of uniform rain (D12).
 const DROPLET_WARMUP_STEPS: u32 = 2;
 
+const SQRT_2: f32 = std::f32::consts::SQRT_2;
+
+/// The D8 stencil with per-step horizontal distance, shared by the thermal
+/// pass (steepest *uphill* excess) and flow accumulation (steepest descent).
+const NEIGHBORS: [(i32, i32, f32); 8] = [
+    (-1, -1, SQRT_2),
+    (0, -1, 1.0),
+    (1, -1, SQRT_2),
+    (-1, 0, 1.0),
+    (1, 0, 1.0),
+    (-1, 1, SQRT_2),
+    (0, 1, 1.0),
+    (1, 1, SQRT_2),
+];
+
 /// Start an erosion run on a terrain: what the built-in erode tool writes on
 /// click, and what a host UI's "Erode" button writes directly. Ignored while
 /// that terrain already has an [`ErosionRun`] in flight.
@@ -65,16 +80,16 @@ pub struct ErosionRequested {
 #[derive(Component)]
 pub struct ErosionRun {
     task: Task<ErosionOutcome>,
-    droplets_done: Arc<AtomicU32>,
-    droplets_total: u32,
+    work_done: Arc<AtomicU32>,
+    work_total: u32,
 }
 
 impl ErosionRun {
-    /// Fraction of the run's droplets simulated so far (0..1). The thermal
-    /// pass runs after the last droplet, so expect a short beat at 1.0 before
-    /// the result lands.
+    /// Fraction of the run's work done so far (0..1) — droplets simulated
+    /// plus per-round flow passes (D12). The thermal pass runs after the last
+    /// round, so expect a short beat at 1.0 before the result lands.
     pub fn progress(&self) -> f32 {
-        self.droplets_done.load(Ordering::Relaxed) as f32 / self.droplets_total.max(1) as f32
+        self.work_done.load(Ordering::Relaxed) as f32 / self.work_total.max(1) as f32
     }
 }
 
@@ -125,13 +140,13 @@ pub(crate) fn start_requested_runs(
         }
         started.push(request.terrain);
         let job = ErosionJob::new(terrain, &settings);
-        let droplets_done = job.done.clone();
-        let droplets_total = job.droplets;
+        let work_done = job.done.clone();
+        let work_total = job.work_total;
         let task = AsyncComputeTaskPool::get_or_init(TaskPool::default).spawn(job.run_async());
         commands.entity(request.terrain).insert(ErosionRun {
             task,
-            droplets_done,
-            droplets_total,
+            work_done,
+            work_total,
         });
     }
 }
@@ -197,6 +212,11 @@ struct ErosionJob {
     /// (D12) — the per-job form of [`ErosionSettings::min_slope_deg`].
     min_slope: f32,
     droplets: u32,
+    /// Progress units one flow-accumulation pass is worth (0 when disabled) —
+    /// real work the bar must cover (D12).
+    flow_units: u32,
+    /// Total progress units: droplets plus every flow pass that will run.
+    work_total: u32,
     seed: u64,
     done: Arc<AtomicU32>,
 }
@@ -232,6 +252,15 @@ impl ErosionJob {
         let talus = settings.talus_angle_deg.to_radians().tan() * field.texel_size() / height_scale;
         let min_slope =
             settings.min_slope_deg.to_radians().tan() * field.texel_size() / height_scale;
+        // A flow pass ≈ a quarter-round of droplet work (sort-dominated);
+        // count it so the bar doesn't stall on flow rounds. Rounds whose
+        // droplet quota is zero skip the flow pass too.
+        let flow_units = if settings.flow_strength > 0.0 && droplets > 0 {
+            (droplets / (ROUNDS * 4)).max(1)
+        } else {
+            0
+        };
+        let work_total = droplets + droplets.min(ROUNDS) * flow_units;
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -248,6 +277,8 @@ impl ErosionJob {
             talus,
             min_slope,
             droplets,
+            flow_units,
+            work_total,
             seed,
             done: Arc::new(AtomicU32::new(0)),
         }
@@ -270,9 +301,27 @@ impl ErosionJob {
             if quota == 0 {
                 continue;
             }
+            // Recompute drainage over this round's heights (D12): flow
+            // re-concentrates into the channels the previous round carved,
+            // which is what makes the network dendritic.
+            let flow = if self.settings.flow_strength > 0.0 {
+                let mut acc = self.flow_accumulation();
+                let max = acc.iter().copied().fold(1.0f32, f32::max);
+                let norm = (1.0 + max).ln();
+                for a in &mut acc {
+                    // Log, not a power: the trunk stream's max would zero
+                    // out the tributaries that make the network readable.
+                    *a = (1.0 + *a).ln() / norm;
+                }
+                self.done.fetch_add(self.flow_units, Ordering::Relaxed);
+                Some(acc)
+            } else {
+                None
+            };
             let job = &self;
             let brush = &brush;
             let deposit_brush = &deposit_brush;
+            let flow = flow.as_deref();
             let deltas = pool.scope(|scope| {
                 for batch in 0..batches as u32 {
                     let count =
@@ -283,9 +332,9 @@ impl ErosionJob {
                     // Distinct, deterministic stream per (round, batch).
                     let seed = (job.seed ^ ((round as u64) << 32 | batch as u64))
                         .wrapping_mul(0x2545F4914F6CDD1D);
-                    scope.spawn(
-                        async move { job.simulate_batch(count, seed, brush, deposit_brush) },
-                    );
+                    scope.spawn(async move {
+                        job.simulate_batch(count, seed, brush, deposit_brush, flow)
+                    });
                 }
             });
             // Apply the round, weighted by the feathered mask (D4), so the
@@ -333,12 +382,14 @@ impl ErosionJob {
 
     /// Simulate `count` droplets against the round's start-of-round heights,
     /// scattering erode/deposit writes into this batch's own delta buffer.
+    /// `flow` is the round's normalized flow-accumulation map, if enabled.
     fn simulate_batch(
         &self,
         count: u32,
         seed: u64,
         brush: &[(IVec2, f32)],
         deposit_brush: &[(IVec2, f32)],
+        flow: Option<&[f32]>,
     ) -> Vec<f32> {
         let mut delta = vec![0.0f32; self.heights.len()];
         let mut rng = Pcg32::new(seed);
@@ -383,7 +434,13 @@ impl ErosionJob {
                 // unladen ones do nothing — the old capacity floor carved
                 // shot noise into plains.
                 let slope = (-dh).max(0.0);
-                let capacity = slope * speed * water * s.sediment_capacity;
+                // Drainage boost (D12): rain falls everywhere, erosive power
+                // concentrates where flow accumulates — connected channels,
+                // not scattered scratches.
+                let boost = flow
+                    .and_then(|f| self.index(cell).map(|i| 1.0 + s.flow_strength * f[i]))
+                    .unwrap_or(1.0);
+                let capacity = slope * speed * water * s.sediment_capacity * boost;
                 if sediment > capacity || dh > 0.0 {
                     // Over capacity (or ran uphill into a pit wall): deposit
                     // into the cell just left. Filling to the uphill step
@@ -460,17 +517,6 @@ impl ErosionJob {
             }
             None => (0, 0, w, h),
         };
-        const SQRT_2: f32 = std::f32::consts::SQRT_2;
-        const NEIGHBORS: [(i32, i32, f32); 8] = [
-            (-1, -1, SQRT_2),
-            (0, -1, 1.0),
-            (1, -1, SQRT_2),
-            (-1, 0, 1.0),
-            (1, 0, 1.0),
-            (-1, 1, SQRT_2),
-            (0, 1, 1.0),
-            (1, 1, SQRT_2),
-        ];
         let mut transfer = vec![0.0f32; self.heights.len()];
         for _ in 0..s.thermal_iterations {
             transfer.fill(0.0);
@@ -513,6 +559,46 @@ impl ErosionJob {
                 }
             }
         }
+    }
+
+    /// D8 flow accumulation over the current working heights (D12): every
+    /// texel gets one unit of rain; each cell passes its accumulated total to
+    /// its steepest-descent D8 neighbor, processed high-to-low so upstream
+    /// sums arrive before downstream. Pits and plateau minima keep what
+    /// reaches them. Wrap-aware via [`Self::index`], so drainage crosses the
+    /// looping seam (D6). Returns *raw* accumulation (≥ 1 everywhere); the
+    /// caller log-normalizes.
+    fn flow_accumulation(&self) -> Vec<f32> {
+        let len = self.heights.len();
+        // High-to-low processing order. ⚠️ `sort_unstable` on equal-height
+        // plateaus would route nondeterministically without the index
+        // tie-break (§10 determinism gotcha).
+        let mut order: Vec<u32> = (0..len as u32).collect();
+        order.sort_unstable_by(|&a, &b| {
+            self.heights[b as usize]
+                .total_cmp(&self.heights[a as usize])
+                .then(a.cmp(&b))
+        });
+        let mut acc = vec![1.0f32; len];
+        for &i in &order {
+            let (x, y) = ((i % self.width) as i32, (i / self.width) as i32);
+            let hh = self.heights[i as usize];
+            // Steepest-descent neighbor receives everything.
+            let mut best: Option<(f32, usize)> = None;
+            for (dx, dy, dist) in NEIGHBORS {
+                let Some(j) = self.index(IVec2::new(x + dx, y + dy)) else {
+                    continue;
+                };
+                let drop = (hh - self.heights[j]) / dist;
+                if drop > 0.0 && best.is_none_or(|(d, _)| drop > d) {
+                    best = Some((drop, j));
+                }
+            }
+            if let Some((_, j)) = best {
+                acc[j] += acc[i as usize];
+            }
+        }
+        acc
     }
 
     /// Where a droplet is born: uniform over the map, or — when masked —
@@ -859,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_counts_every_droplet() {
+    fn progress_counts_all_work() {
         let terrain = mound_terrain();
         let settings = ErosionSettings {
             droplet_density: 0.06,
@@ -868,8 +954,85 @@ mod tests {
         let mut job = ErosionJob::new(&terrain, &settings);
         job.seed = 7;
         let done = job.done.clone();
-        let total = job.droplets;
+        let droplets = job.droplets;
+        let total = job.work_total;
         job.run();
         assert_eq!(done.load(Ordering::Relaxed), total);
+        // Flow passes are real work: the total must cover more than droplets.
+        assert!(total > droplets, "flow passes must count: {total}");
+    }
+
+    /// Flow accumulation routes every texel's rain to its steepest-descent
+    /// neighbor, high-to-low: a tilted plane accumulates linearly down each
+    /// column, and on a looping profile drainage crosses the seam (D6).
+    #[test]
+    fn flow_map_routes_rain_downhill() {
+        // A plane tilted along +Y: row y receives everything above it.
+        let mut field = TerrainField::flat(16, 16, 1.0, 0.0, 400.0, false, 0.0);
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                field.set(x, y, 300.0 - y as f32 * 10.0);
+            }
+        }
+        let terrain = EditableTerrain::new(field);
+        let job = ErosionJob::new(&terrain, &ErosionSettings::default());
+        let acc = job.flow_accumulation();
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                assert_eq!(acc[(y * 16 + x) as usize], (y + 1) as f32, "({x},{y})");
+            }
+        }
+
+        // A toroidal ridge peaking at x = 8: the right-hand chain (x 9..15)
+        // keeps descending across the seam into x = 0, which then collects
+        // the whole row; a finite map can't wrap, so x = 0 only gets the
+        // left-hand chain.
+        let profile = |looping: bool| {
+            let mut field = TerrainField::flat(16, 16, 1.0, 0.0, 400.0, looping, 0.0);
+            for y in 0..16u32 {
+                for x in 0..16i64 {
+                    let d = (x - 8).abs().min(16 - (x - 8).abs()) as f32;
+                    field.set(x as u32, y, 300.0 - d * 10.0);
+                }
+            }
+            let terrain = EditableTerrain::new(field);
+            ErosionJob::new(&terrain, &ErosionSettings::default()).flow_accumulation()
+        };
+        let looped = profile(true);
+        let finite = profile(false);
+        for y in 0..16usize {
+            assert_eq!(
+                looped[y * 16],
+                16.0,
+                "row {y}: drainage must cross the seam"
+            );
+            assert!(finite[y * 16] < 16.0, "row {y}: a finite map can't wrap");
+        }
+    }
+
+    /// The flow boost must concentrate carving: with it on, the most-eroded
+    /// texels hold a strictly larger share of the total eroded volume —
+    /// connected channels instead of diffuse scratches.
+    #[test]
+    fn flow_concentrates_erosion() {
+        let terrain = mound_terrain();
+        let share = |flow_strength: f32| {
+            let settings = ErosionSettings {
+                flow_strength,
+                ..test_settings()
+            };
+            let outcome = run_job(&terrain, &settings);
+            let mut eroded: Vec<f32> = outcome.delta.iter().copied().filter(|&d| d < 0.0).collect();
+            eroded.sort_unstable_by(|a, b| a.total_cmp(b)); // most negative first
+            let total: f32 = eroded.iter().sum();
+            let top: f32 = eroded[..eroded.len() / 20].iter().sum();
+            top / total
+        };
+        let diffuse = share(0.0);
+        let focused = share(6.0);
+        assert!(
+            focused > diffuse,
+            "flow must concentrate carving: top-5% share {focused} vs {diffuse}"
+        );
     }
 }

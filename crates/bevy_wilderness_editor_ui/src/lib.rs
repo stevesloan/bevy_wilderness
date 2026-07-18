@@ -467,6 +467,10 @@ fn editor_panel(
                 )
                 .on_hover_text("Slopes shallower than this deposit instead of carving");
                 ui.add(egui::Slider::new(&mut erosion.inertia, 0.0..=0.5).text("inertia"));
+                ui.add(
+                    egui::Slider::new(&mut erosion.flow_strength, 0.0..=8.0).text("flow carving"),
+                )
+                .on_hover_text("Concentrates carving where drainage accumulates; 0 disables");
             });
             match runs.iter().next() {
                 Some(run) => {

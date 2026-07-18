@@ -60,6 +60,12 @@ pub struct ErosionSettings {
     /// Slopes shallower than this (degrees) fade erosion out — flat ground
     /// deposits instead of carving, so uniform rain doesn't pockmark it (D12).
     pub min_slope_deg: f32,
+    /// How strongly drainage concentrates carving (D12): droplet capacity is
+    /// multiplied by `1 + flow_strength × w`, where `w` is the texel's
+    /// log-normalized D8 flow accumulation, recomputed each round — rain
+    /// falls everywhere, erosive power concentrates in channels. 0 disables
+    /// the flow pass.
+    pub flow_strength: f32,
     /// Fraction of surplus sediment dropped per step when over capacity.
     pub deposit_rate: f32,
     /// Fraction of remaining capacity eroded per step when under capacity.
@@ -91,6 +97,7 @@ impl Default for ErosionSettings {
             inertia: 0.15,
             sediment_capacity: 4.0,
             min_slope_deg: 0.5,
+            flow_strength: 3.0,
             deposit_rate: 0.3,
             erode_rate: 0.3,
             evaporate_rate: 0.01,
