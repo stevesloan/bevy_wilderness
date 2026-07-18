@@ -7,7 +7,8 @@ overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
 export; new-terrain-by-default + runtime load (D9); rebake control + clay
 display mode with dynamic terrain-scale shadows (D10); PNG stamp tool with
 GPU floating preview + UI gallery (D11). **Phase 12 conditional**
-(progressive strip re-bake — measure the bake cost first) · Project name:
+(progressive strip re-bake — measure the bake cost first) · **Phase 13
+planned** (erosion realism, D12) · Project name:
 **`bevy_wilderness`** · Last updated: 2026-07-18
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
@@ -466,6 +467,68 @@ floating under the cursor** before commit.
   clicking opens a gallery grid. Ship a few CC0 example stamps so the gallery
   isn't empty on first run.
 
+### D12 — Erosion realism: slope-gated droplets, flow-accumulation coupling, smoothed deposition *(settled 2026-07-18, planned: Phase 13)*
+
+The D3 droplet sim works but reads noisy — pockmarks everywhere. Three
+verified causes: the `min_sediment_capacity` floor lets freshly spawned
+droplets (sediment = 0 < capacity) carve flat ground at their uniformly-random
+spawn points (~1.7 M random pits at 4096²); carving spreads over the radius-3
+brush but deposits land as single bilinear points (1-texel bumps); and the
+flat-ground random-wander branch carves random-walk scratches at min-capacity.
+Goal: maximum realism, quality-over-speed (runs are already background
+tasks with a progress bar). Flat areas get *realistic* treatment — texture
+arrives by deposition, not in-situ pitting; there is deliberately no
+"pristine flats" mode (the D4 mask already protects authored areas).
+
+- **Slope-proportional capacity replaces the floor.** `capacity = slope ×
+  speed × water × sediment_capacity` — flat ground gives ≈ 0 capacity, so a
+  laden droplet deposits and an unladen one does nothing; that *is* the
+  deposition-floor behavior, so `min_sediment_capacity` is **removed**
+  (⚠️ breaking `ErosionSettings` change; no workspace usage outside erosion
+  code). A smooth low-slope gate (`min_slope_deg`, default 0.5°, converted
+  per-job like `talus`) fades `erode_rate` in over the last fraction of a
+  degree so micro-noise slopes aren't nibbled at full rate.
+- **Warm-up + stagnation death.** Droplets may not carve their first 2 steps
+  (spawn-point shot noise gone); a droplet with no momentum *and* no gradient
+  deposits its load and dies instead of wandering randomly — flat-spawned
+  droplets become nearly free, which keeps uniform rain affordable.
+- **Brushed deposition.** Deposits spread over a falloff brush
+  (`deposit_radius`, default 2) at all three sites — mid-flight, pit-fill,
+  and death — mirroring the erosion brush; no more 1-texel bumps.
+- **Per-round D8 flow accumulation, coupled as a capacity multiplier only.**
+  Every texel gets one unit of rain; cells drain to their steepest-descent D8
+  neighbor, processed high-to-low (height sort **tie-broken on index** —
+  `sort_unstable` on plateau ties is nondeterministic otherwise), wrap-aware,
+  log-normalized (`ln(1+A)/ln(1+A_max)` — a power norm would zero the
+  tributaries under the trunk-stream max). Capacity gains `× (1 +
+  flow_strength × w)`: rain falls everywhere, erosive power concentrates in
+  channels — the dendritic look. Spawn stays **uniform** (weighting spawn
+  would starve hillslopes of the diffusive traffic that produces slope
+  texture and flat-area deposition). A separate stream-power grid pass
+  (`E = K·A^m·S^n`) was **rejected**: the boosted droplet *is* a stochastic
+  stream-power integrator, and grid incision detaches material with no
+  sediment routing — it would carve without feeding the fans. Escalation
+  path if channels still read shallow at max `flow_strength`.
+- **Split erode/deposit accumulators + deposit-only blur.** Batches return
+  separate erode/deposit buffers; each round the deposit accumulator gets a
+  separable wrap-aware box blur (`deposit_blur_radius`, default 2) **before**
+  mask weighting — fans and valley fill read smooth while channel walls stay
+  crisp, and the mask still hard-confines (zero-weight texels drop blurred
+  deposits; same class of mass loss as a droplet exiting the mask today).
+- **Analysis maps.** `keep_maps` (default off) retains per-run wear/deposit/
+  flow maps as an `ErosionMaps` component — host API for future splat/
+  auto-texture use, no UI.
+- **Cost honesty.** Flow adds a sort-dominated ~15–25 s over 8 rounds at
+  4096² (roughly doubling a run); split buffers roughly double transient
+  memory (~1.0–1.1 GB peak at 4096² masked). Both fine for a background run
+  with a progress bar; escape hatches (flow every other round,
+  `MAX_BATCHES` 4→3) noted, not built.
+- Defaults shift for quality: `inertia` 0.05→0.15 (longer, smoother
+  channels; carries direction across flats), `droplet_density` 0.1→0.15,
+  `max_lifetime` 64→96 (droplets reach valley floors at 4096²). UI: density
+  slider range fixed to 0.01..=2.0, new collapsed "Realism" section
+  (min slope, inertia, flow carving, deposit blur).
+
 ---
 
 ## 9. Build phases (in order; each with an acceptance check)
@@ -621,6 +684,23 @@ per-frame strips (the escalation path already blessed in the header note —
 no correctness risk, unlike regional). ⚠️ **Measure first** — profile the
 actual full-bake cost at default `rvt_size` before building this.
 
+**Phase 13 — Erosion realism (D12).** Independent of Phase 12; staged as
+three shippable commits.
+*13a — kill the shot noise:* slope-proportional capacity (floor removed) +
+`min_slope_deg` gate, 2-step warm-up, stagnation death, brushed deposition,
+quality defaults. *Accept:* erode an untouched map — plains gain gentle
+sediment texture, **zero pockmarks**; `flat_plain_never_carved` and
+`same_seed_same_result` green.
+*13b — flow accumulation:* per-round D8 pass boosts droplet capacity in
+channels; progress accounting covers flow passes. *Accept:* the same run
+shows **connected dendritic channels**, not scattered scratches;
+`flow_concentrates_erosion` green; progress bar still monotonic to 100%.
+*13c — deposition realism + maps:* split erode/deposit accumulators,
+deposit-only separable blur, `ErosionMaps` behind `keep_maps`. *Accept:*
+valley floors and fans read smooth against crisp channel walls;
+`deposits_are_smooth` green; `keep_maps` yields plausible wear/deposit/flow
+maps.
+
 ---
 
 ## 10. Gotchas (read before coding)
@@ -645,6 +725,11 @@ actual full-bake cost at default `rvt_size` before building this.
   shadow pipeline. Re-verify on every bevy upgrade; move to
   `PREPASS_READS_MATERIAL` when bevy grows an API for it.
 - **Droplet writes scatter** — multithread via per-batch delta buffers, not shared.
+- **Erosion determinism is order-fragile** (D12) — batch results merge in
+  spawn order, the flow sort tie-breaks on index, the deposit blur is
+  single-threaded; `same_seed_same_result` is the tripwire. Also: blur the
+  *deposit* accumulator only, and always before mask weighting, or masks
+  leak.
 - **Mask edge feathering** — skip it → hard rectangular seam.
 - **Toroidal everything on looping** — brush footprint, erosion neighbor reads, and
   re-bake all wrap, or the seam breaks.
