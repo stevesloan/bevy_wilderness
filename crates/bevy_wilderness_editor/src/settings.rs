@@ -49,7 +49,7 @@ pub struct ErosionSettings {
     /// Droplets per texel of eroded area (the mask, or the whole map when
     /// unmasked) — a density, so a run feels the same at any map resolution
     /// or mask size. More = stronger, more detailed erosion, linearly slower.
-    /// The default 0.1 is ~1.7 M droplets over a full 4096² map.
+    /// The default 0.15 is ~2.5 M droplets over a full 4096² map.
     pub droplet_density: f32,
     /// Max steps a droplet lives (each step moves one texel).
     pub max_lifetime: u32,
@@ -57,8 +57,9 @@ pub struct ErosionSettings {
     pub inertia: f32,
     /// Sediment a droplet can carry, scaled by speed × slope × water.
     pub sediment_capacity: f32,
-    /// Capacity floor so droplets keep carving on near-flat ground.
-    pub min_sediment_capacity: f32,
+    /// Slopes shallower than this (degrees) fade erosion out — flat ground
+    /// deposits instead of carving, so uniform rain doesn't pockmark it (D12).
+    pub min_slope_deg: f32,
     /// Fraction of surplus sediment dropped per step when over capacity.
     pub deposit_rate: f32,
     /// Fraction of remaining capacity eroded per step when under capacity.
@@ -69,6 +70,10 @@ pub struct ErosionSettings {
     pub gravity: f32,
     /// Radius (in texels) erosion is spread over, softening single-texel pits.
     pub erosion_radius: u32,
+    /// Radius (in texels) deposits are spread over — the erosion brush's
+    /// mirror, so sediment lands as smooth mounds, not single-texel bumps
+    /// (D12).
+    pub deposit_radius: u32,
     /// Thermal pass: slopes steeper than this (degrees) shed talus (D3).
     pub talus_angle_deg: f32,
     /// Fraction of the excess slope relaxed per thermal iteration.
@@ -81,16 +86,17 @@ pub struct ErosionSettings {
 impl Default for ErosionSettings {
     fn default() -> Self {
         Self {
-            droplet_density: 0.1,
-            max_lifetime: 64,
-            inertia: 0.05,
+            droplet_density: 0.15,
+            max_lifetime: 96,
+            inertia: 0.15,
             sediment_capacity: 4.0,
-            min_sediment_capacity: 0.01,
+            min_slope_deg: 0.5,
             deposit_rate: 0.3,
             erode_rate: 0.3,
             evaporate_rate: 0.01,
             gravity: 4.0,
             erosion_radius: 3,
+            deposit_radius: 2,
             talus_angle_deg: 33.0,
             thermal_rate: 0.5,
             thermal_iterations: 8,

@@ -446,7 +446,7 @@ fn editor_panel(
             ui.separator();
             ui.label("Erosion");
             ui.add(
-                egui::Slider::new(&mut erosion.droplet_density, 0.01..=1.0)
+                egui::Slider::new(&mut erosion.droplet_density, 0.01..=2.0)
                     .logarithmic(true)
                     .text("droplet density"),
             );
@@ -460,6 +460,14 @@ fn editor_panel(
             ui.add(
                 egui::Slider::new(&mut erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
             );
+            // The D12 realism knobs — sane defaults, tucked away.
+            egui::CollapsingHeader::new("Realism").show(ui, |ui| {
+                ui.add(
+                    egui::Slider::new(&mut erosion.min_slope_deg, 0.0..=5.0).text("min slope °"),
+                )
+                .on_hover_text("Slopes shallower than this deposit instead of carving");
+                ui.add(egui::Slider::new(&mut erosion.inertia, 0.0..=0.5).text("inertia"));
+            });
             match runs.iter().next() {
                 Some(run) => {
                     ui.add(egui::ProgressBar::new(run.progress()).show_percentage());

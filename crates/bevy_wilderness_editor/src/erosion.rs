@@ -14,6 +14,12 @@
 //! range), so the standard droplet parameters keep their meaning regardless of
 //! world scale. Droplets read wrap-aware samples, so on looping terrain a
 //! droplet exiting one edge re-enters the opposite (D6).
+//!
+//! Realism rules (D12): carrying capacity is proportional to slope — flat
+//! ground never carves, it only receives sediment; droplets warm up before
+//! they may erode (no spawn-point pitting) and die where they stagnate (no
+//! random-walk scratches); deposits spread over a falloff brush mirroring the
+//! erosion brush, so fans land smooth.
 
 use std::sync::{
     Arc,
@@ -40,6 +46,10 @@ const ROUNDS: u32 = 8;
 /// Cap on parallel droplet batches — each owns a full-field f32 delta buffer
 /// (67 MB at 4096²), so beyond this extra threads would buy memory, not time.
 const MAX_BATCHES: usize = 4;
+
+/// Steps a freshly spawned droplet flows before it may carve — kills the
+/// spawn-point shot noise of uniform rain (D12).
+const DROPLET_WARMUP_STEPS: u32 = 2;
 
 /// Start an erosion run on a terrain: what the built-in erode tool writes on
 /// click, and what a host UI's "Erode" button writes directly. Ignored while
@@ -183,6 +193,9 @@ struct ErosionJob {
     height_scale: f32,
     /// Talus height threshold per texel of horizontal distance, normalized.
     talus: f32,
+    /// Slope (normalized height per texel) below which erosion fades out
+    /// (D12) — the per-job form of [`ErosionSettings::min_slope_deg`].
+    min_slope: f32,
     droplets: u32,
     seed: u64,
     done: Arc<AtomicU32>,
@@ -217,6 +230,8 @@ impl ErosionJob {
             (None, None, droplets)
         };
         let talus = settings.talus_angle_deg.to_radians().tan() * field.texel_size() / height_scale;
+        let min_slope =
+            settings.min_slope_deg.to_radians().tan() * field.texel_size() / height_scale;
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -231,6 +246,7 @@ impl ErosionJob {
             settings: settings.clone(),
             height_scale,
             talus,
+            min_slope,
             droplets,
             seed,
             done: Arc::new(AtomicU32::new(0)),
@@ -246,6 +262,7 @@ impl ErosionJob {
         // Net normalized delta vs. the snapshot — what the run returns.
         let mut total = vec![0.0f32; len];
         let brush = erosion_brush(self.settings.erosion_radius);
+        let deposit_brush = erosion_brush(self.settings.deposit_radius.max(1));
         let pool = AsyncComputeTaskPool::get_or_init(TaskPool::default);
         let batches = pool.thread_num().clamp(1, MAX_BATCHES);
         for round in 0..ROUNDS {
@@ -255,6 +272,7 @@ impl ErosionJob {
             }
             let job = &self;
             let brush = &brush;
+            let deposit_brush = &deposit_brush;
             let deltas = pool.scope(|scope| {
                 for batch in 0..batches as u32 {
                     let count =
@@ -265,7 +283,9 @@ impl ErosionJob {
                     // Distinct, deterministic stream per (round, batch).
                     let seed = (job.seed ^ ((round as u64) << 32 | batch as u64))
                         .wrapping_mul(0x2545F4914F6CDD1D);
-                    scope.spawn(async move { job.simulate_batch(count, seed, brush) });
+                    scope.spawn(
+                        async move { job.simulate_batch(count, seed, brush, deposit_brush) },
+                    );
                 }
             });
             // Apply the round, weighted by the feathered mask (D4), so the
@@ -313,7 +333,13 @@ impl ErosionJob {
 
     /// Simulate `count` droplets against the round's start-of-round heights,
     /// scattering erode/deposit writes into this batch's own delta buffer.
-    fn simulate_batch(&self, count: u32, seed: u64, brush: &[(IVec2, f32)]) -> Vec<f32> {
+    fn simulate_batch(
+        &self,
+        count: u32,
+        seed: u64,
+        brush: &[(IVec2, f32)],
+        deposit_brush: &[(IVec2, f32)],
+    ) -> Vec<f32> {
         let mut delta = vec![0.0f32; self.heights.len()];
         let mut rng = Pcg32::new(seed);
         let s = &self.settings;
@@ -323,21 +349,20 @@ impl ErosionJob {
             let mut speed = 1.0f32;
             let mut water = 1.0f32;
             let mut sediment = 0.0f32;
-            for _ in 0..s.max_lifetime {
-                let cell = pos.floor();
-                let offset = pos - cell;
-                let cell = cell.as_ivec2();
+            for step in 0..s.max_lifetime {
+                let cell = pos.floor().as_ivec2();
                 let (grad, h_old) = self.gradient_height(pos);
                 // Momentum blend: inertia 0 hugs the gradient, 1 never turns.
                 dir = dir * s.inertia - grad * (1.0 - s.inertia);
                 let len = dir.length();
-                dir = if len <= 1e-6 {
-                    // Flat ground: wander in a random direction.
-                    let a = rng.next_f32() * std::f32::consts::TAU;
-                    Vec2::new(a.cos(), a.sin())
-                } else {
-                    dir / len
-                };
+                if len <= 1e-6 {
+                    // No momentum *and* no gradient: stagnant. Die where it
+                    // stands (the terminal deposit below leaves the load) —
+                    // wandering randomly would carve scratches into flat
+                    // ground (D12).
+                    break;
+                }
+                dir /= len;
                 pos += dir;
                 if self.looping {
                     // Exiting one edge re-enters the opposite (D6).
@@ -353,9 +378,12 @@ impl ErosionJob {
                     break;
                 }
                 let dh = self.height_at(pos) - h_old;
-                // Carrying capacity scales with slope, speed, and water.
-                let capacity =
-                    (-dh * speed * water * s.sediment_capacity).max(s.min_sediment_capacity);
+                // Carrying capacity is proportional to slope (D12): flat
+                // ground gives ≈ 0 capacity, so laden droplets deposit and
+                // unladen ones do nothing — the old capacity floor carved
+                // shot noise into plains.
+                let slope = (-dh).max(0.0);
+                let capacity = slope * speed * water * s.sediment_capacity;
                 if sediment > capacity || dh > 0.0 {
                     // Over capacity (or ran uphill into a pit wall): deposit
                     // into the cell just left. Filling to the uphill step
@@ -366,12 +394,19 @@ impl ErosionJob {
                         (sediment - capacity) * s.deposit_rate
                     };
                     sediment -= amount;
-                    self.deposit(&mut delta, cell, offset, amount);
-                } else {
+                    self.deposit(&mut delta, cell, amount, deposit_brush);
+                } else if step >= DROPLET_WARMUP_STEPS {
                     // Under capacity: erode, spread over the brush so channels
-                    // don't collapse into single-texel trenches. Never more
-                    // than the drop, or flow would cut below its destination.
-                    let amount = ((capacity - sediment) * s.erode_rate).min(-dh);
+                    // don't collapse into single-texel trenches. The low-slope
+                    // gate fades carving out toward flat ground; never take
+                    // more than the drop, or flow would cut below its
+                    // destination.
+                    let gate = if self.min_slope > 0.0 {
+                        (slope / self.min_slope).min(1.0)
+                    } else {
+                        1.0
+                    };
+                    let amount = ((capacity - sediment) * s.erode_rate * gate).min(slope);
                     sediment += amount;
                     for &(off, weight) in brush {
                         if let Some(i) = self.index(cell + off) {
@@ -388,8 +423,7 @@ impl ErosionJob {
             }
             // The droplet dies where it stands; leave its load there.
             if sediment > 0.0 {
-                let cell = pos.floor();
-                self.deposit(&mut delta, cell.as_ivec2(), pos - cell, sediment);
+                self.deposit(&mut delta, pos.floor().as_ivec2(), sediment, deposit_brush);
             }
             self.done.fetch_add(1, Ordering::Relaxed);
         }
@@ -551,13 +585,13 @@ impl ErosionJob {
         self.gradient_height(pos).1
     }
 
-    /// Bilinear deposit onto the four corners of `cell`.
-    fn deposit(&self, delta: &mut [f32], cell: IVec2, offset: Vec2, amount: f32) {
-        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-            let w = if dx == 0 { 1.0 - offset.x } else { offset.x }
-                * if dy == 0 { 1.0 - offset.y } else { offset.y };
-            if let Some(i) = self.index(cell + IVec2::new(dx, dy)) {
-                delta[i] += amount * w;
+    /// Spread a deposit over the falloff brush centered on `cell` — the
+    /// erosion brush's mirror (D12), so sediment lands as a smooth mound
+    /// instead of a single-texel bump.
+    fn deposit(&self, delta: &mut [f32], cell: IVec2, amount: f32, brush: &[(IVec2, f32)]) {
+        for &(off, weight) in brush {
+            if let Some(i) = self.index(cell + off) {
+                delta[i] += amount * weight;
             }
         }
     }
@@ -684,6 +718,69 @@ mod tests {
                 assert!((-0.01..=400.01).contains(&h), "({x},{y}) out of range: {h}");
             }
         }
+    }
+
+    /// The D12 shot-noise regression tests. On truly flat terrain, uniform
+    /// rain must do *nothing* — slope-proportional capacity plus stagnation
+    /// death means every droplet dies empty where it spawned. (The old
+    /// capacity floor carved ~a pit per droplet here.)
+    #[test]
+    fn flat_terrain_untouched() {
+        let field = TerrainField::flat(128, 128, 1.0, 0.0, 400.0, false, 50.0);
+        let terrain = EditableTerrain::new(field);
+        let settings = test_settings();
+        let outcome = run_job(&terrain, &settings);
+        assert!(
+            outcome.changed.is_none(),
+            "rain on flat ground must be a no-op: {:?}",
+            outcome.changed
+        );
+    }
+
+    /// Around a hill, the plain's texture must be deposition-dominated:
+    /// sediment fans run out from the cone, and the only carving allowed is
+    /// streams incising through their own deposits — a sliver of the
+    /// deposited volume, nothing like the old per-spawn pockmarks.
+    #[test]
+    fn flat_plain_gains_not_loses() {
+        let terrain = mound_terrain();
+        let settings = test_settings();
+        let outcome = run_job(&terrain, &settings);
+        let (mut neg_sum, mut pos_sum) = (0.0f32, 0.0f32);
+        for y in 0..128u32 {
+            for x in 0..128u32 {
+                // Off the cone (base radius 40) with margin for the deposit
+                // brush and thermal creep at its foot.
+                let d = Vec2::new(x as f32 - 64.0, y as f32 - 64.0).length();
+                if d <= 55.0 {
+                    continue;
+                }
+                let delta = outcome.delta[(y * 128 + x) as usize];
+                if delta < 0.0 {
+                    neg_sum -= delta;
+                } else {
+                    pos_sum += delta;
+                }
+            }
+        }
+        assert!(pos_sum > 1.0, "fans must reach the plain: {pos_sum}");
+        assert!(
+            neg_sum < 0.01 * pos_sum,
+            "plain carving must be a sliver of deposition: -{neg_sum} vs +{pos_sum}"
+        );
+    }
+
+    /// The determinism tripwire (D12): same seed, same settings → bit-equal
+    /// deltas, guarding the spawn-order batch merge (and, later, the flow
+    /// sort tie-break and single-threaded blur) forever.
+    #[test]
+    fn same_seed_same_result() {
+        let terrain = mound_terrain();
+        let settings = test_settings();
+        let a = run_job(&terrain, &settings);
+        let b = run_job(&terrain, &settings);
+        assert_eq!(a.changed, b.changed);
+        assert_eq!(a.delta, b.delta);
     }
 
     #[test]
