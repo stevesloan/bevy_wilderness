@@ -51,6 +51,50 @@ Normal maps must be **OpenGL convention** (+Y / green points up), like Poly Have
 `nor_gl` set. If crevices and cracks look like raised bumps or veins, your normals
 are DirectX convention — invert the green channel to convert them.
 
+## Terrain editor
+
+The workspace includes an embeddable terrain editor:
+[`bevy_wilderness_editor`](crates/bevy_wilderness_editor) (the UI-agnostic
+core a game embeds with its own UI) and
+[`bevy_wilderness_editor_ui`](crates/bevy_wilderness_editor_ui) (an optional
+egui side panel driving that same public API). Design and decisions live in
+[docs/terrain-editor-design.md](docs/terrain-editor-design.md).
+
+Launch the editor app (uses the same textures as `basic` — fetch them once,
+see above):
+
+```sh
+> cargo run -p bevy_wilderness_editor_ui --example editor
+```
+
+It opens on a fresh flat 4096² terrain. Fly with WASD + right-drag; everything
+is driven from the side panel, with keyboard shortcuts mirroring it (see the
+doc comment atop
+[`examples/editor.rs`](crates/bevy_wilderness_editor_ui/examples/editor.rs)
+for the full list):
+
+- **Sculpt** (S) — raise / lower / smooth / flatten under an adjustable brush.
+- **Mask** (M) — paint a feathered mask that confines sculpting and erosion.
+- **Erode** (E) — background hydraulic + thermal erosion with a live progress
+  bar: slope-gated droplets, flow-accumulation-carved dendritic channels,
+  smoothed sediment fans. Tune it under the panel's Erosion → Realism section.
+- **Stamp** (T) — float a grayscale heightfield PNG under the cursor as a live
+  GPU preview; wheel = strength (negative carves), Ctrl+wheel = size,
+  Shift+wheel = rotate; click commits. Drop your own 8/16-bit PNGs into the
+  gallery folder (`crates/bevy_wilderness_editor_ui/assets/stamps/`, generated
+  on first run) and hit Rescan.
+- **Undo/redo** — Ctrl+Z / Ctrl+Shift+Z, every tool and erosion included.
+- **Export** — writes the heightmap as both `.ktx2` (engine master) and
+  16-bit `.png` (interchange). Reload an export without restarting via the
+  panel's "Load terrain…", or at launch:
+
+```sh
+> WILDERNESS_HEIGHTMAP=heightmap_export.ktx2 cargo run -p bevy_wilderness_editor_ui --example editor
+```
+
+`WILDERNESS_NEW=<texels>` picks the starting resolution of the default new
+terrain (world footprint is unchanged).
+
 ## Height fog
 
 Exponential height fog with two rendering tiers — `FogTier::High` (fullscreen
@@ -98,4 +142,4 @@ options:
 
 ## Contributing
 
-PRs are very welcome!
+PRs are welcome. This is a terrain editor for my game Totem, so PR's need to be aligned with the games goals.
