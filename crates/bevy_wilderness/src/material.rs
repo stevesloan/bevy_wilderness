@@ -23,11 +23,15 @@ impl From<&GridMaterial> for WireframeKey {
     }
 }
 
-/// Dev/experiment scalars packed into one uniform so `GridMaterial` stays under the
-/// bind-group ceiling (see its banner). `ao_strength`/`bent_strength` toggle the two
-/// halves of the ambient bake (B / N keys); `debug_view` cycles the channel isolation
-/// (V key). All experiment-only — normal renders leave these at their defaults.
-#[derive(Clone, Copy, Debug, ShaderType, Reflect)]
+/// Dev/experiment + editing scalars packed into one uniform so `GridMaterial`
+/// stays under the bind-group ceiling (see its banner — the ceiling is uniform
+/// binding *slots*, so growing this struct is the sanctioned way to pass new
+/// scalars). `ao_strength`/`bent_strength` toggle the two halves of the
+/// ambient bake (B / N keys); `debug_view` cycles the channel isolation
+/// (V key). The `stamp_*` fields are the D11 stamp preview's transform, read
+/// by the vertex shader while flags bit5 is set; zeroed and ignored
+/// otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
 pub(crate) struct DevParams {
     /// Macro AO strength: 0 off, 1 full.
     pub(crate) ao_strength: f32,
@@ -35,6 +39,15 @@ pub(crate) struct DevParams {
     pub(crate) bent_strength: f32,
     /// Debug channel isolation: 0 lit, 1 macro AO, 2 bent normal, 3 cavity.
     pub(crate) debug_view: u32,
+    /// Stamp preview center, world XZ meters.
+    pub(crate) stamp_center: Vec2,
+    /// Stamp preview half extents, world meters (X = width/2, Y = depth/2).
+    pub(crate) stamp_half_size: Vec2,
+    /// Stamp preview rotation about +Y, radians.
+    pub(crate) stamp_rotation: f32,
+    /// Stamp preview height contribution at full-white texels, meters
+    /// (signed: negative carves).
+    pub(crate) stamp_strength: f32,
 }
 
 impl Default for DevParams {
@@ -43,6 +56,10 @@ impl Default for DevParams {
             ao_strength: 1.0,
             bent_strength: 1.0,
             debug_view: 0,
+            stamp_center: Vec2::ZERO,
+            stamp_half_size: Vec2::ZERO,
+            stamp_rotation: 0.0,
+            stamp_strength: 0.0,
         }
     }
 }
@@ -121,6 +138,14 @@ pub(crate) struct GridMaterial {
     #[cfg(feature = "editing")]
     #[texture(115)]
     pub(crate) edit_overlay: Handle<Image>,
+    /// Stamp preview heightfield (`editing`, D11): a grayscale texture the
+    /// vertex shader composites under the cursor while flags bit5 is set —
+    /// the GPU floating preview. Same ceiling story as `edit_overlay`: a
+    /// texture binding sharing the heightmap sampler, compiled out of
+    /// non-editing builds behind the `WILDERNESS_STAMP` def.
+    #[cfg(feature = "editing")]
+    #[texture(116)]
+    pub(crate) stamp: Handle<Image>,
     #[uniform(108)]
     pub(crate) texel_size: f32,
     #[uniform(109)]
@@ -138,6 +163,16 @@ impl GridMaterial {
     /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
     #[cfg(feature = "editing")]
     pub(crate) const FLAG_CLAY: u32 = 1 << 4;
+    /// `flags` bit5: stamp preview active (D11) — the vertex shader
+    /// composites the stamp texture through the `DevParams::stamp_*`
+    /// transform. Kept in sync by `sync_stamp_preview`.
+    #[cfg(feature = "editing")]
+    pub(crate) const FLAG_STAMP: u32 = 1 << 5;
+    /// `flags` bit6: the stamp preview is mask-confined (D11) — its
+    /// contribution is weighted by the edit-overlay (mask) texture, matching
+    /// what the commit will do.
+    #[cfg(feature = "editing")]
+    pub(crate) const FLAG_STAMP_MASKED: u32 = 1 << 6;
 }
 
 impl MaterialExtension for GridMaterial {
@@ -211,12 +246,22 @@ impl MaterialExtension for GridMaterial {
                 fragment.shader_defs.push("WILDERNESS_SHADE".into());
             }
         }
-        // The edit-overlay binding exists only in editing builds; gate the
-        // shader's declaration + sample on a def so the same terrain.wgsl
-        // compiles against both bind-group layouts.
+        // The edit-overlay and stamp bindings exist only in editing builds;
+        // gate the shader's declarations + samples on defs so the same
+        // terrain.wgsl compiles against both bind-group layouts. Both go to
+        // the *vertex* stage too: the stamp preview composites in the vertex
+        // shader (including depth-only shadow pipelines, so a previewed
+        // mountain casts its previewed silhouette) and samples the overlay
+        // for its mask weight.
         #[cfg(feature = "editing")]
-        if let Some(fragment) = descriptor.fragment.as_mut() {
-            fragment.shader_defs.push("WILDERNESS_EDIT_OVERLAY".into());
+        {
+            let vertex = &mut descriptor.vertex.shader_defs;
+            vertex.push("WILDERNESS_EDIT_OVERLAY".into());
+            vertex.push("WILDERNESS_STAMP".into());
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("WILDERNESS_EDIT_OVERLAY".into());
+                fragment.shader_defs.push("WILDERNESS_STAMP".into());
+            }
         }
         Ok(())
     }

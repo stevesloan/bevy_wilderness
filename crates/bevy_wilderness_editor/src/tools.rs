@@ -17,6 +17,8 @@ impl ToolId {
     pub const MASK: ToolId = ToolId("wilderness.mask");
     /// Built-in erosion tool — Phase 5.
     pub const ERODE: ToolId = ToolId("wilderness.erode");
+    /// Built-in stamp tool (heightfield PNG stamps) — Phase 11.
+    pub const STAMP: ToolId = ToolId("wilderness.stamp");
 }
 
 /// A registered tool, as a UI would list it.

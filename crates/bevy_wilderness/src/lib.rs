@@ -12,12 +12,12 @@ mod quality;
 mod rvt;
 mod texture;
 
-#[cfg(feature = "editing")]
-pub use clipmap::RebakeRequested;
 pub use clipmap::{
     Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, SunVisibility,
     TerrainLayer,
 };
+#[cfg(feature = "editing")]
+pub use clipmap::{ClipmapStamp, RebakeRequested};
 pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
 /// that must stay in sync with the shaders (design doc §5.3).
@@ -92,6 +92,7 @@ impl Plugin for ClipmapPlugin {
                 clipmap::sync_editable_materials,
                 clipmap::sync_clay_flag,
                 clipmap::sync_clay_shadows,
+                clipmap::sync_stamp_preview,
             ),
         );
 

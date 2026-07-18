@@ -16,6 +16,9 @@
 //! - [`ErosionRequested`] / [`ErosionRun`] — start an erosion run / watch its
 //!   progress (D3).
 //! - [`SeamOverlay`] — toggle the looping tile-boundary visualization (D6).
+//! - [`ActiveStamp`] / [`StampSettings`] — the stamp tool's heightfield PNG
+//!   and transform (D11); the GPU preview floats it under the cursor, a
+//!   click commits it.
 //! - [`ExportRequested`] / [`HeightmapExported`] — write the heightmap to an
 //!   R16 KTX2 (round-trips through the asset loader) and/or a 16-bit PNG
 //!   interchange copy, by extension (D7).
@@ -38,6 +41,7 @@ mod rebake;
 mod sculpt;
 mod seam;
 mod settings;
+mod stamp;
 mod swap;
 mod terrain;
 mod tools;
@@ -50,6 +54,7 @@ pub use field::TerrainField;
 pub use rebake::RebakeSettings;
 pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
+pub use stamp::{ActiveStamp, StampData, StampSettings};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
@@ -89,6 +94,8 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<UndoHistory>()
             .init_resource::<RebakeSettings>()
             .init_resource::<SeamOverlay>()
+            .init_resource::<ActiveStamp>()
+            .init_resource::<StampSettings>()
             .init_resource::<export::ExportTasks>()
             .add_message::<TerrainRegionChanged>()
             .add_message::<ErosionRequested>()
@@ -125,6 +132,13 @@ impl Plugin for TerrainEditorPlugin {
                     erosion::request_on_click
                         .run_if(tool_active(ToolId::ERODE))
                         .in_set(EditorSet::Tools),
+                    stamp::drive_stamp_tool
+                        .run_if(tool_active(ToolId::STAMP))
+                        .in_set(EditorSet::Tools),
+                    // Drop a floating preview the frame the tool deactivates.
+                    stamp::clear_stamp_preview
+                        .run_if(not(tool_active(ToolId::STAMP)))
+                        .in_set(EditorSet::Tools),
                     // Between Tools and Apply: a click's request starts its
                     // task the same frame, and a landed result's dirty region
                     // flushes (quantize + event + re-bake debounce) the same
@@ -155,5 +169,6 @@ impl Plugin for TerrainEditorPlugin {
         tools.register(ToolId::SCULPT, "Sculpt");
         tools.register(ToolId::MASK, "Mask");
         tools.register(ToolId::ERODE, "Erode");
+        tools.register(ToolId::STAMP, "Stamp");
     }
 }

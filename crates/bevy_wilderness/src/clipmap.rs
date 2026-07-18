@@ -160,6 +160,35 @@ pub struct Clipmap {
     /// screen).
     #[cfg(feature = "editing")]
     pub clay: bool,
+
+    /// Stamp floating preview (`editing` feature, D11): while `Some`, the
+    /// vertex shader composites this stamp heightfield into the terrain —
+    /// live, GPU-side, at any stamp size — without touching the heightmap.
+    /// An editor updates it as the cursor moves and sets it back to `None`
+    /// when the preview ends; committing the stamp is the editor's job
+    /// (write the same math into the heightmap).
+    #[cfg(feature = "editing")]
+    pub stamp: Option<ClipmapStamp>,
+}
+
+/// One floating stamp preview (see [`Clipmap::stamp`]).
+#[cfg(feature = "editing")]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipmapStamp {
+    /// Grayscale heightfield texture; its red channel (0..1) scales
+    /// [`strength`](Self::strength).
+    pub image: Handle<Image>,
+    /// Stamp center, world XZ meters.
+    pub center: Vec2,
+    /// Half extents of the stamp footprint, world meters.
+    pub half_size: Vec2,
+    /// Rotation about +Y, radians.
+    pub rotation: f32,
+    /// Height added where the stamp is full white, meters (negative carves).
+    pub strength: f32,
+    /// Weight the preview by the mask overlay (set when a mask is painted,
+    /// matching the commit's mask confinement).
+    pub masked: bool,
 }
 
 #[derive(Component)]
@@ -310,6 +339,10 @@ pub(crate) fn init_clipmaps(
                     detail_orm_array: clipmap.detail.orm_array.clone(),
                     #[cfg(feature = "editing")]
                     edit_overlay: edit_overlay.clone(),
+                    // Any valid texture works while the stamp flag is off;
+                    // `sync_stamp_preview` swaps in the real stamp.
+                    #[cfg(feature = "editing")]
+                    stamp: edit_overlay.clone(),
                     texel_size: clipmap.texel_size,
                     minmax: Vec2::new(clipmap.min, clipmap.max),
                     flags: wireframe | quality_bits,
@@ -563,6 +596,52 @@ pub(crate) fn sync_clay_flag(
                     material.extension.flags |= GridMaterial::FLAG_CLAY;
                 } else {
                     material.extension.flags &= !GridMaterial::FLAG_CLAY;
+                }
+            }
+        }
+    }
+}
+
+/// Mirrors [`Clipmap::stamp`] into the materials (D11): the stamp texture
+/// binding, its transform in the `DevParams` uniform, and flags bit5/bit6.
+/// Runs unfiltered — the preview moves every frame while floating — with the
+/// check-before-`get_mut` keeping the no-stamp steady state free.
+#[cfg(feature = "editing")]
+pub(crate) fn sync_stamp_preview(
+    clipmaps: Query<(&Clipmap, &ClipmapMaterials)>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (clipmap, mats) in &clipmaps {
+        for handle in [&mats.solid, &mats.wireframe] {
+            let Some(material) = materials.get(handle) else {
+                continue;
+            };
+            let mut dev = material.extension.dev;
+            let mut flags = material.extension.flags
+                & !(GridMaterial::FLAG_STAMP | GridMaterial::FLAG_STAMP_MASKED);
+            let mut texture = None;
+            if let Some(stamp) = &clipmap.stamp {
+                dev.stamp_center = stamp.center;
+                dev.stamp_half_size = stamp.half_size;
+                dev.stamp_rotation = stamp.rotation;
+                dev.stamp_strength = stamp.strength;
+                flags |= GridMaterial::FLAG_STAMP;
+                if stamp.masked {
+                    flags |= GridMaterial::FLAG_STAMP_MASKED;
+                }
+                if material.extension.stamp != stamp.image {
+                    texture = Some(stamp.image.clone());
+                }
+            }
+            if (dev != material.extension.dev
+                || flags != material.extension.flags
+                || texture.is_some())
+                && let Some(mut material) = materials.get_mut(handle)
+            {
+                material.extension.dev = dev;
+                material.extension.flags = flags;
+                if let Some(texture) = texture {
+                    material.extension.stamp = texture;
                 }
             }
         }

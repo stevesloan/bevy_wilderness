@@ -13,6 +13,9 @@ bevy_wilderness_editor = { path = "../bevy_wilderness_editor", version = "0.1.0"
 # Native "Load terrain" file dialog. The xdg-portal backend (D-Bus desktop
 # portal) avoids a GTK3 system dependency on Linux.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+# Stamp-gallery thumbnails (decode + downscale the folder's PNGs); already in
+# bevy's tree. The example also uses it to generate the starter stamps.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 bevy = { version = "0.19.0", features = ["free_camera"] }

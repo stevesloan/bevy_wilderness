@@ -1,13 +1,14 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **Phases 0–10 complete** — workspace + editing API; editor core;
+Status: **Phases 0–11 complete** — workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
 overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
 export; new-terrain-by-default + runtime load (D9); rebake control + clay
-display mode with dynamic terrain-scale shadows (D10). **Phases 11–12
-planned** (D11: PNG stamp tool + library; conditional progressive re-bake) ·
-Project name: **`bevy_wilderness`** · Last updated: 2026-07-18
+display mode with dynamic terrain-scale shadows (D10); PNG stamp tool with
+GPU floating preview + UI gallery (D11). **Phase 12 conditional**
+(progressive strip re-bake — measure the bake cost first) · Project name:
+**`bevy_wilderness`** · Last updated: 2026-07-18
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
 > restructure — `src/…` paths are now `crates/bevy_wilderness/src/…`, and the
@@ -588,7 +589,7 @@ the mask overlay tint stays visible on clay (masking is part of the
 modeling session). Dynamic shadows per D10.3, including the `Mask(0.0)`
 alpha-mode coupling documented there.
 
-**Phase 11 — Stamp tool + library (D11).** Core stamp tool (GPU floating
+**Phase 11 ✅ — Stamp tool + library (D11).** Core stamp tool (GPU floating
 preview, wheel controls, mask-weighted, toroidal, 8/16-bit PNG) + UI gallery.
 *Accept:* pick a stamp from the gallery; the preview floats under the cursor
 at full framerate with a half-map-scale stamp; wheel / Ctrl+wheel /
@@ -596,6 +597,23 @@ Shift+wheel adjust strength / scale / rotation live; a feathered mask
 attenuates it; click commits with **no visible pop** (preview ≡ committed
 geometry); Ctrl+Z reverts the whole stamp as one entry; a stamp crossing the
 looping seam wraps correctly in preview and commit.
+Decisions in flight: renderer API is `Clipmap::stamp: Option<ClipmapStamp>`
+(image + center/half-size/rotation/strength/masked), mirrored into the
+material per frame — texture at binding 116, transform in the *grown*
+`DevParams` uniform, flags bit5/bit6. The composite lives in the **vertex
+path of every pipeline**, so in clay mode the preview casts its previewed
+shadow. Add/subtract collapsed into **signed strength** (the wheel scrolls
+through zero into carving) — no separate mode. `StampData::sample` is the
+CPU twin of `textureSampleLevel` (half-integer texel centers, edge clamp),
+and the commit is the §10 math-parity gotcha made real: one function, two
+implementations, unit-tested. While previewing, the shared pick reads the
+*base* terrain (the field is untouched until commit) — accepted in D11.
+The wheel is read only while the pick hits terrain, so egui keeps panel
+scrolling; the example additionally zeroes the free camera's
+`scroll_factor` while the tool is active (it reads the wheel
+unconditionally — the D11 ⚠️ input-priority conflict, resolved host-side).
+Starter stamps are *generated* (hill/ridge/ring, 16-bit, gitignored) rather
+than shipped as binaries.
 
 **Phase 12 (conditional) — Progressive strip re-bake.** Only if measurement
 shows the full bake hitches interactively: split the same bake work into N

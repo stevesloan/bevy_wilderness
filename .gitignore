@@ -2,3 +2,5 @@
 /crates/bevy_wilderness/assets/terrain
 # Editor exports written into the assets dir by the example (Export button)
 heightmap_export.*
+# Starter stamps the editor example generates on first run
+/crates/bevy_wilderness_editor_ui/assets/stamps/

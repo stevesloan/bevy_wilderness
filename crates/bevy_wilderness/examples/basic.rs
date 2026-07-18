@@ -353,5 +353,7 @@ fn setup(
         edit_overlay: None,
         #[cfg(feature = "editing")]
         clay: false,
+        #[cfg(feature = "editing")]
+        stamp: None,
     });
 }

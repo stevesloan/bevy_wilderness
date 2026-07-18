@@ -14,10 +14,11 @@ use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
+    ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
     ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, HeightmapExported,
     LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
-    SculptMode, SeamOverlay, TerrainLoaded, ToolId, UndoBuffer, UndoHistory,
+    SculptMode, SeamOverlay, StampData, StampSettings, TerrainLoaded, ToolId, UndoBuffer,
+    UndoHistory,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -34,6 +35,37 @@ impl Default for UiExportPath {
     }
 }
 
+/// Folder the stamp gallery scans for heightfield PNGs (D11). The host app
+/// points this somewhere real (the example ships starter stamps into its
+/// own folder); the panel's Rescan button picks up files added while
+/// running.
+#[derive(Resource, Clone, Debug)]
+pub struct UiStampFolder(pub std::path::PathBuf);
+
+impl Default for UiStampFolder {
+    fn default() -> Self {
+        Self("stamps".into())
+    }
+}
+
+/// One gallery entry: a PNG in the stamps folder with its egui thumbnail.
+struct StampEntry {
+    path: std::path::PathBuf,
+    name: String,
+    thumb: egui::TextureId,
+    /// Keeps the thumbnail image asset alive.
+    _handle: Handle<Image>,
+}
+
+/// The scanned gallery (a `Local` of the panel system).
+#[derive(Default)]
+struct StampLibrary {
+    entries: Vec<StampEntry>,
+    scanned: bool,
+    selected: Option<std::path::PathBuf>,
+    status: Option<String>,
+}
+
 /// The default editor UI. Add after
 /// [`TerrainEditorPlugin`](bevy_wilderness_editor::TerrainEditorPlugin); adds
 /// `EguiPlugin` itself if the host hasn't.
@@ -45,6 +77,7 @@ impl Plugin for TerrainEditorUiPlugin {
             app.add_plugins(EguiPlugin::default());
         }
         app.init_resource::<UiExportPath>()
+            .init_resource::<UiStampFolder>()
             .add_systems(EguiPrimaryContextPass, editor_panel)
             .add_systems(
                 Update,
@@ -52,6 +85,72 @@ impl Plugin for TerrainEditorUiPlugin {
                 // panel the same frame the pointer moves onto it.
                 block_pointer_over_ui.before(EditorSet::Pick),
             );
+    }
+}
+
+/// Scan the stamps folder into gallery entries: decode each PNG, downscale a
+/// grayscale thumbnail, and register it with egui. Never fails hard — a bad
+/// file becomes a status line, not a missing gallery.
+fn scan_stamps(
+    folder: &std::path::Path,
+    images: &mut Assets<Image>,
+    contexts: &mut bevy_egui::EguiContexts,
+    library: &mut StampLibrary,
+) {
+    library.entries.clear();
+    library.status = None;
+    let mut paths: Vec<_> = match std::fs::read_dir(folder) {
+        Ok(dir) => dir
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .filter(|path| {
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+            })
+            .collect(),
+        Err(error) => {
+            library.status = Some(format!("stamp folder: {error}"));
+            return;
+        }
+    };
+    paths.sort();
+    for path in paths {
+        let Ok(decoded) = image::open(&path) else {
+            continue; // not a decodable image; skip quietly
+        };
+        // Small grayscale thumbnail as RGBA for egui.
+        let thumb = decoded.thumbnail(96, 96).into_luma8();
+        let (w, h) = thumb.dimensions();
+        let data = thumb
+            .into_raw()
+            .into_iter()
+            .flat_map(|v| [v, v, v, 255])
+            .collect();
+        let handle = images.add(Image::new(
+            bevy::render::render_resource::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            bevy::render::render_resource::TextureDimension::D2,
+            data,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::MAIN_WORLD
+                | bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        ));
+        let thumb = contexts.add_image(bevy_egui::EguiTextureHandle::Strong(handle.clone()));
+        library.entries.push(StampEntry {
+            name: path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path,
+            thumb,
+            _handle: handle,
+        });
+    }
+    if library.entries.is_empty() && library.status.is_none() {
+        library.status = Some(format!("no PNGs in {}", folder.display()));
     }
 }
 
@@ -103,13 +202,26 @@ fn editor_panel(
         Commands,
         Query<Has<ClipmapReady>, With<EditableTerrain>>,
     ),
-    mut export_status: Local<Vec<String>>,
-    mut new_size: Local<u32>,
-    mut terrain_status: Local<Vec<String>>,
+    stamp: (
+        ResMut<ActiveStamp>,
+        ResMut<StampSettings>,
+        Res<UiStampFolder>,
+        ResMut<Assets<Image>>,
+        Local<StampLibrary>,
+    ),
+    locals: (Local<Vec<String>>, Local<u32>, Local<Vec<String>>),
 ) -> Result {
     let (export_path, mut export, mut exported) = export;
     let (mut new_terrain, mut load, mut loaded) = swap;
     let (mut rebake, mut commands, ready) = bake;
+    let (mut active_stamp, mut stamp_settings, stamp_folder, mut images, mut library) = stamp;
+    let (mut export_status, mut new_size, mut terrain_status) = locals;
+    // Scan the gallery before the panel borrows the egui context (thumbnail
+    // registration needs `contexts`).
+    if active.0 == Some(ToolId::STAMP) && !library.scanned {
+        scan_stamps(&stamp_folder.0, &mut images, &mut contexts, &mut library);
+        library.scanned = true;
+    }
     for done in exported.read() {
         // Replace the "exporting…" placeholder with per-file results.
         export_status.retain(|line| !line.ends_with('…'));
@@ -249,6 +361,67 @@ fn editor_panel(
                     .logarithmic(true)
                     .text("strength (m/s)"),
             );
+
+            if active.0 == Some(ToolId::STAMP) {
+                ui.separator();
+                ui.label("Stamp");
+                ui.add(
+                    egui::Slider::new(&mut stamp_settings.size, 10.0..=16384.0)
+                        .logarithmic(true)
+                        .text("size (m)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut stamp_settings.strength, -2000.0..=2000.0)
+                        .text("strength (m)"),
+                );
+                let mut degrees = stamp_settings.rotation.to_degrees();
+                if ui
+                    .add(egui::Slider::new(&mut degrees, 0.0..=360.0).text("rotation °"))
+                    .changed()
+                {
+                    stamp_settings.rotation = degrees.to_radians();
+                }
+                ui.small("wheel: strength · ctrl: size · shift: rotate");
+                // The gallery: every PNG in the stamps folder, click to arm.
+                let mut clicked = None;
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for entry in &library.entries {
+                                let selected =
+                                    library.selected.as_deref() == Some(entry.path.as_path());
+                                let button = egui::Button::image(egui::load::SizedTexture::new(
+                                    entry.thumb,
+                                    [56.0, 56.0],
+                                ))
+                                .selected(selected);
+                                if ui.add(button).on_hover_text(&entry.name).clicked() {
+                                    clicked = Some(entry.path.clone());
+                                }
+                            }
+                        });
+                    });
+                if let Some(path) = clicked {
+                    match StampData::load_png(&path, &mut images) {
+                        Ok(data) => {
+                            active_stamp.0 = Some(data);
+                            library.selected = Some(path);
+                            library.status = None;
+                        }
+                        Err(error) => library.status = Some(error),
+                    }
+                }
+                if ui.small_button("rescan folder").clicked() {
+                    library.scanned = false;
+                }
+                if let Some(status) = &library.status {
+                    ui.small(status.clone());
+                }
+                if active_stamp.0.is_none() {
+                    ui.small("pick a stamp to start previewing");
+                }
+            }
 
             ui.separator();
             ui.label("Mask");

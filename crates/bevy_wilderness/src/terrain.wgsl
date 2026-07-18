@@ -57,14 +57,20 @@
 // Baked macro AO (R) + bent normal world X/Z (GB) + cavity (A).
 @group(#{MATERIAL_BIND_GROUP}) @binding(132) var rvt_ao_texture: texture_2d<f32>;
 // rvt_normal/rvt_ao share rvt_albedo_sampler (122) — all sampled linearly at uv.
-// Dev/experiment scalars packed into one uniform (bindings 112/113 freed for
-// ceiling headroom). ao/bent strength: 0 = off, 1 = full, each A/B'd on its own.
-// debug_view: 0 = lit terrain, 1 = macro AO, 2 = bent normal, 3 = cavity —
-// nonzero outputs the raw baked channel unlit.
+// Dev/experiment + editing scalars packed into one uniform (bindings 112/113
+// freed for ceiling headroom). ao/bent strength: 0 = off, 1 = full, each
+// A/B'd on its own. debug_view: 0 = lit terrain, 1 = macro AO, 2 = bent
+// normal, 3 = cavity — nonzero outputs the raw baked channel unlit. The
+// stamp_* fields are the D11 stamp preview transform, read in `fn vertex`
+// while flags bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
     ao_strength: f32,
     bent_strength: f32,
     debug_view: u32,
+    stamp_center: vec2<f32>,
+    stamp_half_size: vec2<f32>,
+    stamp_rotation: f32,
+    stamp_strength: f32,
 }
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var<uniform> dev: DevParams;
 // Inline height fog params (VR tier). density == 0 skips it. Shading-only:
@@ -94,6 +100,13 @@ struct DetailParams {
 // declaration matches the bind-group layout on both sides.
 #ifdef WILDERNESS_EDIT_OVERLAY
 @group(#{MATERIAL_BIND_GROUP}) @binding(115) var edit_overlay_texture: texture_2d<f32>;
+#endif
+
+// Stamp preview heightfield (`editing`, D11): composited in `fn vertex` while
+// flags bit5 is set — the GPU floating preview that makes half-map stamps
+// per-frame free. Shares the heightmap sampler like the overlay.
+#ifdef WILDERNESS_STAMP
+@group(#{MATERIAL_BIND_GROUP}) @binding(116) var stamp_texture: texture_2d<f32>;
 #endif
 
 // Cheap per-point 2D hash in [0, 1)^2, seeded by world XZ. Used to stochastically
@@ -153,7 +166,41 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     // the uv isn't clamped; finite terrain clamps to keep the far edge in bounds.
     let sample_uv = select(clamp(height_uv, vec2(0.0), vec2(1.0)), height_uv, looping);
     let height = height_bilinear(sample_uv, 0);
-    let world_y = height * (minmax.y - minmax.x) + minmax.x;
+    var world_y = height * (minmax.y - minmax.x) + minmax.x;
+
+#ifdef WILDERNESS_STAMP
+    // Stamp floating preview (D11, flags bit5): add the stamp heightfield
+    // through its world transform, exactly what a commit will write into the
+    // f32 field — same bilinear (texel centers at half-integers, clamped),
+    // same mask weighting, same encode-range clamp. Keep this in lockstep
+    // with the editor's CPU apply or the commit pops.
+    if (flags & 32u) != 0u {
+        var rel = out.world_position.xz - dev.stamp_center;
+        if looping {
+            // Shortest toroidal offset, so a stamp near the seam previews on
+            // the far side (and on the visible repeats).
+            rel -= world_size * round(rel / world_size);
+        }
+        let c = cos(dev.stamp_rotation);
+        let s = sin(dev.stamp_rotation);
+        // World → stamp-local (inverse of the stamp's +Y rotation).
+        let local = vec2(c * rel.x + s * rel.y, -s * rel.x + c * rel.y);
+        let stamp_uv = local / (dev.stamp_half_size * 2.0) + 0.5;
+        if all(stamp_uv > vec2(0.0)) && all(stamp_uv < vec2(1.0)) {
+            var weight = 1.0;
+#ifdef WILDERNESS_EDIT_OVERLAY
+            // Mask-confined (bit6): weight by the mask overlay, sampled the
+            // same wrapped way the fragment tints it.
+            if (flags & 64u) != 0u {
+                let overlay_uv = select(clamp(height_uv, vec2(0.0), vec2(1.0)), fract(height_uv), looping);
+                weight = textureSampleLevel(edit_overlay_texture, heightmap_sampler, overlay_uv, 0.0).r;
+            }
+#endif
+            let stamp_h = textureSampleLevel(stamp_texture, heightmap_sampler, stamp_uv, 0.0).r;
+            world_y = clamp(world_y + dev.stamp_strength * stamp_h * weight, minmax.x, minmax.y);
+        }
+    }
+#endif
 
     // Out past the heightmap coverage the coarse LOD skirt would render as a wall
     // at the edge height. Drop those vertices to the height floor so the stripe

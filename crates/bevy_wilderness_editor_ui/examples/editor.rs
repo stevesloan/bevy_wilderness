@@ -10,7 +10,8 @@
 //! Everything is driven from the side panel; keyboard shortcuts mirror it
 //! (WASD + right-drag to fly):
 //! - **Left mouse (held)** — apply the active tool under the brush ring
-//! - **S / M / E / P** — sculpt / mask paint / erode / place-prop tool
+//! - **S / M / E / P / T** — sculpt / mask paint / erode / place-prop /
+//!   stamp tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
@@ -18,6 +19,15 @@
 //! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
 //! - **B** — toggle the tile-boundary ring (the terrain loops; edits and
 //!   erosion wrap across it)
+//!
+//! The stamp tool (T, D11) floats a heightfield PNG under the cursor as a
+//! live GPU preview; **click commits it**. While it's active the wheel
+//! belongs to the stamp — **wheel** = strength (negative carves),
+//! **Ctrl+wheel** = size, **Shift+wheel** = rotate — and the fly camera's
+//! scroll-speed binding is paused. Pick stamps in the panel's gallery; the
+//! example generates a few starter stamps (hill / ridge / ring) into its
+//! stamps folder on first run — drop your own 8/16-bit grayscale PNGs
+//! there and hit "rescan".
 //!
 //! A painted mask (orange tint) confines sculpting *and* erosion to it,
 //! feathered at the edge. Erosion runs in the background over the mask (the
@@ -73,7 +83,7 @@ use bevy_wilderness_editor::{
     SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField, TerrainHeight,
     TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory, tool_active,
 };
-use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath};
+use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath, UiStampFolder};
 
 /// The demo third-party tool (design doc §6): places props that snap to the
 /// terrain and re-snap when it changes — proving a host-registered tool gets
@@ -87,6 +97,51 @@ const PROP_HALF: f32 = 6.0;
 /// A placed demo prop; re-snapped by [`resnap_props`].
 #[derive(Component)]
 struct DemoProp;
+
+/// Generate a few 16-bit starter stamps (hill / ridge / ring) into `dir` if
+/// it holds no PNGs yet — the gallery shouldn't be empty on first run. Real
+/// stamps are authored heightfields; these are just clean shapes to try the
+/// tool with.
+fn ensure_starter_stamps(dir: &std::path::Path) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let has_png = std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.filter_map(|e| e.ok()).any(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| x.eq_ignore_ascii_case("png"))
+        })
+    });
+    if has_png {
+        return;
+    }
+    const N: u32 = 256;
+    let smooth = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let write = |name: &str, shape: &dyn Fn(Vec2) -> f32| {
+        let buffer = image::ImageBuffer::from_fn(N, N, |x, y| {
+            // Texel center → -1..1 over the stamp.
+            let uv = (Vec2::new(x as f32, y as f32) + 0.5) / N as f32 * 2.0 - 1.0;
+            image::Luma([(shape(uv).clamp(0.0, 1.0) * 65535.0) as u16])
+        });
+        if let Err(error) = buffer.save(dir.join(name)) {
+            warn!("couldn't write starter stamp {name}: {error}");
+        }
+    };
+    // A round dome, an elongated ridge, and a rim ring (positive strength
+    // raises a ring range; negative carves a circular trench).
+    write("hill.png", &|uv| smooth(1.0 - uv.length()));
+    write("ridge.png", &|uv| {
+        smooth(1.0 - Vec2::new(uv.x, uv.y * 3.5).length())
+    });
+    write("ring.png", &|uv| {
+        smooth(1.0 - (uv.length() - 0.6).abs() * 4.0)
+    });
+}
 
 fn main() {
     App::new()
@@ -106,6 +161,7 @@ fn main() {
             (
                 update_sun_color,
                 brush_controls,
+                stamp_wheel_guard,
                 undo_keys,
                 clear_mask_key,
                 draw_brush_ring,
@@ -236,6 +292,31 @@ fn brush_controls(
         active.0 = Some(PLACE);
         info!("tool: place prop (click to drop a cube that re-snaps to the terrain)");
     }
+    if keys.just_pressed(KeyCode::KeyT) {
+        active.0 = Some(ToolId::STAMP);
+        info!(
+            "tool: stamp (pick a stamp in the panel; wheel = strength, ctrl = size, shift = rotate)"
+        );
+    }
+}
+
+/// While the stamp tool is active the wheel belongs to the stamp (strength /
+/// size / rotation), so pause the fly camera's scroll-speed binding and
+/// restore it on tool switch.
+fn stamp_wheel_guard(
+    active: Res<ActiveTool>,
+    mut cameras: Query<&mut FreeCamera>,
+    mut saved: Local<Option<f32>>,
+) {
+    let stamping = active.0 == Some(ToolId::STAMP);
+    for mut camera in &mut cameras {
+        if stamping && saved.is_none() {
+            *saved = Some(camera.scroll_factor);
+            camera.scroll_factor = 0.0;
+        } else if !stamping && let Some(factor) = saved.take() {
+            camera.scroll_factor = factor;
+        }
+    }
 }
 
 /// C clears the whole mask — as an undoable gesture, like any other edit.
@@ -285,7 +366,17 @@ fn undo_keys(
 
 /// Brush-radius ring + center dot at the shared cursor pick, whatever tool is
 /// active.
-fn draw_brush_ring(cursor: Res<TerrainCursor>, brush: Res<BrushSettings>, mut gizmos: Gizmos) {
+fn draw_brush_ring(
+    cursor: Res<TerrainCursor>,
+    brush: Res<BrushSettings>,
+    active: Res<ActiveTool>,
+    mut gizmos: Gizmos,
+) {
+    // The stamp tool previews itself (the floating stamp is the indicator);
+    // a brush-radius ring under it would just mislead.
+    if active.0 == Some(ToolId::STAMP) {
+        return;
+    }
     if let Some(hit) = &cursor.0 {
         let up = Isometry3d::new(
             hit.position + Vec3::Y * 0.5,
@@ -344,6 +435,12 @@ fn setup(
     commands.insert_resource(UiExportPath(
         "crates/bevy_wilderness/assets/heightmap_export.ktx2".into(),
     ));
+    // Stamp gallery folder (D11), seeded with generated starter stamps so
+    // it isn't empty on first run. Drop your own grayscale PNGs in and hit
+    // "rescan" in the panel.
+    let stamps = std::path::PathBuf::from("crates/bevy_wilderness_editor_ui/assets/stamps");
+    ensure_starter_stamps(&stamps);
+    commands.insert_resource(UiStampFolder(stamps));
     commands.insert_resource(TerrainFog(HeightFog {
         density: 0.002e-4,
         falloff: 0.0128,
@@ -561,10 +658,12 @@ fn setup(
         max: HEIGHT_MAX,
         wireframe: false,
         looping: true,
-        // The editor creates and assigns the mask overlay texture, and drives
-        // clay mode (D10) from re-bake staleness.
+        // The editor creates and assigns the mask overlay texture, drives
+        // clay mode (D10) from re-bake staleness, and floats the stamp
+        // preview (D11).
         edit_overlay: None,
         clay: false,
+        stamp: None,
     });
     match from_scratch {
         // From-scratch terrain: the field exists already, insert it directly.
