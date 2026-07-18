@@ -471,6 +471,10 @@ fn editor_panel(
                     egui::Slider::new(&mut erosion.flow_strength, 0.0..=8.0).text("flow carving"),
                 )
                 .on_hover_text("Concentrates carving where drainage accumulates; 0 disables");
+                ui.add(
+                    egui::Slider::new(&mut erosion.deposit_blur_radius, 0..=8).text("deposit blur"),
+                )
+                .on_hover_text("Smooths each round's deposits into fans; carving stays crisp");
             });
             match runs.iter().next() {
                 Some(run) => {

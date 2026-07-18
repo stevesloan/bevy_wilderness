@@ -1,14 +1,15 @@
 # Terrain Editor Framework — Design Doc
 
-Status: **Phases 0–11 complete** — workspace + editing API; editor core;
+Status: **Phases 0–11, 13 complete** — workspace + editing API; editor core;
 sculpt; debounced re-bake; undo/history; feathered mask + overlay
 visualization; background droplet + thermal erosion; looping seams + boundary
 overlay; default egui UI + prop-placement demo tool; KTX2 + 16-bit PNG
 export; new-terrain-by-default + runtime load (D9); rebake control + clay
 display mode with dynamic terrain-scale shadows (D10); PNG stamp tool with
-GPU floating preview + UI gallery (D11). **Phase 12 conditional**
-(progressive strip re-bake — measure the bake cost first) · **Phase 13
-planned** (erosion realism, D12) · Project name:
+GPU floating preview + UI gallery (D11); erosion realism — slope-gated
+droplets, flow-accumulation channels, smoothed deposition (D12).
+**Phase 12 conditional** (progressive strip re-bake — measure the bake cost
+first) · Project name:
 **`bevy_wilderness`** · Last updated: 2026-07-18
 
 > Note for later phases: the renderer's §3 anchors predate the workspace
@@ -684,7 +685,7 @@ per-frame strips (the escalation path already blessed in the header note —
 no correctness risk, unlike regional). ⚠️ **Measure first** — profile the
 actual full-bake cost at default `rvt_size` before building this.
 
-**Phase 13 — Erosion realism (D12).** Independent of Phase 12; staged as
+**Phase 13 ✅ — Erosion realism (D12).** Independent of Phase 12; staged as
 three shippable commits.
 *13a — kill the shot noise:* slope-proportional capacity (floor removed) +
 `min_slope_deg` gate, 2-step warm-up, stagnation death, brushed deposition,
@@ -700,6 +701,15 @@ deposit-only separable blur, `ErosionMaps` behind `keep_maps`. *Accept:*
 valley floors and fans read smooth against crisp channel walls;
 `deposits_are_smooth` green; `keep_maps` yields plausible wear/deposit/flow
 maps.
+Decisions in flight: defaults shipped as planned (all three stages
+accepted visually at each step). The deposit blur measured ~10× off-hill
+prominence reduction (5.5 m → 0.57 m at 8× default density). Plains may
+still incise slightly *through their own fans* (streams cutting
+floodplains — accepted as realism, bounded by `flat_plain_gains_not_loses`
+at <1% of deposition); truly flat terrain is a proven no-op
+(`flat_terrain_untouched`). Deposits during a droplet's 2-step warm-up
+stay allowed — a fresh droplet has nothing to drop, so the gate only
+suppresses carving.
 
 ---
 

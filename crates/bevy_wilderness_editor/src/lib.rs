@@ -15,6 +15,9 @@
 //! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
 //! - [`ErosionRequested`] / [`ErosionRun`] — start an erosion run / watch its
 //!   progress (D3).
+//! - [`ErosionMaps`] — per-run wear/deposit/flow analysis maps (D12), kept
+//!   on the terrain when [`ErosionSettings::keep_maps`] is set — e.g. for
+//!   host splat or scatter rules.
 //! - [`SeamOverlay`] — toggle the looping tile-boundary visualization (D6).
 //! - [`ActiveStamp`] / [`StampSettings`] — the stamp tool's heightfield PNG
 //!   and transform (D11); the GPU preview floats it under the cursor, a
@@ -48,7 +51,7 @@ mod tools;
 mod undo;
 
 pub use cursor::{PointerBlocked, TerrainCursor, TerrainHit};
-pub use erosion::{ErosionRequested, ErosionRun};
+pub use erosion::{ErosionMaps, ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
 pub use rebake::RebakeSettings;

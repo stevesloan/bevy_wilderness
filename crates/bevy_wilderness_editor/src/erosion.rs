@@ -18,8 +18,12 @@
 //! Realism rules (D12): carrying capacity is proportional to slope — flat
 //! ground never carves, it only receives sediment; droplets warm up before
 //! they may erode (no spawn-point pitting) and die where they stagnate (no
-//! random-walk scratches); deposits spread over a falloff brush mirroring the
-//! erosion brush, so fans land smooth.
+//! random-walk scratches); a per-round D8 flow-accumulation pass boosts
+//! capacity where drainage concentrates (connected dendritic channels);
+//! deposits spread over a falloff brush and each round's deposit accumulator
+//! is box-blurred — carving stays crisp, fans and valley fill land smooth.
+//! With [`ErosionSettings::keep_maps`], a run leaves its wear/deposit/flow
+//! analysis maps on the terrain as [`ErosionMaps`].
 
 use std::sync::{
     Arc,
@@ -93,12 +97,41 @@ impl ErosionRun {
     }
 }
 
+/// Post-run analysis maps (D12), full-field row-major, replaced on each run.
+/// Only present when [`ErosionSettings::keep_maps`] is set — host API for
+/// e.g. splat or scatter rules; the editor itself never reads them. Values
+/// are pre-clamp components, so where the encode range clamped the applied
+/// delta they slightly overstate.
+#[derive(Component)]
+pub struct ErosionMaps {
+    /// Mask-weighted material eroded per texel, ≥ 0, meters.
+    pub wear: Vec<f32>,
+    /// Mask-weighted material deposited per texel, ≥ 0, meters.
+    pub deposit: Vec<f32>,
+    /// The last round's log-normalized flow accumulation, 0..1 (all zero if
+    /// the flow pass was disabled).
+    pub flow: Vec<f32>,
+    /// Map dimensions in texels.
+    pub size: UVec2,
+}
+
 /// What the background task returns.
 struct ErosionOutcome {
     /// Height deltas in meters, full-field row-major, already mask-weighted.
     delta: Vec<f32>,
     /// Tight texel bbox of the non-zero deltas; `None` if nothing changed.
     changed: Option<URect>,
+    /// Analysis maps, when [`ErosionSettings::keep_maps`] asked for them.
+    maps: Option<ErosionMaps>,
+}
+
+/// One batch's scattered droplet writes, split so deposition can be smoothed
+/// independently of carving (D12).
+struct BatchDelta {
+    /// Carved material, ≤ 0 per texel.
+    erode: Vec<f32>,
+    /// Deposited material, ≥ 0 per texel.
+    deposit: Vec<f32>,
 }
 
 /// LMB starts a run over the mask (whole map if none). Runs in
@@ -169,6 +202,10 @@ pub(crate) fn apply_finished_runs(
             continue;
         };
         commands.entity(entity).remove::<ErosionRun>();
+        if let Some(maps) = outcome.maps {
+            // Replaces any previous run's maps (D12).
+            commands.entity(entity).insert(maps);
+        }
         let Some(changed) = outcome.changed else {
             continue;
         };
@@ -296,6 +333,17 @@ impl ErosionJob {
         let deposit_brush = erosion_brush(self.settings.deposit_radius.max(1));
         let pool = AsyncComputeTaskPool::get_or_init(TaskPool::default);
         let batches = pool.thread_num().clamp(1, MAX_BATCHES);
+        // Round accumulators (reused): batch sums land here so this round's
+        // deposits can be smoothed before they merge (D12).
+        let mut erode_round = vec![0.0f32; len];
+        let mut deposit_round = vec![0.0f32; len];
+        let mut scratch = vec![0.0f32; len];
+        let mut maps = self.settings.keep_maps.then(|| ErosionMaps {
+            wear: vec![0.0; len],
+            deposit: vec![0.0; len],
+            flow: vec![0.0; len],
+            size: UVec2::new(self.width, self.height),
+        });
         for round in 0..ROUNDS {
             let quota = self.droplets * (round + 1) / ROUNDS - self.droplets * round / ROUNDS;
             if quota == 0 {
@@ -337,22 +385,52 @@ impl ErosionJob {
                     });
                 }
             });
+            // Sum the batch buffers in spawn order — a fixed f32 summation
+            // order is what keeps runs deterministic (§10); never
+            // parallelize this merge.
+            erode_round.fill(0.0);
+            deposit_round.fill(0.0);
+            for batch in &deltas {
+                for i in 0..len {
+                    erode_round[i] += batch.erode[i];
+                    deposit_round[i] += batch.deposit[i];
+                }
+            }
+            // Smooth this round's *deposits only* (D12): fans and valley
+            // fill land soft while channel walls stay crisp. Before mask
+            // weighting, so the mask still hard-confines the result (§10).
+            if self.settings.deposit_blur_radius > 0 {
+                blur_separable(
+                    &mut deposit_round,
+                    &mut scratch,
+                    self.width,
+                    self.height,
+                    self.settings.deposit_blur_radius,
+                    self.looping,
+                );
+            }
             // Apply the round, weighted by the feathered mask (D4), so the
             // next round's droplets flow over the carved terrain.
-            for delta in &deltas {
-                for i in 0..len {
-                    let d = delta[i];
-                    if d == 0.0 {
-                        continue;
-                    }
-                    let weight = self.mask.as_ref().map_or(1.0, |m| m[i]);
-                    if weight <= 0.0 {
-                        continue;
-                    }
-                    let new = (self.heights[i] + d * weight).clamp(0.0, 1.0);
-                    total[i] += new - self.heights[i];
-                    self.heights[i] = new;
+            for i in 0..len {
+                let e = erode_round[i];
+                let d = deposit_round[i];
+                if e == 0.0 && d == 0.0 {
+                    continue;
                 }
+                let weight = self.mask.as_ref().map_or(1.0, |m| m[i]);
+                if weight <= 0.0 {
+                    continue;
+                }
+                let new = (self.heights[i] + (e + d) * weight).clamp(0.0, 1.0);
+                total[i] += new - self.heights[i];
+                self.heights[i] = new;
+                if let Some(maps) = &mut maps {
+                    maps.wear[i] -= e * weight;
+                    maps.deposit[i] += d * weight;
+                }
+            }
+            if let (Some(maps), Some(flow)) = (&mut maps, flow) {
+                maps.flow.copy_from_slice(flow);
             }
         }
         self.thermal(&mut total);
@@ -374,14 +452,24 @@ impl ErosionJob {
                 ),
             });
         }
+        // The analysis maps convert to meters like the deltas do.
+        if let Some(maps) = &mut maps {
+            for w in &mut maps.wear {
+                *w *= self.height_scale;
+            }
+            for d in &mut maps.deposit {
+                *d *= self.height_scale;
+            }
+        }
         ErosionOutcome {
             delta: total,
             changed,
+            maps,
         }
     }
 
     /// Simulate `count` droplets against the round's start-of-round heights,
-    /// scattering erode/deposit writes into this batch's own delta buffer.
+    /// scattering erode/deposit writes into this batch's own split buffers.
     /// `flow` is the round's normalized flow-accumulation map, if enabled.
     fn simulate_batch(
         &self,
@@ -390,8 +478,11 @@ impl ErosionJob {
         brush: &[(IVec2, f32)],
         deposit_brush: &[(IVec2, f32)],
         flow: Option<&[f32]>,
-    ) -> Vec<f32> {
-        let mut delta = vec![0.0f32; self.heights.len()];
+    ) -> BatchDelta {
+        let mut delta = BatchDelta {
+            erode: vec![0.0f32; self.heights.len()],
+            deposit: vec![0.0f32; self.heights.len()],
+        };
         let mut rng = Pcg32::new(seed);
         let s = &self.settings;
         for _ in 0..count {
@@ -451,7 +542,7 @@ impl ErosionJob {
                         (sediment - capacity) * s.deposit_rate
                     };
                     sediment -= amount;
-                    self.deposit(&mut delta, cell, amount, deposit_brush);
+                    self.deposit(&mut delta.deposit, cell, amount, deposit_brush);
                 } else if step >= DROPLET_WARMUP_STEPS {
                     // Under capacity: erode, spread over the brush so channels
                     // don't collapse into single-texel trenches. The low-slope
@@ -467,7 +558,7 @@ impl ErosionJob {
                     sediment += amount;
                     for &(off, weight) in brush {
                         if let Some(i) = self.index(cell + off) {
-                            delta[i] -= amount * weight;
+                            delta.erode[i] -= amount * weight;
                         }
                     }
                 }
@@ -480,7 +571,12 @@ impl ErosionJob {
             }
             // The droplet dies where it stands; leave its load there.
             if sediment > 0.0 {
-                self.deposit(&mut delta, pos.floor().as_ivec2(), sediment, deposit_brush);
+                self.deposit(
+                    &mut delta.deposit,
+                    pos.floor().as_ivec2(),
+                    sediment,
+                    deposit_brush,
+                );
             }
             self.done.fetch_add(1, Ordering::Relaxed);
         }
@@ -679,6 +775,63 @@ impl ErosionJob {
             if let Some(i) = self.index(cell + off) {
                 delta[i] += amount * weight;
             }
+        }
+    }
+}
+
+/// Separable wrap-aware box blur, used on each round's deposit accumulator
+/// (D12). Single-threaded on purpose: a parallel blur would reintroduce
+/// f32-order nondeterminism (§10) for a pass that's bandwidth-bound anyway.
+/// Finite maps renormalize the truncated kernel by the in-bounds tap count,
+/// conserving mass at edges instead of smearing the clamp value.
+fn blur_separable(
+    buf: &mut [f32],
+    scratch: &mut [f32],
+    width: u32,
+    height: u32,
+    radius: u32,
+    looping: bool,
+) {
+    let (w, h, r) = (width as i32, height as i32, radius as i32);
+    // Horizontal pass into scratch.
+    for y in 0..h {
+        let row = (y * w) as usize;
+        for x in 0..w {
+            let mut sum = 0.0;
+            let mut taps = 0u32;
+            for dx in -r..=r {
+                let sx = if looping {
+                    (x + dx).rem_euclid(w)
+                } else {
+                    x + dx
+                };
+                if sx < 0 || sx >= w {
+                    continue;
+                }
+                sum += buf[row + sx as usize];
+                taps += 1;
+            }
+            scratch[row + x as usize] = sum / taps as f32;
+        }
+    }
+    // Vertical pass back into buf.
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0;
+            let mut taps = 0u32;
+            for dy in -r..=r {
+                let sy = if looping {
+                    (y + dy).rem_euclid(h)
+                } else {
+                    y + dy
+                };
+                if sy < 0 || sy >= h {
+                    continue;
+                }
+                sum += scratch[(sy * w + x) as usize];
+                taps += 1;
+            }
+            buf[(y * w + x) as usize] = sum / taps as f32;
         }
     }
 }
@@ -1008,6 +1161,48 @@ mod tests {
             );
             assert!(finite[y * 16] < 16.0, "row {y}: a finite map can't wrap");
         }
+    }
+
+    /// Deposits must land smooth (D12): with the blur on, off-cone sediment
+    /// shows no sharp single-texel prominence, and it's strictly smoother
+    /// than the same run without the blur.
+    #[test]
+    fn deposits_are_smooth() {
+        let terrain = mound_terrain();
+        let prominence = |blur: u32| {
+            let settings = ErosionSettings {
+                deposit_blur_radius: blur,
+                keep_maps: true,
+                ..test_settings()
+            };
+            let outcome = run_job(&terrain, &settings);
+            let maps = outcome.maps.expect("keep_maps retains analysis maps");
+            let at = |x: i64, y: i64| maps.deposit[(y * 128 + x) as usize];
+            let mut worst = 0.0f32;
+            for y in 1..127i64 {
+                for x in 1..127i64 {
+                    let d = Vec2::new(x as f32 - 64.0, y as f32 - 64.0).length();
+                    if d <= 55.0 {
+                        continue;
+                    }
+                    let mut sum = 0.0;
+                    for (dx, dy, _) in NEIGHBORS {
+                        sum += at(x + dx as i64, y + dy as i64);
+                    }
+                    worst = worst.max(at(x, y) - sum / 8.0);
+                }
+            }
+            worst
+        };
+        let blurred = prominence(2);
+        let raw = prominence(0);
+        // Measured ~0.57 m vs ~5.5 m raw at this (8× default) density — the
+        // blur buys roughly an order of magnitude; assert 4× for headroom.
+        assert!(blurred < 1.0, "blurred deposit prominence: {blurred} m");
+        assert!(
+            blurred < raw / 4.0,
+            "blur must smooth substantially: {blurred} vs {raw}"
+        );
     }
 
     /// The flow boost must concentrate carving: with it on, the most-eroded

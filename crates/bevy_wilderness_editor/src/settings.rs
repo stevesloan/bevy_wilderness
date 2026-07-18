@@ -80,6 +80,15 @@ pub struct ErosionSettings {
     /// mirror, so sediment lands as smooth mounds, not single-texel bumps
     /// (D12).
     pub deposit_radius: u32,
+    /// Radius (in texels) of the box blur applied to each round's *deposits
+    /// only* (D12) — fans and valley fill read smooth while channel walls
+    /// stay crisp. 0 disables.
+    pub deposit_blur_radius: u32,
+    /// Keep per-run wear/deposit/flow analysis maps as an
+    /// [`ErosionMaps`](crate::ErosionMaps) component on the terrain (D12) —
+    /// host API for e.g. splat or scatter rules; costs three full-field
+    /// buffers while retained.
+    pub keep_maps: bool,
     /// Thermal pass: slopes steeper than this (degrees) shed talus (D3).
     pub talus_angle_deg: f32,
     /// Fraction of the excess slope relaxed per thermal iteration.
@@ -104,6 +113,8 @@ impl Default for ErosionSettings {
             gravity: 4.0,
             erosion_radius: 3,
             deposit_radius: 2,
+            deposit_blur_radius: 2,
+            keep_maps: false,
             talus_angle_deg: 33.0,
             thermal_rate: 0.5,
             thermal_iterations: 8,
