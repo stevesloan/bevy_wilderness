@@ -4,14 +4,22 @@
 //! dogfooding: anything this panel can do, a host app's own UI can do against
 //! the same API, and anything it *can't* do cleanly is an editor-core API bug.
 //!
-//! Optional by design — the closed-source game embeds
-//! [`TerrainEditorPlugin`](bevy_wilderness_editor::TerrainEditorPlugin) with
-//! its own UI instead of this crate. No egui type leaks back into the core
-//! (P2's hard rule); the only coupling is this crate writing the core's
-//! resources.
+//! Optional by design, and composable two ways:
+//!
+//! - **Standalone** (`TerrainEditorUiPlugin::default()`): the crate draws its
+//!   own left side panel with every section, as the example editor does.
+//! - **Embedded** (`TerrainEditorUiPlugin { embedded: true }`): no panel is
+//!   drawn; the host takes the [`TerrainUi`] system param in its own egui
+//!   system and calls the section methods it wants (`brush_section`,
+//!   `erosion_section`, …) inside its own window or panel. Sections self-gate
+//!   on the active tool, so a host can call them unconditionally.
+//!
+//! No egui type leaks back into the core (P2's hard rule); the only coupling
+//! is this crate writing the core's resources.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
-use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, egui};
+use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
@@ -57,9 +65,10 @@ struct StampEntry {
     _handle: Handle<Image>,
 }
 
-/// The scanned gallery (a `Local` of the panel system).
+/// The scanned stamp gallery ([`TerrainUi`] keeps one as a `Local`; public
+/// only because it appears in that system param's state).
 #[derive(Default)]
-struct StampLibrary {
+pub struct StampLibrary {
     entries: Vec<StampEntry>,
     scanned: bool,
     selected: Option<std::path::PathBuf>,
@@ -69,7 +78,14 @@ struct StampLibrary {
 /// The default editor UI. Add after
 /// [`TerrainEditorPlugin`](bevy_wilderness_editor::TerrainEditorPlugin); adds
 /// `EguiPlugin` itself if the host hasn't.
-pub struct TerrainEditorUiPlugin;
+#[derive(Default)]
+pub struct TerrainEditorUiPlugin {
+    /// `true`: register only the shared plumbing (pointer-over-UI blocking,
+    /// the `Ui*` path resources) and draw nothing — the host embeds
+    /// [`TerrainUi`] sections in its own UI. `false` (default): also draw the
+    /// standalone side panel with every section.
+    pub embedded: bool,
+}
 
 impl Plugin for TerrainEditorUiPlugin {
     fn build(&self, app: &mut App) {
@@ -78,13 +94,15 @@ impl Plugin for TerrainEditorUiPlugin {
         }
         app.init_resource::<UiExportPath>()
             .init_resource::<UiStampFolder>()
-            .add_systems(EguiPrimaryContextPass, editor_panel)
             .add_systems(
                 Update,
                 // Before the shared pick, so a brush stroke can't land through a
                 // panel the same frame the pointer moves onto it.
                 block_pointer_over_ui.before(EditorSet::Pick),
             );
+        if !self.embedded {
+            app.add_systems(EguiPrimaryContextPass, editor_panel);
+        }
     }
 }
 
@@ -94,7 +112,7 @@ impl Plugin for TerrainEditorUiPlugin {
 fn scan_stamps(
     folder: &std::path::Path,
     images: &mut Assets<Image>,
-    contexts: &mut bevy_egui::EguiContexts,
+    contexts: &mut EguiContexts,
     library: &mut StampLibrary,
 ) {
     library.entries.clear();
@@ -157,7 +175,7 @@ fn scan_stamps(
 /// Mirror egui's pointer claim into the core's [`PointerBlocked`] — the only
 /// input-focus handshake the core needs from a UI (design doc §6).
 fn block_pointer_over_ui(
-    mut contexts: bevy_egui::EguiContexts,
+    mut contexts: EguiContexts,
     mut blocked: ResMut<PointerBlocked>,
 ) {
     let over_ui = contexts
@@ -167,81 +185,456 @@ fn block_pointer_over_ui(
     blocked.set_if_neq(PointerBlocked(over_ui));
 }
 
-/// The side panel: tool switcher (from the registry, so host-registered tools
-/// appear automatically), undo/redo, brush, mask, seam, and erosion controls.
-// Bevy systems legitimately take one param per resource; the ParamSet is two
-// views of the same terrain query (`UndoHistory`'s API wants the bare one).
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn editor_panel(
-    mut contexts: bevy_egui::EguiContexts,
-    tools: Res<EditorTools>,
-    mut active: ResMut<ActiveTool>,
-    mut brush: ResMut<BrushSettings>,
-    mut erosion: ResMut<ErosionSettings>,
-    mut seam: ResMut<SeamOverlay>,
-    mut history: ResMut<UndoHistory>,
-    mut terrains: ParamSet<(
-        Query<&mut EditableTerrain>,
-        Query<(Entity, &mut EditableTerrain)>,
-    )>,
-    runs: Query<&ErosionRun>,
-    mut erode: MessageWriter<ErosionRequested>,
-    // Grouped into tuples: bevy systems cap at 16 top-level params.
-    export: (
-        Res<UiExportPath>,
-        MessageWriter<ExportRequested>,
-        MessageReader<HeightmapExported>,
-    ),
-    swap: (
-        MessageWriter<NewTerrainRequested>,
-        MessageWriter<LoadRequested>,
-        MessageReader<TerrainLoaded>,
-    ),
-    bake: (
-        ResMut<RebakeSettings>,
-        Commands,
-        Query<Has<ClipmapReady>, With<EditableTerrain>>,
-    ),
-    stamp: (
-        ResMut<ActiveStamp>,
-        ResMut<StampSettings>,
-        Res<UiStampFolder>,
-        ResMut<Assets<Image>>,
-        Local<StampLibrary>,
-    ),
-    locals: (Local<Vec<String>>, Local<u32>, Local<Vec<String>>),
-) -> Result {
-    let (export_path, mut export, mut exported) = export;
-    let (mut new_terrain, mut load, mut loaded) = swap;
-    let (mut rebake, mut commands, ready) = bake;
-    let (mut active_stamp, mut stamp_settings, stamp_folder, mut images, mut library) = stamp;
-    let (mut export_status, mut new_size, mut terrain_status) = locals;
-    // Scan the gallery before the panel borrows the egui context (thumbnail
-    // registration needs `contexts`).
-    if active.0 == Some(ToolId::STAMP) && !library.scanned {
-        scan_stamps(&stamp_folder.0, &mut images, &mut contexts, &mut library);
-        library.scanned = true;
+/// Everything the terrain sections read and write, as one system param a host
+/// UI system can take alongside its own. Each `*_section` method draws one
+/// block of widgets into a `&mut egui::Ui` the host provides. Tool-specific
+/// sections (brush, stamp, mask, erosion) gate themselves on [`ActiveTool`]
+/// and draw nothing for other tools, so hosts call every section
+/// unconditionally and the UI reorganizes itself per tool; undo, bake, and
+/// the seam toggle are tool-independent.
+///
+/// `active` is public: a host that replaces [`tools_section`](Self::tools_section)
+/// with its own mode UI writes the active tool through it.
+// The ParamSet is two views of the same terrain query (`UndoHistory`'s API
+// wants the bare one).
+#[allow(clippy::type_complexity)]
+#[derive(SystemParam)]
+pub struct TerrainUi<'w, 's> {
+    pub active: ResMut<'w, ActiveTool>,
+    tools: Res<'w, EditorTools>,
+    brush: ResMut<'w, BrushSettings>,
+    erosion: ResMut<'w, ErosionSettings>,
+    seam: ResMut<'w, SeamOverlay>,
+    history: ResMut<'w, UndoHistory>,
+    terrains: ParamSet<
+        'w,
+        's,
+        (
+            Query<'w, 's, &'static mut EditableTerrain>,
+            Query<'w, 's, (Entity, &'static mut EditableTerrain)>,
+        ),
+    >,
+    runs: Query<'w, 's, &'static ErosionRun>,
+    erode: MessageWriter<'w, ErosionRequested>,
+    export_path: Res<'w, UiExportPath>,
+    export: MessageWriter<'w, ExportRequested>,
+    exported: MessageReader<'w, 's, HeightmapExported>,
+    new_terrain: MessageWriter<'w, NewTerrainRequested>,
+    load: MessageWriter<'w, LoadRequested>,
+    loaded: MessageReader<'w, 's, TerrainLoaded>,
+    rebake: ResMut<'w, RebakeSettings>,
+    commands: Commands<'w, 's>,
+    ready: Query<'w, 's, Has<ClipmapReady>, With<EditableTerrain>>,
+    active_stamp: ResMut<'w, ActiveStamp>,
+    stamp_settings: ResMut<'w, StampSettings>,
+    stamp_folder: Res<'w, UiStampFolder>,
+    images: ResMut<'w, Assets<Image>>,
+    library: Local<'s, StampLibrary>,
+    export_status: Local<'s, Vec<String>>,
+    new_size: Local<'s, u32>,
+    terrain_status: Local<'s, Vec<String>>,
+}
+
+impl TerrainUi<'_, '_> {
+    /// Every section in the standalone panel's order. Hosts embedding a
+    /// subset call the individual methods instead.
+    pub fn all_sections(&mut self, ui: &mut egui::Ui, contexts: &mut EguiContexts) {
+        self.file_section(ui);
+        self.tools_section(ui);
+        self.undo_section(ui);
+        self.brush_section(ui);
+        self.stamp_section(ui, contexts);
+        self.mask_section(ui);
+        self.erosion_section(ui);
+        self.bake_section(ui);
+        self.seam_section(ui);
+        self.export_section(ui);
     }
-    for done in exported.read() {
-        // Replace the "exporting…" placeholder with per-file results.
-        export_status.retain(|line| !line.ends_with('…'));
-        export_status.push(match &done.error {
-            None => format!("saved {}", done.path.display()),
-            Some(error) => format!("failed {}: {error}", done.path.display()),
+
+    /// Height in meters at `xz` — [`TerrainHeight::sample`] for hosts whose
+    /// UI system can't also take `TerrainHeight` (its read query conflicts
+    /// with this param's mutable terrain access).
+    ///
+    /// [`TerrainHeight::sample`]: bevy_wilderness_editor::TerrainHeight::sample
+    pub fn sample_height(&mut self, xz: Vec2) -> Option<f32> {
+        self.terrains
+            .p0()
+            .iter()
+            .find(|t| t.field.contains(xz))
+            .map(|t| t.field.height_at(xz))
+    }
+
+    /// New-terrain and load-terrain controls. The editor opens on a fresh
+    /// terrain by default; these get back to one, or open an existing
+    /// heightmap, without a restart.
+    pub fn file_section(&mut self, ui: &mut egui::Ui) {
+        for done in self.loaded.read() {
+            self.terrain_status.clear();
+            self.terrain_status.push(match &done.error {
+                None => format!("loaded {}", done.path.display()),
+                Some(error) => format!("load failed: {error}"),
+            });
+        }
+        // Local<u32> defaults to 0; seed the new-terrain resolution once.
+        if *self.new_size == 0 {
+            *self.new_size = 4096;
+        }
+        ui.separator();
+        ui.label("Terrain");
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("new_terrain_size")
+                .selected_text(format!("{}²", *self.new_size))
+                .show_ui(ui, |ui| {
+                    for size in [512u32, 1024, 2048, 4096] {
+                        ui.selectable_value(&mut *self.new_size, size, format!("{size}²"));
+                    }
+                });
+            if ui
+                .button("New")
+                .on_hover_text("Discard the current terrain and start a fresh flat plain")
+                .clicked()
+            {
+                for (entity, _) in &self.terrains.p1() {
+                    self.new_terrain.write(NewTerrainRequested {
+                        terrain: entity,
+                        size: *self.new_size,
+                        height: 0.0,
+                    });
+                }
+                self.terrain_status.clear();
+            }
+        });
+        if ui
+            .button("Load terrain…")
+            .on_hover_text("Replace the terrain from an R16 KTX2 or 16-bit PNG heightmap")
+            .clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("Heightmap", &["ktx2", "png"])
+                .pick_file()
+        {
+            for (entity, _) in &self.terrains.p1() {
+                self.load.write(LoadRequested {
+                    terrain: entity,
+                    path: path.clone(),
+                });
+            }
+            self.terrain_status.clear();
+        }
+        for status in self.terrain_status.iter() {
+            ui.small(status);
+        }
+    }
+
+    /// The tool switcher: the registry, not a hard-coded list, so a
+    /// host-registered tool shows up with no UI changes. Hosts with their own
+    /// mode UI skip this and write [`Self::active`] directly.
+    pub fn tools_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Tool");
+        for tool in self.tools.iter() {
+            if ui
+                .selectable_label(self.active.0 == Some(tool.id), &tool.name)
+                .clicked()
+            {
+                self.active.0 = Some(tool.id);
+            }
+        }
+    }
+
+    /// Undo / redo buttons over the tile-snapshot history.
+    pub fn undo_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.horizontal(|ui| {
+            let undo = egui::Button::new("⟲ Undo");
+            if ui
+                .add_enabled(self.history.undo_label().is_some(), undo)
+                .on_hover_text(self.history.undo_label().unwrap_or_default())
+                .clicked()
+            {
+                self.history.undo(&mut self.terrains.p0());
+            }
+            let redo = egui::Button::new("⟳ Redo");
+            if ui
+                .add_enabled(self.history.redo_label().is_some(), redo)
+                .on_hover_text(self.history.redo_label().unwrap_or_default())
+                .clicked()
+            {
+                self.history.redo(&mut self.terrains.p0());
+            }
         });
     }
-    for done in loaded.read() {
-        terrain_status.clear();
-        terrain_status.push(match &done.error {
-            None => format!("loaded {}", done.path.display()),
-            Some(error) => format!("load failed: {error}"),
+
+    /// Brush controls, for the tools that read them: sculpt gets the mode row
+    /// plus radius and strength; mask paints with radius alone (strength
+    /// does nothing there, so it's hidden). Draws nothing for other tools.
+    pub fn brush_section(&mut self, ui: &mut egui::Ui) {
+        let sculpting = match self.active.0 {
+            Some(ToolId::SCULPT) => true,
+            Some(ToolId::MASK) => false,
+            _ => return,
+        };
+        ui.separator();
+        ui.label("Brush");
+        if sculpting {
+            ui.horizontal_wrapped(|ui| {
+                for (mode, name) in [
+                    (SculptMode::Raise, "Raise"),
+                    (SculptMode::Lower, "Lower"),
+                    (SculptMode::Smooth, "Smooth"),
+                    (SculptMode::Flatten, "Flatten"),
+                ] {
+                    if ui.selectable_label(self.brush.mode == mode, name).clicked() {
+                        self.brush.mode = mode;
+                    }
+                }
+            });
+        }
+        ui.add(
+            egui::Slider::new(&mut self.brush.radius, 4.0..=2000.0)
+                .logarithmic(true)
+                .text("radius (m)"),
+        );
+        if sculpting {
+            ui.add(
+                egui::Slider::new(&mut self.brush.strength, 1.0..=500.0)
+                    .logarithmic(true)
+                    .text("strength (m/s)"),
+            );
+        }
+    }
+
+    /// Stamp size/strength/rotation and the PNG gallery. Draws nothing unless
+    /// the stamp tool is active (the gallery scan also waits for that).
+    pub fn stamp_section(&mut self, ui: &mut egui::Ui, contexts: &mut EguiContexts) {
+        if self.active.0 != Some(ToolId::STAMP) {
+            return;
+        }
+        if !self.library.scanned {
+            scan_stamps(
+                &self.stamp_folder.0,
+                &mut self.images,
+                contexts,
+                &mut self.library,
+            );
+            self.library.scanned = true;
+        }
+        ui.separator();
+        ui.label("Stamp");
+        ui.add(
+            egui::Slider::new(&mut self.stamp_settings.size, 10.0..=16384.0)
+                .logarithmic(true)
+                .text("size (m)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.stamp_settings.strength, -2000.0..=2000.0)
+                .text("strength (m)"),
+        );
+        let mut degrees = self.stamp_settings.rotation.to_degrees();
+        if ui
+            .add(egui::Slider::new(&mut degrees, 0.0..=360.0).text("rotation °"))
+            .changed()
+        {
+            self.stamp_settings.rotation = degrees.to_radians();
+        }
+        ui.small("wheel: strength · ctrl: size · shift: rotate");
+        // The gallery: every PNG in the stamps folder, click to arm.
+        let mut clicked = None;
+        egui::ScrollArea::vertical()
+            .max_height(180.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for entry in &self.library.entries {
+                        let selected =
+                            self.library.selected.as_deref() == Some(entry.path.as_path());
+                        let button = egui::Button::image(egui::load::SizedTexture::new(
+                            entry.thumb,
+                            [56.0, 56.0],
+                        ))
+                        .selected(selected);
+                        if ui.add(button).on_hover_text(&entry.name).clicked() {
+                            clicked = Some(entry.path.clone());
+                        }
+                    }
+                });
+            });
+        if let Some(path) = clicked {
+            match StampData::load_png(&path, &mut self.images) {
+                Ok(data) => {
+                    self.active_stamp.0 = Some(data);
+                    self.library.selected = Some(path);
+                    self.library.status = None;
+                }
+                Err(error) => self.library.status = Some(error),
+            }
+        }
+        if ui.small_button("rescan folder").clicked() {
+            self.library.scanned = false;
+        }
+        if let Some(status) = &self.library.status {
+            ui.small(status.clone());
+        }
+        if self.active_stamp.0.is_none() {
+            ui.small("pick a stamp to start previewing");
+        }
+    }
+
+    /// Clear-mask button, for the mask tool and the erode tool (erosion runs
+    /// over the mask). Draws nothing for other tools.
+    pub fn mask_section(&mut self, ui: &mut egui::Ui) {
+        if !matches!(self.active.0, Some(ToolId::MASK) | Some(ToolId::ERODE)) {
+            return;
+        }
+        ui.separator();
+        ui.label("Mask");
+        let any_mask = self.terrains.p0().iter().any(|t| t.mask_active());
+        if ui
+            .add_enabled(any_mask, egui::Button::new("Clear mask"))
+            .clicked()
+        {
+            for (entity, mut terrain) in &mut self.terrains.p1() {
+                if terrain.mask_active() {
+                    self.history.begin(entity, "Clear Mask");
+                    self.history
+                        .capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
+                    terrain.clear_mask();
+                    self.history.seal();
+                }
+            }
+        }
+    }
+
+    /// Erosion parameters, the realism knobs, and the run button/progress.
+    /// Draws nothing unless the erode tool is active.
+    pub fn erosion_section(&mut self, ui: &mut egui::Ui) {
+        if self.active.0 != Some(ToolId::ERODE) {
+            return;
+        }
+        ui.separator();
+        ui.label("Erosion");
+        ui.add(
+            egui::Slider::new(&mut self.erosion.droplet_density, 0.01..=2.0)
+                .logarithmic(true)
+                .text("droplet density"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.erosion.sediment_capacity, 0.5..=16.0)
+                .logarithmic(true)
+                .text("capacity"),
+        );
+        ui.add(egui::Slider::new(&mut self.erosion.erode_rate, 0.05..=1.0).text("erode rate"));
+        ui.add(egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=1.0).text("deposit rate"));
+        ui.add(
+            egui::Slider::new(&mut self.erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
+        );
+        // The D12 realism knobs — sane defaults, tucked away.
+        egui::CollapsingHeader::new("Realism").show(ui, |ui| {
+            ui.add(
+                egui::Slider::new(&mut self.erosion.min_slope_deg, 0.0..=5.0).text("min slope °"),
+            )
+            .on_hover_text("Slopes shallower than this deposit instead of carving");
+            ui.add(egui::Slider::new(&mut self.erosion.inertia, 0.0..=0.5).text("inertia"));
+            ui.add(
+                egui::Slider::new(&mut self.erosion.flow_strength, 0.0..=8.0).text("flow carving"),
+            )
+            .on_hover_text("Concentrates carving where drainage accumulates; 0 disables");
+            ui.add(
+                egui::Slider::new(&mut self.erosion.deposit_blur_radius, 0..=8)
+                    .text("deposit blur"),
+            )
+            .on_hover_text("Smooths each round's deposits into fans; carving stays crisp");
+        });
+        match self.runs.iter().next() {
+            Some(run) => {
+                ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
+            }
+            None => {
+                if ui.button("Erode").clicked() {
+                    // Over the mask, or the whole map if none — same
+                    // semantics as the erode tool's click.
+                    for (entity, _) in &self.terrains.p1() {
+                        self.erode.write(ErosionRequested { terrain: entity });
+                    }
+                }
+            }
+        }
+        ui.small("erodes the masked region, or the whole map if none");
+    }
+
+    /// The seam-ring overlay toggle — a view option, not a tool setting, so
+    /// it belongs with the always-visible sections.
+    pub fn seam_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.checkbox(&mut self.seam.enabled, "seam ring");
+    }
+
+    /// Auto-rebake toggle and the manual bake button (which doubles as the
+    /// bake-in-flight indicator).
+    pub fn bake_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Bake");
+        ui.horizontal(|ui| {
+            // D10: with auto off, edits never schedule the D5 re-bake —
+            // model freely, then bake once. ClipmapReady is absent while a
+            // bake is in flight, so the button doubles as its indicator.
+            ui.checkbox(&mut self.rebake.auto, "auto re-bake")
+                .on_hover_text("Re-bake shading ~200 ms after each edit settles");
+            let baking = self.ready.iter().any(|ready| !ready);
+            let label = if baking { "Baking…" } else { "Bake" };
+            if ui
+                .add_enabled(!baking, egui::Button::new(label))
+                .on_hover_text("Re-bake shading (sun shadow, AO, material splat) now")
+                .clicked()
+            {
+                for (entity, _) in &self.terrains.p1() {
+                    self.commands.entity(entity).insert(RebakeRequested);
+                }
+            }
         });
     }
-    // Local<u32> defaults to 0; seed the new-terrain resolution once.
-    if *new_size == 0 {
-        *new_size = 4096;
+
+    /// The export button ([`UiExportPath`], both formats) and its status
+    /// lines. Hosts with their own save pipeline skip this.
+    pub fn export_section(&mut self, ui: &mut egui::Ui) {
+        for done in self.exported.read() {
+            // Replace the "exporting…" placeholder with per-file results.
+            self.export_status.retain(|line| !line.ends_with('…'));
+            self.export_status.push(match &done.error {
+                None => format!("saved {}", done.path.display()),
+                Some(error) => format!("failed {}: {error}", done.path.display()),
+            });
+        }
+        ui.separator();
+        ui.label("Export");
+        if ui
+            .button("Export heightmap")
+            .on_hover_text(format!(
+                "R16 KTX2 (engine) + 16-bit PNG (interchange) → {}",
+                self.export_path.0.with_extension("{ktx2,png}").display()
+            ))
+            .clicked()
+        {
+            for (entity, _) in &self.terrains.p1() {
+                // Both formats side by side: the KTX2 the renderer
+                // re-loads and the PNG a physics/DCC pipeline reads.
+                for extension in ["ktx2", "png"] {
+                    self.export.write(ExportRequested {
+                        terrain: entity,
+                        path: self.export_path.0.with_extension(extension),
+                    });
+                }
+            }
+            self.export_status.clear();
+            self.export_status.push("exporting…".into());
+        }
+        for status in self.export_status.iter() {
+            ui.small(status);
+        }
     }
-    let ctx = contexts.ctx_mut()?;
+}
+
+/// The standalone side panel: every section, drawn by this crate.
+fn editor_panel(mut contexts: EguiContexts, mut terrain_ui: TerrainUi) -> Result {
+    let ctx = contexts.ctx_mut()?.clone();
     // egui 0.35: panels attach to a root `Ui` spanning the viewport.
     let mut root = egui::Ui::new(
         ctx.clone(),
@@ -254,290 +647,7 @@ fn editor_panel(
         .default_size(230.0)
         .show(&mut root, |ui| {
             ui.heading("Terrain Editor");
-
-            ui.separator();
-            ui.label("Terrain");
-            // The editor opens on a fresh terrain by default; these get back to
-            // one, or open an existing heightmap, without a restart.
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("new_terrain_size")
-                    .selected_text(format!("{}²", *new_size))
-                    .show_ui(ui, |ui| {
-                        for size in [512u32, 1024, 2048, 4096] {
-                            ui.selectable_value(&mut *new_size, size, format!("{size}²"));
-                        }
-                    });
-                if ui
-                    .button("New")
-                    .on_hover_text("Discard the current terrain and start a fresh flat plain")
-                    .clicked()
-                {
-                    for (entity, _) in &terrains.p1() {
-                        new_terrain.write(NewTerrainRequested {
-                            terrain: entity,
-                            size: *new_size,
-                            height: 0.0,
-                        });
-                    }
-                    terrain_status.clear();
-                }
-            });
-            if ui
-                .button("Load terrain…")
-                .on_hover_text("Replace the terrain from an R16 KTX2 or 16-bit PNG heightmap")
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Heightmap", &["ktx2", "png"])
-                    .pick_file()
-            {
-                for (entity, _) in &terrains.p1() {
-                    load.write(LoadRequested {
-                        terrain: entity,
-                        path: path.clone(),
-                    });
-                }
-                terrain_status.clear();
-            }
-            for status in terrain_status.iter() {
-                ui.small(status);
-            }
-
-            ui.separator();
-            ui.label("Tool");
-            // The registry, not a hard-coded list: a host-registered tool
-            // (the game's glTF placement) shows up here with no UI changes.
-            for tool in tools.iter() {
-                if ui
-                    .selectable_label(active.0 == Some(tool.id), &tool.name)
-                    .clicked()
-                {
-                    active.0 = Some(tool.id);
-                }
-            }
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                let undo = egui::Button::new("⟲ Undo");
-                if ui
-                    .add_enabled(history.undo_label().is_some(), undo)
-                    .on_hover_text(history.undo_label().unwrap_or_default())
-                    .clicked()
-                {
-                    history.undo(&mut terrains.p0());
-                }
-                let redo = egui::Button::new("⟳ Redo");
-                if ui
-                    .add_enabled(history.redo_label().is_some(), redo)
-                    .on_hover_text(history.redo_label().unwrap_or_default())
-                    .clicked()
-                {
-                    history.redo(&mut terrains.p0());
-                }
-            });
-
-            ui.separator();
-            ui.label("Brush");
-            if active.0 == Some(ToolId::SCULPT) {
-                ui.horizontal_wrapped(|ui| {
-                    for (mode, name) in [
-                        (SculptMode::Raise, "Raise"),
-                        (SculptMode::Lower, "Lower"),
-                        (SculptMode::Smooth, "Smooth"),
-                        (SculptMode::Flatten, "Flatten"),
-                    ] {
-                        if ui.selectable_label(brush.mode == mode, name).clicked() {
-                            brush.mode = mode;
-                        }
-                    }
-                });
-            }
-            ui.add(
-                egui::Slider::new(&mut brush.radius, 4.0..=2000.0)
-                    .logarithmic(true)
-                    .text("radius (m)"),
-            );
-            ui.add(
-                egui::Slider::new(&mut brush.strength, 1.0..=500.0)
-                    .logarithmic(true)
-                    .text("strength (m/s)"),
-            );
-
-            if active.0 == Some(ToolId::STAMP) {
-                ui.separator();
-                ui.label("Stamp");
-                ui.add(
-                    egui::Slider::new(&mut stamp_settings.size, 10.0..=16384.0)
-                        .logarithmic(true)
-                        .text("size (m)"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut stamp_settings.strength, -2000.0..=2000.0)
-                        .text("strength (m)"),
-                );
-                let mut degrees = stamp_settings.rotation.to_degrees();
-                if ui
-                    .add(egui::Slider::new(&mut degrees, 0.0..=360.0).text("rotation °"))
-                    .changed()
-                {
-                    stamp_settings.rotation = degrees.to_radians();
-                }
-                ui.small("wheel: strength · ctrl: size · shift: rotate");
-                // The gallery: every PNG in the stamps folder, click to arm.
-                let mut clicked = None;
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            for entry in &library.entries {
-                                let selected =
-                                    library.selected.as_deref() == Some(entry.path.as_path());
-                                let button = egui::Button::image(egui::load::SizedTexture::new(
-                                    entry.thumb,
-                                    [56.0, 56.0],
-                                ))
-                                .selected(selected);
-                                if ui.add(button).on_hover_text(&entry.name).clicked() {
-                                    clicked = Some(entry.path.clone());
-                                }
-                            }
-                        });
-                    });
-                if let Some(path) = clicked {
-                    match StampData::load_png(&path, &mut images) {
-                        Ok(data) => {
-                            active_stamp.0 = Some(data);
-                            library.selected = Some(path);
-                            library.status = None;
-                        }
-                        Err(error) => library.status = Some(error),
-                    }
-                }
-                if ui.small_button("rescan folder").clicked() {
-                    library.scanned = false;
-                }
-                if let Some(status) = &library.status {
-                    ui.small(status.clone());
-                }
-                if active_stamp.0.is_none() {
-                    ui.small("pick a stamp to start previewing");
-                }
-            }
-
-            ui.separator();
-            ui.label("Mask");
-            ui.horizontal(|ui| {
-                let any_mask = terrains.p0().iter().any(|t| t.mask_active());
-                if ui
-                    .add_enabled(any_mask, egui::Button::new("Clear mask"))
-                    .clicked()
-                {
-                    for (entity, mut terrain) in &mut terrains.p1() {
-                        if terrain.mask_active() {
-                            history.begin(entity, "Clear Mask");
-                            history.capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
-                            terrain.clear_mask();
-                            history.seal();
-                        }
-                    }
-                }
-                ui.checkbox(&mut seam.enabled, "seam ring");
-            });
-
-            ui.separator();
-            ui.label("Erosion");
-            ui.add(
-                egui::Slider::new(&mut erosion.droplet_density, 0.01..=2.0)
-                    .logarithmic(true)
-                    .text("droplet density"),
-            );
-            ui.add(
-                egui::Slider::new(&mut erosion.sediment_capacity, 0.5..=16.0)
-                    .logarithmic(true)
-                    .text("capacity"),
-            );
-            ui.add(egui::Slider::new(&mut erosion.erode_rate, 0.05..=1.0).text("erode rate"));
-            ui.add(egui::Slider::new(&mut erosion.deposit_rate, 0.05..=1.0).text("deposit rate"));
-            ui.add(
-                egui::Slider::new(&mut erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
-            );
-            // The D12 realism knobs — sane defaults, tucked away.
-            egui::CollapsingHeader::new("Realism").show(ui, |ui| {
-                ui.add(
-                    egui::Slider::new(&mut erosion.min_slope_deg, 0.0..=5.0).text("min slope °"),
-                )
-                .on_hover_text("Slopes shallower than this deposit instead of carving");
-                ui.add(egui::Slider::new(&mut erosion.inertia, 0.0..=0.5).text("inertia"));
-                ui.add(
-                    egui::Slider::new(&mut erosion.flow_strength, 0.0..=8.0).text("flow carving"),
-                )
-                .on_hover_text("Concentrates carving where drainage accumulates; 0 disables");
-                ui.add(
-                    egui::Slider::new(&mut erosion.deposit_blur_radius, 0..=8).text("deposit blur"),
-                )
-                .on_hover_text("Smooths each round's deposits into fans; carving stays crisp");
-            });
-            match runs.iter().next() {
-                Some(run) => {
-                    ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
-                }
-                None => {
-                    if ui.button("Erode").clicked() {
-                        // Over the mask, or the whole map if none — same
-                        // semantics as the erode tool's click.
-                        for (entity, _) in &terrains.p1() {
-                            erode.write(ErosionRequested { terrain: entity });
-                        }
-                    }
-                }
-            }
-
-            ui.separator();
-            ui.label("Bake");
-            ui.horizontal(|ui| {
-                // D10: with auto off, edits never schedule the D5 re-bake —
-                // model freely, then bake once. ClipmapReady is absent while a
-                // bake is in flight, so the button doubles as its indicator.
-                ui.checkbox(&mut rebake.auto, "auto re-bake")
-                    .on_hover_text("Re-bake shading ~200 ms after each edit settles");
-                let baking = ready.iter().any(|ready| !ready);
-                let label = if baking { "Baking…" } else { "Bake" };
-                if ui
-                    .add_enabled(!baking, egui::Button::new(label))
-                    .on_hover_text("Re-bake shading (sun shadow, AO, material splat) now")
-                    .clicked()
-                {
-                    for (entity, _) in &terrains.p1() {
-                        commands.entity(entity).insert(RebakeRequested);
-                    }
-                }
-            });
-
-            ui.separator();
-            ui.label("Export");
-            if ui
-                .button("Export heightmap")
-                .on_hover_text(format!(
-                    "R16 KTX2 (engine) + 16-bit PNG (interchange) → {}",
-                    export_path.0.with_extension("{ktx2,png}").display()
-                ))
-                .clicked()
-            {
-                for (entity, _) in &terrains.p1() {
-                    // Both formats side by side: the KTX2 the renderer
-                    // re-loads and the PNG a physics/DCC pipeline reads.
-                    for extension in ["ktx2", "png"] {
-                        export.write(ExportRequested {
-                            terrain: entity,
-                            path: export_path.0.with_extension(extension),
-                        });
-                    }
-                }
-                export_status.clear();
-                export_status.push("exporting…".into());
-            }
-            for status in export_status.iter() {
-                ui.small(status);
-            }
+            terrain_ui.all_sections(ui, &mut contexts);
         });
     Ok(())
 }

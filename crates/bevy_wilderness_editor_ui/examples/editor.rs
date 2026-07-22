@@ -154,7 +154,7 @@ fn main() {
         .add_plugins(ClipmapPlugin)
         .add_plugins(HeightFogPlugin)
         .add_plugins(TerrainEditorPlugin)
-        .add_plugins(TerrainEditorUiPlugin)
+        .add_plugins(TerrainEditorUiPlugin::default())
         .add_systems(Startup, (setup, register_place_tool))
         .add_systems(
             Update,
