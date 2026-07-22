@@ -1,11 +1,14 @@
 //! The shared terrain raycast / cursor-hit (design doc §6): cursor → terrain
 //! world point, computed once per frame (`EditorSet::Pick`) and read by every
-//! tool, so a placed prop lands exactly where the brush would paint.
+//! tool, so a placed prop lands exactly where the brush would paint — plus
+//! the gizmo indicator that visualizes it (brush ring + pick dot).
 
 use bevy::{prelude::*, window::PrimaryWindow};
 use bevy_wilderness::Clipmap;
 
+use crate::settings::BrushSettings;
 use crate::terrain::EditableTerrain;
+use crate::tools::{ActiveTool, ToolId};
 
 /// How far the cursor pick marches before giving up, in meters.
 const MAX_PICK_DISTANCE: f32 = 50_000.0;
@@ -66,4 +69,55 @@ pub(crate) fn update_terrain_cursor(
             })
         });
     cursor.set_if_neq(TerrainCursor(hit));
+}
+
+/// The cursor indicator, drawn by the core so every host gets it: a
+/// brush-radius ring for the tools that brush, and a center dot marking the
+/// shared pick. `enabled: false` hides both (e.g. for a host drawing its
+/// own).
+#[derive(Resource, Clone, Copy)]
+pub struct BrushRing {
+    pub enabled: bool,
+}
+
+impl Default for BrushRing {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// Ring + dot for sculpt/mask (they brush with the radius); dot alone for
+/// erode (it runs over the mask, not a radius — a ring would mislead, same
+/// reason the UI hides its radius slider). Stamp previews itself, and host
+/// tools draw their own indicators.
+pub(crate) fn draw_brush_ring(
+    ring: Res<BrushRing>,
+    cursor: Res<TerrainCursor>,
+    brush: Res<BrushSettings>,
+    active: Res<ActiveTool>,
+    mut gizmos: Gizmos,
+) {
+    if !ring.enabled {
+        return;
+    }
+    let with_ring = match active.0 {
+        Some(ToolId::SCULPT) | Some(ToolId::MASK) => true,
+        Some(ToolId::ERODE) => false,
+        _ => return,
+    };
+    let Some(hit) = &cursor.0 else {
+        return;
+    };
+    if with_ring {
+        let up = Isometry3d::new(
+            hit.position + Vec3::Y * 0.5,
+            Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+        );
+        gizmos.circle(up, brush.radius, Color::srgb(1.0, 0.4, 0.1));
+    }
+    gizmos.sphere(
+        Isometry3d::from_translation(hit.position),
+        2.0,
+        Color::srgb(1.0, 0.9, 0.2),
+    );
 }

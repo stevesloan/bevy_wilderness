@@ -164,7 +164,6 @@ fn main() {
                 stamp_wheel_guard,
                 undo_keys,
                 clear_mask_key,
-                draw_brush_ring,
                 erosion_progress,
                 resnap_props,
             ),
@@ -361,33 +360,6 @@ fn undo_keys(
             Some(label) => info!("undo: {label}"),
             None => info!("nothing to undo"),
         }
-    }
-}
-
-/// Brush-radius ring + center dot at the shared cursor pick, whatever tool is
-/// active.
-fn draw_brush_ring(
-    cursor: Res<TerrainCursor>,
-    brush: Res<BrushSettings>,
-    active: Res<ActiveTool>,
-    mut gizmos: Gizmos,
-) {
-    // The stamp tool previews itself (the floating stamp is the indicator);
-    // a brush-radius ring under it would just mislead.
-    if active.0 == Some(ToolId::STAMP) {
-        return;
-    }
-    if let Some(hit) = &cursor.0 {
-        let up = Isometry3d::new(
-            hit.position + Vec3::Y * 0.5,
-            Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-        );
-        gizmos.circle(up, brush.radius, Color::srgb(1.0, 0.4, 0.1));
-        gizmos.sphere(
-            Isometry3d::from_translation(hit.position),
-            2.0,
-            Color::srgb(1.0, 0.9, 0.2),
-        );
     }
 }
 

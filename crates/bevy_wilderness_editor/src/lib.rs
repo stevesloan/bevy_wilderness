@@ -50,7 +50,7 @@ mod terrain;
 mod tools;
 mod undo;
 
-pub use cursor::{PointerBlocked, TerrainCursor, TerrainHit};
+pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionMaps, ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
@@ -97,6 +97,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<UndoHistory>()
             .init_resource::<RebakeSettings>()
             .init_resource::<SeamOverlay>()
+            .init_resource::<cursor::BrushRing>()
             .init_resource::<ActiveStamp>()
             .init_resource::<StampSettings>()
             .init_resource::<export::ExportTasks>()
@@ -152,6 +153,7 @@ impl Plugin for TerrainEditorPlugin {
                     (terrain::sync_dirty_regions, terrain::sync_dirty_masks)
                         .in_set(EditorSet::Apply),
                     seam::draw_seam_overlay,
+                    cursor::draw_brush_ring,
                     // Export is read-only on the field; the message-in /
                     // message-out pair can run any time after Tools.
                     (export::start_requested_exports, export::poll_export_tasks)
