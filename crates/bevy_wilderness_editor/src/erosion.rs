@@ -36,9 +36,10 @@ use bevy::{
 };
 
 use crate::cursor::TerrainCursor;
+use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::settings::ErosionSettings;
 use crate::terrain::EditableTerrain;
-use crate::undo::{UndoBuffer, UndoHistory};
+use crate::undo::UndoHistory;
 
 /// Simulation rounds per run. Batches within a round parallelize over
 /// per-batch delta buffers (droplet writes scatter, so they can't share one —
@@ -190,12 +191,13 @@ pub(crate) fn start_requested_runs(
 pub(crate) fn apply_finished_runs(
     mut commands: Commands,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut terrains: Query<(Entity, &mut EditableTerrain, &mut ErosionRun)>,
 ) {
     for (entity, mut terrain, mut run) in &mut terrains {
         // Don't land mid-gesture: `begin` below would seal another tool's open
         // stroke and split its undo entry. The result waits a frame instead.
-        if history.gesture_open() {
+        if gesture.open() {
             continue;
         }
         let Some(outcome) = block_on(poll_once(&mut run.task)) else {
@@ -209,8 +211,8 @@ pub(crate) fn apply_finished_runs(
         let Some(changed) = outcome.changed else {
             continue;
         };
-        history.begin(entity, "Erosion");
-        history.capture(&terrain, UndoBuffer::Height, changed);
+        gesture.begin(&mut history, entity, "Erosion");
+        gesture.capture(&terrain, UndoBuffer::Height, changed);
         // Deltas, not absolute heights: edits made while the run simulated
         // survive instead of being stomped by the snapshot.
         let (min, max) = terrain.field.min_max();
@@ -225,7 +227,7 @@ pub(crate) fn apply_finished_runs(
             }
         }
         terrain.mark_dirty(changed);
-        history.seal();
+        gesture.seal(&mut history);
     }
 }
 

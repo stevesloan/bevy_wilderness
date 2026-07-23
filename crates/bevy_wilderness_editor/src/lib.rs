@@ -31,7 +31,10 @@
 //! - [`RebakeSettings`] — auto re-bake on/off (D10); with it off, bake
 //!   manually by inserting [`RebakeRequested`] on the terrain
 //!   ([`ClipmapReady`]'s absence = a bake is in flight).
-//! - [`UndoHistory`] — tile-snapshot undo/redo; a UI binds Ctrl+Z to it (D8).
+//! - [`UndoHistory`] — the shared undo/redo stack (D8): terrain gestures and
+//!   host actions ([`UndoAction`], e.g. prop placement) interleave in one
+//!   stream. A UI binds Ctrl+Z to [`UndoRequest`] / [`RedoRequest`] and shows
+//!   [`UndoApplied`] labels.
 
 use bevy::prelude::*;
 
@@ -39,6 +42,7 @@ mod cursor;
 mod erosion;
 mod export;
 mod field;
+mod gesture;
 mod mask;
 mod rebake;
 mod sculpt;
@@ -60,8 +64,9 @@ pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use stamp::{ActiveStamp, StampData, StampSettings};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
+pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
-pub use undo::{UNDO_TILE_SIZE, UndoBuffer, UndoHistory};
+pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
 // The manual-bake trigger and bake-completion marker (design doc §5/D10),
 // re-exported so a UI crate can drive bakes without depending on the renderer.
 pub use bevy_wilderness::{ClipmapReady, RebakeRequested};
@@ -95,6 +100,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
             .init_resource::<UndoHistory>()
+            .init_resource::<TerrainGesture>()
             .init_resource::<RebakeSettings>()
             .init_resource::<SeamOverlay>()
             .init_resource::<cursor::BrushRing>()
@@ -108,6 +114,9 @@ impl Plugin for TerrainEditorPlugin {
             .add_message::<NewTerrainRequested>()
             .add_message::<LoadRequested>()
             .add_message::<TerrainLoaded>()
+            .add_message::<UndoRequest>()
+            .add_message::<RedoRequest>()
+            .add_message::<UndoApplied>()
             .configure_sets(
                 Update,
                 (EditorSet::Pick, EditorSet::Tools, EditorSet::Apply).chain(),
@@ -148,6 +157,11 @@ impl Plugin for TerrainEditorPlugin {
                     // flushes (quantize + event + re-bake debounce) the same
                     // frame it applies.
                     (erosion::start_requested_runs, erosion::apply_finished_runs)
+                        .after(EditorSet::Tools)
+                        .before(EditorSet::Apply),
+                    // Same slot: an undone action's dirty regions flush
+                    // (quantize + event + re-bake debounce) the same frame.
+                    undo::apply_undo_requests
                         .after(EditorSet::Tools)
                         .before(EditorSet::Apply),
                     (terrain::sync_dirty_regions, terrain::sync_dirty_masks)

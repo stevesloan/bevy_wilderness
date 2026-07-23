@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use bevy::{
-    image::{CompressedImageFormats, ktx2_buffer_to_image},
+    image::{ktx2_buffer_to_image, CompressedImageFormats},
     prelude::*,
 };
 use bevy_wilderness::Clipmap;
@@ -30,6 +30,7 @@ use bevy_wilderness::Clipmap;
 use crate::{
     erosion::ErosionRun,
     field::TerrainField,
+    gesture::TerrainGesture,
     terrain::{Editable, EditableTerrain},
     undo::UndoHistory,
 };
@@ -74,6 +75,7 @@ pub(crate) fn apply_new_terrain(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut clipmaps: Query<(&mut Clipmap, Option<&EditableTerrain>)>,
 ) {
     for req in requests.read() {
@@ -100,6 +102,7 @@ pub(crate) fn apply_new_terrain(
             req.terrain,
             &mut clipmap,
             &mut history,
+            &mut gesture,
             field,
             heightmap,
         );
@@ -114,6 +117,7 @@ pub(crate) fn apply_load(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut loaded: MessageWriter<TerrainLoaded>,
     mut clipmaps: Query<(&mut Clipmap, Option<&EditableTerrain>)>,
 ) {
@@ -133,6 +137,7 @@ pub(crate) fn apply_load(
                     req.terrain,
                     &mut clipmap,
                     &mut history,
+                    &mut gesture,
                     field,
                     heightmap,
                 );
@@ -162,6 +167,7 @@ fn swap_in(
     terrain: Entity,
     clipmap: &mut Clipmap,
     history: &mut UndoHistory,
+    gesture: &mut TerrainGesture,
     field: TerrainField,
     heightmap: Handle<Image>,
 ) {
@@ -184,6 +190,7 @@ fn swap_in(
         .insert(editable);
     // The old tile snapshots describe a field that no longer exists.
     history.clear();
+    gesture.abandon();
 }
 
 /// Read `path` and decode it into an f32 field, sizing texels so the map keeps
@@ -303,16 +310,14 @@ mod tests {
     #[test]
     fn load_field_reports_errors_without_panicking() {
         // Missing file.
-        assert!(
-            load_field(
-                Path::new("/nonexistent/heightmap.ktx2"),
-                64.0,
-                0.0,
-                100.0,
-                false
-            )
-            .is_err()
-        );
+        assert!(load_field(
+            Path::new("/nonexistent/heightmap.ktx2"),
+            64.0,
+            0.0,
+            100.0,
+            false
+        )
+        .is_err());
         // Not a KTX2 / not a PNG: garbage bytes under both extensions.
         for ext in ["ktx2", "png"] {
             let path = std::env::temp_dir().join(format!("wilderness_load_garbage.{ext}"));

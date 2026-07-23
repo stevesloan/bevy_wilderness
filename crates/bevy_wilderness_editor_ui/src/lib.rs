@@ -25,8 +25,8 @@ use bevy_wilderness_editor::{
     ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
     ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, HeightmapExported,
     LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
-    SculptMode, SeamOverlay, StampData, StampSettings, TerrainLoaded, ToolId, UndoBuffer,
-    UndoHistory,
+    RedoRequest, SculptMode, SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded,
+    ToolId, UndoBuffer, UndoHistory, UndoRequest,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -195,9 +195,6 @@ fn block_pointer_over_ui(
 ///
 /// `active` is public: a host that replaces [`tools_section`](Self::tools_section)
 /// with its own mode UI writes the active tool through it.
-// The ParamSet is two views of the same terrain query (`UndoHistory`'s API
-// wants the bare one).
-#[allow(clippy::type_complexity)]
 #[derive(SystemParam)]
 pub struct TerrainUi<'w, 's> {
     pub active: ResMut<'w, ActiveTool>,
@@ -206,14 +203,10 @@ pub struct TerrainUi<'w, 's> {
     erosion: ResMut<'w, ErosionSettings>,
     seam: ResMut<'w, SeamOverlay>,
     history: ResMut<'w, UndoHistory>,
-    terrains: ParamSet<
-        'w,
-        's,
-        (
-            Query<'w, 's, &'static mut EditableTerrain>,
-            Query<'w, 's, (Entity, &'static mut EditableTerrain)>,
-        ),
-    >,
+    gesture: ResMut<'w, TerrainGesture>,
+    undo_requests: MessageWriter<'w, UndoRequest>,
+    redo_requests: MessageWriter<'w, RedoRequest>,
+    terrains: Query<'w, 's, (Entity, &'static mut EditableTerrain)>,
     runs: Query<'w, 's, &'static ErosionRun>,
     erode: MessageWriter<'w, ErosionRequested>,
     export_path: Res<'w, UiExportPath>,
@@ -258,10 +251,9 @@ impl TerrainUi<'_, '_> {
     /// [`TerrainHeight::sample`]: bevy_wilderness_editor::TerrainHeight::sample
     pub fn sample_height(&mut self, xz: Vec2) -> Option<f32> {
         self.terrains
-            .p0()
             .iter()
-            .find(|t| t.field.contains(xz))
-            .map(|t| t.field.height_at(xz))
+            .find(|(_, t)| t.field.contains(xz))
+            .map(|(_, t)| t.field.height_at(xz))
     }
 
     /// New-terrain and load-terrain controls. The editor opens on a fresh
@@ -294,7 +286,7 @@ impl TerrainUi<'_, '_> {
                 .on_hover_text("Discard the current terrain and start a fresh flat plain")
                 .clicked()
             {
-                for (entity, _) in &self.terrains.p1() {
+                for (entity, _) in &self.terrains {
                     self.new_terrain.write(NewTerrainRequested {
                         terrain: entity,
                         size: *self.new_size,
@@ -312,7 +304,7 @@ impl TerrainUi<'_, '_> {
                 .add_filter("Heightmap", &["ktx2", "png"])
                 .pick_file()
         {
-            for (entity, _) in &self.terrains.p1() {
+            for (entity, _) in &self.terrains {
                 self.load.write(LoadRequested {
                     terrain: entity,
                     path: path.clone(),
@@ -341,7 +333,9 @@ impl TerrainUi<'_, '_> {
         }
     }
 
-    /// Undo / redo buttons over the tile-snapshot history.
+    /// Undo / redo buttons over the shared history — requests, applied by the
+    /// editor core with exclusive world access (terrain gestures and host
+    /// actions alike).
     pub fn undo_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
@@ -351,7 +345,7 @@ impl TerrainUi<'_, '_> {
                 .on_hover_text(self.history.undo_label().unwrap_or_default())
                 .clicked()
             {
-                self.history.undo(&mut self.terrains.p0());
+                self.undo_requests.write(UndoRequest);
             }
             let redo = egui::Button::new("⟳ Redo");
             if ui
@@ -359,7 +353,7 @@ impl TerrainUi<'_, '_> {
                 .on_hover_text(self.history.redo_label().unwrap_or_default())
                 .clicked()
             {
-                self.history.redo(&mut self.terrains.p0());
+                self.redo_requests.write(RedoRequest);
             }
         });
     }
@@ -486,18 +480,18 @@ impl TerrainUi<'_, '_> {
         }
         ui.separator();
         ui.label("Mask");
-        let any_mask = self.terrains.p0().iter().any(|t| t.mask_active());
+        let any_mask = self.terrains.iter().any(|(_, t)| t.mask_active());
         if ui
             .add_enabled(any_mask, egui::Button::new("Clear mask"))
             .clicked()
         {
-            for (entity, mut terrain) in &mut self.terrains.p1() {
+            for (entity, mut terrain) in &mut self.terrains {
                 if terrain.mask_active() {
-                    self.history.begin(entity, "Clear Mask");
-                    self.history
+                    self.gesture.begin(&mut self.history, entity, "Clear Mask");
+                    self.gesture
                         .capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
                     terrain.clear_mask();
-                    self.history.seal();
+                    self.gesture.seal(&mut self.history);
                 }
             }
         }
@@ -551,7 +545,7 @@ impl TerrainUi<'_, '_> {
                 if ui.button("Erode").clicked() {
                     // Over the mask, or the whole map if none — same
                     // semantics as the erode tool's click.
-                    for (entity, _) in &self.terrains.p1() {
+                    for (entity, _) in &self.terrains {
                         self.erode.write(ErosionRequested { terrain: entity });
                     }
                 }
@@ -585,7 +579,7 @@ impl TerrainUi<'_, '_> {
                 .on_hover_text("Re-bake shading (sun shadow, AO, material splat) now")
                 .clicked()
             {
-                for (entity, _) in &self.terrains.p1() {
+                for (entity, _) in &self.terrains {
                     self.commands.entity(entity).insert(RebakeRequested);
                 }
             }
@@ -613,7 +607,7 @@ impl TerrainUi<'_, '_> {
             ))
             .clicked()
         {
-            for (entity, _) in &self.terrains.p1() {
+            for (entity, _) in &self.terrains {
                 // Both formats side by side: the KTX2 the renderer
                 // re-loads and the PNG a physics/DCC pipeline reads.
                 for extension in ["ktx2", "png"] {

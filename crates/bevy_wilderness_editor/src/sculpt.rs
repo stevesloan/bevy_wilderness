@@ -7,9 +7,10 @@
 use bevy::prelude::*;
 
 use crate::cursor::TerrainCursor;
+use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::settings::{BrushSettings, SculptMode};
 use crate::terrain::EditableTerrain;
-use crate::undo::{UndoBuffer, UndoHistory};
+use crate::undo::UndoHistory;
 
 /// Per-stroke state: the flatten target is the terrain height under the cursor
 /// when the stroke starts, so a whole drag levels toward one plane.
@@ -22,18 +23,21 @@ pub(crate) struct StrokeState {
 /// `EditorSet::Tools`, gated on the sculpt tool being active. Each stroke is
 /// one undo entry: begun on press, captured as it touches tiles, sealed on
 /// release.
+// Bevy systems legitimately take one param per resource they touch.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_sculpt(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
     cursor: Res<TerrainCursor>,
     brush: Res<BrushSettings>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut terrains: Query<&mut EditableTerrain>,
     mut stroke: Local<StrokeState>,
 ) {
     if !buttons.pressed(MouseButton::Left) {
         stroke.flatten_target = None;
-        history.seal();
+        gesture.seal(&mut history);
         return;
     }
     let Some(hit) = cursor.0 else {
@@ -44,7 +48,11 @@ pub(crate) fn apply_sculpt(
     };
     if stroke.flatten_target.is_none() {
         // First frame of the stroke (or first frame back over terrain).
-        history.begin(hit.terrain, format!("Sculpt ({:?})", brush.mode));
+        gesture.begin(
+            &mut history,
+            hit.terrain,
+            format!("Sculpt ({:?})", brush.mode),
+        );
     }
     let flatten_target = *stroke
         .flatten_target
@@ -55,7 +63,7 @@ pub(crate) fn apply_sculpt(
         &brush,
         time.delta_secs(),
         flatten_target,
-        &mut history,
+        &mut gesture,
     );
 }
 
@@ -69,7 +77,7 @@ pub(crate) fn sculpt_at(
     brush: &BrushSettings,
     dt: f32,
     flatten_target: f32,
-    history: &mut UndoHistory,
+    gesture: &mut TerrainGesture,
 ) {
     let radius_texels = brush.radius / terrain.field.texel_size();
     if radius_texels <= 0.0 {
@@ -81,7 +89,7 @@ pub(crate) fn sculpt_at(
 
     // Snapshot first-touch undo tiles *before* mutating (D8).
     for rect in terrain.field.wrap_rect(min, max) {
-        history.capture(terrain, UndoBuffer::Height, rect);
+        gesture.capture(terrain, UndoBuffer::Height, rect);
     }
 
     // A painted mask confines the op (D4): deltas weight by the feathered mask
@@ -168,7 +176,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
-            &mut UndoHistory::default(),
+            &mut TerrainGesture::default(),
         );
         let center = terrain.field.get(16, 16);
         let mid = terrain.field.get(18, 16);
@@ -189,7 +197,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
-            &mut UndoHistory::default(),
+            &mut TerrainGesture::default(),
         );
         assert!(terrain.field.get(0, 16) > 9.9);
         assert!(
@@ -205,7 +213,7 @@ mod tests {
             &brush(SculptMode::Raise),
             1.0,
             0.0,
-            &mut UndoHistory::default(),
+            &mut TerrainGesture::default(),
         );
         assert_eq!(terrain.field.get(30, 16), 0.0);
     }
@@ -225,7 +233,7 @@ mod tests {
                 &brush(SculptMode::Raise),
                 1.0,
                 0.0,
-                &mut UndoHistory::default(),
+                &mut TerrainGesture::default(),
             );
             terrain
         };
@@ -260,7 +268,7 @@ mod tests {
             &brush(SculptMode::Flatten),
             20.0,
             5.0,
-            &mut UndoHistory::default(),
+            &mut TerrainGesture::default(),
         );
         let after = terrain.field.get(16, 16);
         assert!(
@@ -280,7 +288,7 @@ mod tests {
             &brush(SculptMode::Raise),
             10.0,
             0.0,
-            &mut UndoHistory::default(),
+            &mut TerrainGesture::default(),
         );
         // 15 + 10*10 would be 115; the field clamps to the R16 max so the
         // display map can't silently diverge from the authoritative field.

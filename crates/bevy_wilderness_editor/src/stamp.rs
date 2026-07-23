@@ -26,8 +26,9 @@ use bevy::{
 use bevy_wilderness::{Clipmap, ClipmapStamp};
 
 use crate::cursor::TerrainCursor;
+use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::terrain::EditableTerrain;
-use crate::undo::{UndoBuffer, UndoHistory};
+use crate::undo::UndoHistory;
 
 /// A loaded stamp: normalized heights for the CPU commit and a texture for
 /// the GPU preview — the same data in both places, so preview ≡ commit.
@@ -154,6 +155,7 @@ pub(crate) fn drive_stamp_tool(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut terrains: Query<(Entity, &mut EditableTerrain, &mut Clipmap)>,
 ) {
     // Wheel only while aiming at terrain: over a UI panel the pick is blocked
@@ -202,7 +204,7 @@ pub(crate) fn drive_stamp_tool(
             cursor.0,
             buttons.just_pressed(MouseButton::Left),
         ) {
-            history.begin(entity, "Stamp");
+            gesture.begin(&mut history, entity, "Stamp");
             apply_stamp(
                 &mut terrain,
                 data,
@@ -210,9 +212,9 @@ pub(crate) fn drive_stamp_tool(
                 stamp.half_size,
                 stamp.rotation,
                 stamp.strength,
-                &mut history,
+                &mut gesture,
             );
-            history.seal();
+            gesture.seal(&mut history);
         }
     }
 }
@@ -238,7 +240,7 @@ pub(crate) fn apply_stamp(
     half_size: Vec2,
     rotation: f32,
     strength: f32,
-    history: &mut UndoHistory,
+    gesture: &mut TerrainGesture,
 ) {
     let texel_size = terrain.field.texel_size();
     let half_texels = half_size / texel_size;
@@ -264,7 +266,7 @@ pub(crate) fn apply_stamp(
 
     // Snapshot first-touch undo tiles *before* mutating (D8).
     for rect in terrain.field.wrap_rect(min, max) {
-        history.capture(terrain, UndoBuffer::Height, rect);
+        gesture.capture(terrain, UndoBuffer::Height, rect);
     }
 
     let masked = terrain.mask_active();
@@ -355,7 +357,8 @@ mod tests {
         let data = stamp_gaussian(&mut images);
         let mut terrain = terrain(128, false);
         let mut history = UndoHistory::default();
-        history.begin(Entity::PLACEHOLDER, "Stamp");
+        let mut gesture = TerrainGesture::default();
+        gesture.begin(&mut history, Entity::PLACEHOLDER, "Stamp");
         apply_stamp(
             &mut terrain,
             &data,
@@ -363,9 +366,9 @@ mod tests {
             Vec2::splat(20.0),
             0.0,
             50.0,
-            &mut history,
+            &mut gesture,
         );
-        history.seal();
+        gesture.seal(&mut history);
         let peak = terrain.field.get(64, 64);
         assert!(
             (peak - 50.0).abs() < 2.0,
@@ -380,7 +383,7 @@ mod tests {
         let mut images = Assets::default();
         let data = stamp_gaussian(&mut images);
         let mut terrain = terrain(64, false);
-        let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
         // Field floor is 0 (encode min): carving must clamp, not underflow.
         apply_stamp(
             &mut terrain,
@@ -389,7 +392,7 @@ mod tests {
             Vec2::splat(10.0),
             0.0,
             -80.0,
-            &mut history,
+            &mut gesture,
         );
         assert_eq!(terrain.field.get(32, 32), 0.0, "clamped at encode min");
     }
@@ -399,7 +402,7 @@ mod tests {
         let mut images = Assets::default();
         let data = stamp_gaussian(&mut images);
         let mut looping = terrain(64, true);
-        let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
         // Centered on the seam corner: all four map corners get material.
         apply_stamp(
             &mut looping,
@@ -408,7 +411,7 @@ mod tests {
             Vec2::splat(10.0),
             0.0,
             50.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(looping.field.get(0, 0) > 40.0);
         assert!(looping.field.get(63, 63) > 0.0, "wraps to the far corner");
@@ -421,7 +424,7 @@ mod tests {
             Vec2::splat(10.0),
             0.0,
             50.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(finite.field.get(0, 0) > 40.0);
         assert_eq!(finite.field.get(63, 63), 0.0, "finite drops the overhang");
@@ -438,7 +441,7 @@ mod tests {
                 terrain.set_mask(x, y, 1.0);
             }
         }
-        let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
         apply_stamp(
             &mut terrain,
             &data,
@@ -446,7 +449,7 @@ mod tests {
             Vec2::splat(10.0),
             0.0,
             50.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(terrain.field.get(28, 32) > 0.0, "masked side stamped");
         assert_eq!(terrain.field.get(36, 32), 0.0, "unmasked side untouched");
@@ -457,7 +460,7 @@ mod tests {
         let mut images = Assets::default();
         // A 3×1 horizontal bar stamp: wide on X, thin on Y.
         let data = StampData::from_r16(&[65535, 65535, 65535], UVec2::new(3, 1), &mut images);
-        let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
         let mut flat = terrain(64, false);
         apply_stamp(
             &mut flat,
@@ -466,7 +469,7 @@ mod tests {
             Vec2::new(12.0, 2.0),
             0.0,
             50.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(flat.field.get(42, 32) > 0.0, "unrotated bar reaches +X");
         assert_eq!(flat.field.get(32, 42), 0.0, "but not +Y");
@@ -479,7 +482,7 @@ mod tests {
             Vec2::new(12.0, 2.0),
             std::f32::consts::FRAC_PI_2,
             50.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(rotated.field.get(32, 42) > 0.0, "rotated bar reaches +Y");
         assert_eq!(rotated.field.get(42, 32), 0.0, "and leaves +X");

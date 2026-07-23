@@ -80,8 +80,9 @@ use bevy_wilderness::{
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
-    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField, TerrainHeight,
-    TerrainRegionChanged, ToolId, UndoBuffer, UndoHistory, tool_active,
+    RedoRequest, SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField,
+    TerrainGesture, TerrainHeight, TerrainRegionChanged, ToolId, UndoApplied, UndoBuffer,
+    UndoHistory, UndoRequest, tool_active,
 };
 use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath, UiStampFolder};
 
@@ -322,6 +323,7 @@ fn stamp_wheel_guard(
 fn clear_mask_key(
     keys: Res<ButtonInput<KeyCode>>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut terrains: Query<(Entity, &mut EditableTerrain)>,
 ) {
     if !keys.just_pressed(KeyCode::KeyC) {
@@ -329,37 +331,37 @@ fn clear_mask_key(
     }
     for (entity, mut terrain) in &mut terrains {
         if terrain.mask_active() {
-            history.begin(entity, "Clear Mask");
-            history.capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
+            gesture.begin(&mut history, entity, "Clear Mask");
+            gesture.capture(&terrain, UndoBuffer::Mask, terrain.field.full_rect());
             terrain.clear_mask();
-            history.seal();
+            gesture.seal(&mut history);
             info!("mask cleared");
         }
     }
 }
 
-/// Ctrl+Z / Ctrl+Shift+Z driving the editor's undo history — the same
-/// `UndoHistory` calls a UI's buttons will make.
+/// Ctrl+Z / Ctrl+Shift+Z → undo/redo requests — the same messages a UI's
+/// buttons write; the editor core applies them. `UndoApplied` carries the
+/// entry labels back for the log.
 fn undo_keys(
     keys: Res<ButtonInput<KeyCode>>,
-    mut history: ResMut<UndoHistory>,
-    mut terrains: Query<&mut EditableTerrain>,
+    mut undo: MessageWriter<UndoRequest>,
+    mut redo: MessageWriter<RedoRequest>,
+    mut applied: MessageReader<UndoApplied>,
 ) {
+    for done in applied.read() {
+        let verb = if done.redone { "redo" } else { "undo" };
+        info!("{verb}: {}", done.label);
+    }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if !ctrl || !keys.just_pressed(KeyCode::KeyZ) {
         return;
     }
     if shift {
-        match history.redo(&mut terrains) {
-            Some(label) => info!("redo: {label}"),
-            None => info!("nothing to redo"),
-        }
+        redo.write(RedoRequest);
     } else {
-        match history.undo(&mut terrains) {
-            Some(label) => info!("undo: {label}"),
-            None => info!("nothing to undo"),
-        }
+        undo.write(UndoRequest);
     }
 }
 

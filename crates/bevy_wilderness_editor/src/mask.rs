@@ -8,9 +8,10 @@
 use bevy::prelude::*;
 
 use crate::cursor::TerrainCursor;
+use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::settings::BrushSettings;
 use crate::terrain::EditableTerrain;
-use crate::undo::{UndoBuffer, UndoHistory};
+use crate::undo::UndoHistory;
 
 /// How fast a held brush saturates the mask, in full-range units per second at
 /// the brush center.
@@ -27,12 +28,13 @@ pub(crate) fn apply_mask_paint(
     cursor: Res<TerrainCursor>,
     brush: Res<BrushSettings>,
     mut history: ResMut<UndoHistory>,
+    mut gesture: ResMut<TerrainGesture>,
     mut terrains: Query<&mut EditableTerrain>,
     mut painting: Local<bool>,
 ) {
     if !buttons.pressed(MouseButton::Left) {
         if *painting {
-            history.seal();
+            gesture.seal(&mut history);
             *painting = false;
         }
         return;
@@ -45,7 +47,11 @@ pub(crate) fn apply_mask_paint(
     };
     let erase = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if !*painting {
-        history.begin(hit.terrain, if erase { "Mask Erase" } else { "Mask Paint" });
+        gesture.begin(
+            &mut history,
+            hit.terrain,
+            if erase { "Mask Erase" } else { "Mask Paint" },
+        );
         *painting = true;
     }
     paint_mask_at(
@@ -54,7 +60,7 @@ pub(crate) fn apply_mask_paint(
         brush.radius,
         erase,
         time.delta_secs(),
-        &mut history,
+        &mut gesture,
     );
 }
 
@@ -67,7 +73,7 @@ pub(crate) fn paint_mask_at(
     radius_m: f32,
     erase: bool,
     dt: f32,
-    history: &mut UndoHistory,
+    gesture: &mut TerrainGesture,
 ) {
     let radius_texels = radius_m / terrain.field.texel_size();
     if radius_texels <= 0.0 {
@@ -78,7 +84,7 @@ pub(crate) fn paint_mask_at(
 
     // Snapshot first-touch undo tiles *before* mutating (D8).
     for rect in terrain.field.wrap_rect(min, max) {
-        history.capture(terrain, UndoBuffer::Mask, rect);
+        gesture.capture(terrain, UndoBuffer::Mask, rect);
     }
 
     let direction = if erase { -1.0 } else { 1.0 };
@@ -113,7 +119,7 @@ mod tests {
     fn paint_feathers_and_erase_removes() {
         let field = TerrainField::flat(64, 64, 1.0, -100.0, 100.0, false, 0.0);
         let mut terrain = EditableTerrain::new(field);
-        let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
 
         // Paint long enough to saturate the center.
         paint_mask_at(
@@ -122,7 +128,7 @@ mod tests {
             8.0,
             false,
             1.0,
-            &mut history,
+            &mut gesture,
         );
         assert!(terrain.mask_active());
         let center = terrain.mask_weight(32, 32);
@@ -139,7 +145,7 @@ mod tests {
             8.0,
             true,
             2.0,
-            &mut history,
+            &mut gesture,
         );
         assert_eq!(terrain.mask_weight(32, 32), 0.0);
         assert!(!terrain.mask_active());
@@ -154,15 +160,15 @@ mod tests {
             radius: 20.0,
             strength: 10.0,
         };
-        let mut history = UndoHistory::default();
-        let stroke = |terrain: &mut EditableTerrain, history: &mut UndoHistory| {
-            crate::sculpt::sculpt_at(terrain, Vec2::new(26.0, 32.0), &brush, 1.0, 0.0, history);
+        let mut gesture = TerrainGesture::default();
+        let stroke = |terrain: &mut EditableTerrain, gesture: &mut TerrainGesture| {
+            crate::sculpt::sculpt_at(terrain, Vec2::new(26.0, 32.0), &brush, 1.0, 0.0, gesture);
         };
 
         // Control: the same stroke with no mask painted.
         let field = TerrainField::flat(64, 64, 1.0, -100.0, 100.0, false, 0.0);
         let mut control = EditableTerrain::new(field);
-        stroke(&mut control, &mut history);
+        stroke(&mut control, &mut gesture);
 
         // Masked: a small patch around (20, 32) only. Painted briefly (0.5 s)
         // so the center saturates to 1.0 but the falloff band stays partial —
@@ -175,10 +181,10 @@ mod tests {
             6.0,
             false,
             0.5,
-            &mut history,
+            &mut gesture,
         );
         assert_eq!(terrain.mask_weight(20, 32), 1.0, "center saturates");
-        stroke(&mut terrain, &mut history);
+        stroke(&mut terrain, &mut gesture);
 
         // Fully masked ground raises exactly as if unconfined.
         assert_eq!(terrain.field.get(20, 32), control.field.get(20, 32));
@@ -196,14 +202,13 @@ mod tests {
 
     #[test]
     fn mask_undo_round_trips() {
-        use bevy::ecs::system::SystemState;
-
         let field = TerrainField::flat(64, 64, 1.0, -100.0, 100.0, false, 0.0);
         let mut world = World::new();
         let entity = world.spawn(EditableTerrain::new(field)).id();
         let mut history = UndoHistory::default();
+        let mut gesture = TerrainGesture::default();
 
-        history.begin(entity, "Mask Paint");
+        gesture.begin(&mut history, entity, "Mask Paint");
         {
             let mut terrain = world.get_mut::<EditableTerrain>(entity).unwrap();
             paint_mask_at(
@@ -212,17 +217,16 @@ mod tests {
                 8.0,
                 false,
                 1.0,
-                &mut history,
+                &mut gesture,
             );
         }
-        history.seal();
+        gesture.seal(&mut history);
 
-        let mut state: SystemState<Query<&mut EditableTerrain>> = SystemState::new(&mut world);
-        history.undo(&mut state.get_mut(&mut world).unwrap());
+        history.undo(&mut world);
         let terrain = world.get::<EditableTerrain>(entity).unwrap();
         assert!(!terrain.mask_active(), "undo clears the painted mask");
 
-        history.redo(&mut state.get_mut(&mut world).unwrap());
+        history.redo(&mut world);
         let terrain = world.get::<EditableTerrain>(entity).unwrap();
         assert_eq!(terrain.mask_weight(32, 32), 1.0, "redo repaints");
     }

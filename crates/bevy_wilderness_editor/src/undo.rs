@@ -1,99 +1,65 @@
-//! Undo/history (D8): tile-based region snapshots in a byte-capped ring.
+//! Undo/history (D8): a generic, byte-capped action stack.
 //!
-//! One input gesture (a stroke's press→release, one erosion run) is one
-//! [`UndoEntry`]: the first time the gesture touches a 64²-texel tile, that
-//! tile's *pre-edit* heights are copied into the entry (~16 KB each) — so an
-//! entry costs what it touched, never a full-field snapshot. Undo pastes the
-//! saved tiles back and marks them dirty; the existing sync path then handles
-//! re-quantize, [`TerrainRegionChanged`](crate::TerrainRegionChanged) (prop
-//! re-snap), and the re-bake debounce — undo gets correct shading for free.
-//! Redo captures the current tiles into the entry before restoring, so it
-//! round-trips.
+//! The stack knows nothing about terrain. Each entry is a label plus a boxed
+//! [`UndoAction`]; the built-in terrain tools push tile-snapshot actions
+//! through [`TerrainGesture`](crate::TerrainGesture), and a host's own tools
+//! (prop placement, level objects) push theirs via [`UndoHistory::push`] — so
+//! terrain strokes and host edits interleave in one undo stream, in order.
 //!
-//! Entries are keyed by *(buffer, tile)* so later buffers (the Phase 4 mask)
-//! join the same machinery. Per P2 this is core API: a UI (or a Ctrl+Z keybind
-//! in the example) merely calls [`UndoHistory::undo`] / [`redo`]
-//! (UndoHistory::redo).
+//! Per P2 this is core API: a UI (or a Ctrl+Z keybind) merely writes
+//! [`UndoRequest`] / [`RedoRequest`]; the editor applies them with exclusive
+//! world access between `EditorSet::Tools` and `EditorSet::Apply` and reports
+//! each application as [`UndoApplied`] (status lines, logs).
 
-use bevy::{platform::collections::HashMap, prelude::*};
-
-use crate::terrain::EditableTerrain;
-
-/// Snapshot tile edge, in texels (64² × f32 ≈ 16 KB per height tile).
-pub const UNDO_TILE_SIZE: u32 = 64;
+use bevy::prelude::*;
 
 /// History byte budget before the oldest entries are evicted.
 const DEFAULT_MAX_BYTES: usize = 256 * 1024 * 1024;
 
-/// Which editable buffer a tile snapshot belongs to (D8: one entry can span
-/// several buffers — a tool that moves ground *and* paints mask undoes as one
-/// gesture).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum UndoBuffer {
-    /// The f32 height field.
-    Height,
-    /// The 0..1 paint mask (D4).
-    Mask,
-}
-
-impl UndoBuffer {
-    fn copy_rect(&self, terrain: &EditableTerrain, rect: URect) -> Vec<f32> {
-        match self {
-            UndoBuffer::Height => terrain.field.copy_rect(rect),
-            UndoBuffer::Mask => terrain.mask_copy_rect(rect),
-        }
-    }
-
-    fn paste_rect(&self, terrain: &mut EditableTerrain, rect: URect, data: &[f32]) {
-        match self {
-            UndoBuffer::Height => {
-                terrain.field.paste_rect(rect, data);
-                terrain.mark_dirty(rect);
-            }
-            UndoBuffer::Mask => {
-                terrain.mask_paste_rect(rect, data);
-                terrain.mark_mask_dirty(rect);
-            }
-        }
-    }
-}
-
-/// One tile's saved contents.
-struct TileSnapshot {
-    rect: URect,
-    data: Vec<f32>,
-}
-
-/// One undoable gesture on one terrain.
-struct UndoEntry {
-    terrain: Entity,
-    label: String,
-    /// Pre-edit tiles, captured on first touch during the gesture.
-    old: HashMap<(UndoBuffer, UVec2), TileSnapshot>,
-    /// Post-edit tiles, captured lazily on first undo (for redo).
-    new: Option<HashMap<(UndoBuffer, UVec2), TileSnapshot>>,
-}
-
-impl UndoEntry {
+/// One undoable operation. Implementations carry everything needed to revert
+/// and re-apply themselves (an action referring to entities that may despawn
+/// and respawn should resolve them through a stable host id, not `Entity`).
+pub trait UndoAction: Send + Sync + 'static {
+    /// Revert the action's effect. Runs with exclusive world access.
+    fn undo(&mut self, world: &mut World);
+    /// Re-apply the action after an [`undo`](Self::undo).
+    fn redo(&mut self, world: &mut World);
+    /// Heap bytes held, for the history's eviction budget.
     fn bytes(&self) -> usize {
-        let tiles = |m: &HashMap<(UndoBuffer, UVec2), TileSnapshot>| {
-            m.values().map(|t| t.data.len() * 4).sum::<usize>()
-        };
-        tiles(&self.old) + self.new.as_ref().map(tiles).unwrap_or(0)
+        0
     }
 }
 
-/// The edit history (D8). Tools call [`begin`](Self::begin) /
-/// [`capture`](Self::capture) / [`seal`](Self::seal) around their gestures
-/// (the built-in sculpt does); a UI calls [`undo`](Self::undo) /
-/// [`redo`](Self::redo).
+/// One sealed entry: what a UI shows next to undo/redo, and how to apply it.
+struct UndoEntry {
+    label: String,
+    action: Box<dyn UndoAction>,
+}
+
+/// Undo this. Written by a UI's button or a host keybind; applied (newest
+/// entry first) by the editor's exclusive apply system.
+#[derive(Message, Debug, Clone, Default)]
+pub struct UndoRequest;
+
+/// Redo the most recently undone entry.
+#[derive(Message, Debug, Clone, Default)]
+pub struct RedoRequest;
+
+/// An entry was applied: `label` is what it was, `redone` distinguishes
+/// redo from undo. For status lines and logs; requests with nothing to apply
+/// emit nothing.
+#[derive(Message, Debug, Clone)]
+pub struct UndoApplied {
+    pub label: String,
+    pub redone: bool,
+}
+
+/// The edit history (D8): sealed entries in a byte-capped ring.
+/// `entries[..cursor]` are undoable, the rest redoable.
 #[derive(Resource)]
 pub struct UndoHistory {
-    /// Sealed entries; `entries[..cursor]` are undoable, the rest redoable.
     entries: Vec<UndoEntry>,
     cursor: usize,
-    /// The open gesture, if any (between `begin` and `seal`).
-    pending: Option<UndoEntry>,
     /// Byte budget; oldest entries evict beyond it. Host-tunable.
     pub max_bytes: usize,
 }
@@ -103,303 +69,209 @@ impl Default for UndoHistory {
         Self {
             entries: Vec::new(),
             cursor: 0,
-            pending: None,
             max_bytes: DEFAULT_MAX_BYTES,
         }
     }
 }
 
 impl UndoHistory {
-    /// Open an undo entry for a gesture on `terrain` (sealing any still-open
-    /// one). `label` is what a UI shows next to undo/redo ("Sculpt (Raise)").
-    pub fn begin(&mut self, terrain: Entity, label: impl Into<String>) {
-        self.seal();
-        self.pending = Some(UndoEntry {
-            terrain,
-            label: label.into(),
-            old: HashMap::default(),
-            new: None,
-        });
-    }
-
-    /// Record `buffer`'s `rect` (texel space, in-bounds — pass brush footprints
-    /// through [`TerrainField::wrap_rect`](crate::TerrainField::wrap_rect)
-    /// first) as about-to-change. Must be called **before** mutating: tiles
-    /// already captured this gesture are skipped, so only first-touch data is
-    /// copied. No-op without an open entry. `terrain` must be the one this
-    /// entry was begun for.
-    pub fn capture(&mut self, terrain: &EditableTerrain, buffer: UndoBuffer, rect: URect) {
-        let Some(pending) = &mut self.pending else {
-            return;
-        };
-        for (tile, tile_rect) in tiles_in(rect, terrain.field.dimensions()) {
-            pending
-                .old
-                .entry((buffer, tile))
-                .or_insert_with(|| TileSnapshot {
-                    rect: tile_rect,
-                    data: buffer.copy_rect(terrain, tile_rect),
-                });
-        }
-    }
-
-    /// Seal the open gesture into the history (dropping it if it captured
-    /// nothing), truncating any redo tail and evicting the oldest entries
-    /// beyond [`max_bytes`](Self::max_bytes).
-    pub fn seal(&mut self) {
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        if pending.old.is_empty() {
-            return;
-        }
+    /// Push a completed action onto the history, truncating any redo tail and
+    /// evicting the oldest entries beyond [`max_bytes`](Self::max_bytes).
+    /// `label` is what a UI shows next to undo/redo ("Sculpt (Raise)",
+    /// "Place building").
+    pub fn push(&mut self, label: impl Into<String>, action: impl UndoAction) {
         self.entries.truncate(self.cursor);
-        self.entries.push(pending);
+        self.entries.push(UndoEntry {
+            label: label.into(),
+            action: Box::new(action),
+        });
         self.cursor = self.entries.len();
-        let mut total: usize = self.entries.iter().map(UndoEntry::bytes).sum();
+        let mut total: usize = self.entries.iter().map(|e| e.action.bytes()).sum();
         while total > self.max_bytes && self.cursor > 1 {
-            total -= self.entries.remove(0).bytes();
+            total -= self.entries.remove(0).action.bytes();
             self.cursor -= 1;
         }
     }
 
-    /// Undo the most recent entry: restore its pre-edit tiles (capturing the
-    /// current state for redo first) and mark them dirty, so quantize, events,
-    /// and the re-bake debounce follow on the normal path. Returns the entry's
-    /// label, or `None` if there's nothing to undo (or its terrain is gone).
-    pub fn undo(&mut self, terrains: &mut Query<&mut EditableTerrain>) -> Option<String> {
-        self.seal();
+    /// Undo the most recent entry, returning its label ([`None`] if there is
+    /// nothing to undo). Prefer writing [`UndoRequest`] over calling this
+    /// directly — the apply system also seals any open terrain gesture first.
+    pub fn undo(&mut self, world: &mut World) -> Option<String> {
         let entry = self.entries[..self.cursor].last_mut()?;
-        let mut terrain = terrains.get_mut(entry.terrain).ok()?;
-        // First undo of this entry: capture the post-edit state for redo.
-        if entry.new.is_none() {
-            entry.new = Some(
-                entry
-                    .old
-                    .iter()
-                    .map(|(key, snap)| {
-                        let current = TileSnapshot {
-                            rect: snap.rect,
-                            data: key.0.copy_rect(&terrain, snap.rect),
-                        };
-                        (*key, current)
-                    })
-                    .collect(),
-            );
-        }
-        for (key, snap) in &entry.old {
-            key.0.paste_rect(&mut terrain, snap.rect, &snap.data);
-        }
+        entry.action.undo(world);
         self.cursor -= 1;
         Some(entry.label.clone())
     }
 
-    /// Re-apply the most recently undone entry. Returns its label, or `None`
-    /// if there's nothing to redo.
-    pub fn redo(&mut self, terrains: &mut Query<&mut EditableTerrain>) -> Option<String> {
-        let entry = self.entries.get(self.cursor)?;
-        let mut terrain = terrains.get_mut(entry.terrain).ok()?;
-        for (key, snap) in entry.new.as_ref()? {
-            key.0.paste_rect(&mut terrain, snap.rect, &snap.data);
-        }
+    /// Re-apply the most recently undone entry, returning its label ([`None`]
+    /// if there is nothing to redo).
+    pub fn redo(&mut self, world: &mut World) -> Option<String> {
+        let entry = self.entries.get_mut(self.cursor)?;
+        entry.action.redo(world);
         self.cursor += 1;
         Some(entry.label.clone())
     }
 
-    /// Drop all history (undo, redo, and any open gesture). Called when the
-    /// whole field is replaced — a new or loaded terrain — since the tile
-    /// snapshots describe a field that no longer exists.
+    /// Drop all history. Called when the edited world is replaced wholesale —
+    /// a new or loaded terrain, a level switch — since entries describe state
+    /// that no longer exists.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.cursor = 0;
-        self.pending = None;
     }
 
-    /// Whether a gesture is currently open (between [`begin`](Self::begin) and
-    /// [`seal`](Self::seal)). Deferred appliers (the erosion result landing
-    /// from its background task) check this and wait a frame, so they never
-    /// seal another tool's stroke mid-gesture and split its entry.
-    pub fn gesture_open(&self) -> bool {
-        self.pending.is_some()
-    }
-
-    /// The label the next [`undo`](Self::undo) would revert (for UI).
+    /// The label the next [`UndoRequest`] would revert (for UI).
     pub fn undo_label(&self) -> Option<&str> {
         self.entries[..self.cursor].last().map(|e| e.label.as_str())
     }
 
-    /// The label the next [`redo`](Self::redo) would re-apply (for UI).
+    /// The label the next [`RedoRequest`] would re-apply (for UI).
     pub fn redo_label(&self) -> Option<&str> {
         self.entries.get(self.cursor).map(|e| e.label.as_str())
     }
 }
 
-/// The snapshot tiles overlapping `rect`, as `(tile coord, in-bounds rect)`.
-fn tiles_in(rect: URect, dims: UVec2) -> impl Iterator<Item = (UVec2, URect)> {
-    let t = UNDO_TILE_SIZE;
-    let tx0 = rect.min.x / t;
-    let ty0 = rect.min.y / t;
-    // Max-exclusive rect: the last touched texel is max - 1.
-    let tx1 = rect.max.x.saturating_sub(1) / t;
-    let ty1 = rect.max.y.saturating_sub(1) / t;
-    (ty0..=ty1).flat_map(move |ty| {
-        (tx0..=tx1).map(move |tx| {
-            let tile_rect = URect::new(
-                tx * t,
-                ty * t,
-                ((tx + 1) * t).min(dims.x),
-                ((ty + 1) * t).min(dims.y),
-            );
-            (UVec2::new(tx, ty), tile_rect)
-        })
-    })
+/// Apply this frame's [`UndoRequest`]s / [`RedoRequest`]s. Exclusive, between
+/// `Tools` and `Apply`: any dirty regions an action marks flush (quantize,
+/// [`TerrainRegionChanged`](crate::TerrainRegionChanged), re-bake debounce)
+/// the same frame. An open terrain gesture (Ctrl+Z mid-stroke) seals first,
+/// so it is what gets undone.
+pub(crate) fn apply_undo_requests(world: &mut World) {
+    let undos = world
+        .resource_mut::<Messages<UndoRequest>>()
+        .drain()
+        .count();
+    let redos = world
+        .resource_mut::<Messages<RedoRequest>>()
+        .drain()
+        .count();
+    if undos == 0 && redos == 0 {
+        return;
+    }
+    world.resource_scope(|world, mut history: Mut<UndoHistory>| {
+        world.resource_scope(|world, mut gesture: Mut<crate::gesture::TerrainGesture>| {
+            gesture.seal(&mut history);
+            let mut applied = Vec::new();
+            for _ in 0..undos {
+                match history.undo(world) {
+                    Some(label) => applied.push(UndoApplied {
+                        label,
+                        redone: false,
+                    }),
+                    None => info!("nothing to undo"),
+                }
+            }
+            for _ in 0..redos {
+                match history.redo(world) {
+                    Some(label) => applied.push(UndoApplied {
+                        label,
+                        redone: true,
+                    }),
+                    None => info!("nothing to redo"),
+                }
+            }
+            world
+                .resource_mut::<Messages<UndoApplied>>()
+                .write_batch(applied);
+        });
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field::TerrainField;
-    use bevy::ecs::system::SystemState;
 
-    fn world_with_terrain(width: u32) -> (World, Entity) {
-        let field = TerrainField::flat(width, width, 1.0, -100.0, 100.0, false, 0.0);
-        let mut world = World::new();
-        let entity = world.spawn(EditableTerrain::new(field)).id();
-        (world, entity)
+    #[derive(Resource, Default, PartialEq, Debug)]
+    struct Value(i32);
+
+    /// A dummy action: undo/redo write a resource, `bytes` is whatever the
+    /// test claims (to exercise eviction).
+    struct SetValue {
+        before: i32,
+        after: i32,
+        bytes: usize,
     }
 
-    fn set_height(world: &mut World, entity: Entity, x: u32, y: u32, h: f32) {
-        world
-            .get_mut::<EditableTerrain>(entity)
-            .unwrap()
-            .field
-            .set(x, y, h);
+    impl UndoAction for SetValue {
+        fn undo(&mut self, world: &mut World) {
+            world.resource_mut::<Value>().0 = self.before;
+        }
+        fn redo(&mut self, world: &mut World) {
+            world.resource_mut::<Value>().0 = self.after;
+        }
+        fn bytes(&self) -> usize {
+            self.bytes
+        }
     }
 
-    fn height(world: &mut World, entity: Entity, x: u32, y: u32) -> f32 {
-        world
-            .get::<EditableTerrain>(entity)
-            .unwrap()
-            .field
-            .get(x as i64, y as i64)
+    fn set(history: &mut UndoHistory, world: &mut World, label: &str, to: i32) {
+        let before = world.resource::<Value>().0;
+        world.resource_mut::<Value>().0 = to;
+        history.push(
+            label,
+            SetValue {
+                before,
+                after: to,
+                bytes: 0,
+            },
+        );
     }
 
     #[test]
     fn undo_restores_and_redo_reapplies() {
-        let (mut world, entity) = world_with_terrain(128);
+        let mut world = World::new();
+        world.init_resource::<Value>();
         let mut history = UndoHistory::default();
 
-        history.begin(entity, "Sculpt (Raise)");
-        {
-            let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
-        }
-        set_height(&mut world, entity, 12, 12, 50.0);
-        history.seal();
+        set(&mut history, &mut world, "one", 1);
+        set(&mut history, &mut world, "two", 2);
 
-        let mut state: SystemState<Query<&mut EditableTerrain>> = SystemState::new(&mut world);
-        let label = history.undo(&mut state.get_mut(&mut world).unwrap());
-        assert_eq!(label.as_deref(), Some("Sculpt (Raise)"));
-        assert_eq!(height(&mut world, entity, 12, 12), 0.0, "undo restores");
+        assert_eq!(history.undo(&mut world).as_deref(), Some("two"));
+        assert_eq!(world.resource::<Value>().0, 1);
+        assert_eq!(history.undo_label(), Some("one"));
+        assert_eq!(history.redo_label(), Some("two"));
 
-        let label = history.redo(&mut state.get_mut(&mut world).unwrap());
-        assert_eq!(label.as_deref(), Some("Sculpt (Raise)"));
-        assert_eq!(height(&mut world, entity, 12, 12), 50.0, "redo re-applies");
-        assert!(history.undo_label().is_some());
-        assert!(history.redo_label().is_none());
+        assert_eq!(history.redo(&mut world).as_deref(), Some("two"));
+        assert_eq!(world.resource::<Value>().0, 2);
+        assert_eq!(history.redo(&mut world), None);
     }
 
     #[test]
-    fn new_gesture_truncates_the_redo_tail() {
-        let (mut world, entity) = world_with_terrain(128);
+    fn new_push_truncates_the_redo_tail() {
+        let mut world = World::new();
+        world.init_resource::<Value>();
         let mut history = UndoHistory::default();
-        let mut state: SystemState<Query<&mut EditableTerrain>> = SystemState::new(&mut world);
 
-        history.begin(entity, "first");
-        {
-            let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(terrain, UndoBuffer::Height, URect::new(0, 0, 8, 8));
-        }
-        set_height(&mut world, entity, 1, 1, 10.0);
-        history.seal();
-        history.undo(&mut state.get_mut(&mut world).unwrap());
-
-        // A new gesture after undo discards the redoable "first".
-        history.begin(entity, "second");
-        {
-            let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(terrain, UndoBuffer::Height, URect::new(0, 0, 8, 8));
-        }
-        set_height(&mut world, entity, 2, 2, 20.0);
-        history.seal();
+        set(&mut history, &mut world, "first", 1);
+        history.undo(&mut world);
+        set(&mut history, &mut world, "second", 2);
         assert_eq!(history.redo_label(), None);
         assert_eq!(history.undo_label(), Some("second"));
     }
 
     #[test]
-    fn empty_gestures_leave_no_entry() {
-        let (_, entity) = world_with_terrain(64);
-        let mut history = UndoHistory::default();
-        history.begin(entity, "nothing");
-        history.seal();
-        assert_eq!(history.undo_label(), None);
-    }
-
-    #[test]
-    fn capture_only_copies_first_touch() {
-        let (mut world, entity) = world_with_terrain(128);
-        let mut history = UndoHistory::default();
-        history.begin(entity, "stroke");
-        {
-            let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
-        }
-        set_height(&mut world, entity, 12, 12, 50.0);
-        // Second capture of the same tile mid-gesture must keep the original
-        // pre-stroke data, not the half-edited state.
-        {
-            let terrain = world.get::<EditableTerrain>(entity).unwrap();
-            history.capture(terrain, UndoBuffer::Height, URect::new(10, 10, 20, 20));
-        }
-        set_height(&mut world, entity, 12, 12, 80.0);
-        history.seal();
-
-        let mut state: SystemState<Query<&mut EditableTerrain>> = SystemState::new(&mut world);
-        history.undo(&mut state.get_mut(&mut world).unwrap());
-        assert_eq!(height(&mut world, entity, 12, 12), 0.0);
-    }
-
-    #[test]
-    fn eviction_drops_the_oldest_entries() {
-        let (mut world, entity) = world_with_terrain(256);
+    fn eviction_drops_the_oldest_entries_but_keeps_one() {
+        let mut world = World::new();
+        world.init_resource::<Value>();
         let mut history = UndoHistory {
-            // Room for roughly two 1-tile entries (16 KB each), not three.
-            max_bytes: 40 * 1024,
+            max_bytes: 10,
             ..default()
         };
-        let mut state: SystemState<Query<&mut EditableTerrain>> = SystemState::new(&mut world);
-        for i in 0..3u32 {
-            history.begin(entity, format!("stroke {i}"));
-            {
-                let terrain = world.get::<EditableTerrain>(entity).unwrap();
-                history.capture(
-                    terrain,
-                    UndoBuffer::Height,
-                    URect::new(i * 64, 0, i * 64 + 8, 8),
-                );
-            }
-            set_height(&mut world, entity, i * 64, 0, i as f32 + 1.0);
-            history.seal();
+        for i in 0..3 {
+            world.resource_mut::<Value>().0 = i;
+            history.push(
+                format!("entry {i}"),
+                SetValue {
+                    before: i - 1,
+                    after: i,
+                    bytes: 8,
+                },
+            );
         }
-        assert_eq!(history.undo_label(), Some("stroke 2"));
-        history.undo(&mut state.get_mut(&mut world).unwrap());
-        history.undo(&mut state.get_mut(&mut world).unwrap());
-        // "stroke 0" was evicted; only two undos are possible.
-        assert_eq!(
-            history.undo(&mut state.get_mut(&mut world).unwrap()),
-            None,
-            "oldest entry must have been evicted"
-        );
-        assert_eq!(height(&mut world, entity, 0, 0), 1.0, "stroke 0 survives");
+        // 24 bytes against a 10-byte budget: only the newest entry survives
+        // (eviction never removes the last undoable entry).
+        assert_eq!(history.undo_label(), Some("entry 2"));
+        history.undo(&mut world);
+        assert_eq!(history.undo(&mut world), None, "older entries evicted");
     }
 }
