@@ -1,6 +1,6 @@
 use bevy::{
-    asset::{AssetPath, embedded_path},
-    camera::{RenderTarget, ScalingMode, visibility::RenderLayers},
+    asset::{embedded_path, AssetPath},
+    camera::{visibility::RenderLayers, RenderTarget, ScalingMode},
     core_pipeline::tonemapping::Tonemapping,
     pbr::Material,
     prelude::*,
@@ -13,7 +13,7 @@ use bevy::{
 
 #[cfg(feature = "editing")]
 use crate::RebakeRequested;
-use crate::{Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, TerrainQuality};
+use crate::{Clipmap, ClipmapReady, TerrainQuality, MAX_TERRAIN_LAYERS};
 
 /// Render layers isolating the RVT bake cameras/quads from the main view.
 const RVT_ALBEDO_LAYER: usize = 1;
@@ -178,17 +178,70 @@ pub(crate) fn drive_rvt_bake(
 /// is a clean slate, and the RVT targets keep their old content until the new
 /// bake overwrites them (no unbaked chrome-mirror flash).
 ///
+/// If the live [`TerrainQuality`] bake-time fields drifted from the spawn
+/// snapshot (an editor's quality panel), the request also applies them: the RVT
+/// targets are resized **in place** — same handles, so every material binding
+/// stays valid — the material's packed quality bits are re-derived, and the
+/// snapshot updated so the bake agrees. Resizing blanks the targets, so the
+/// terrain goes clay until the new bake lands rather than sampling garbage.
+///
 /// Requests are deferred (component kept) while the clipmap hasn't finished its
 /// current bake — processing one mid-flight would reset `pending_bakes` under the
 /// in-flight cameras and corrupt the tally.
 #[cfg(feature = "editing")]
 pub(crate) fn process_rebake_requests(
     mut commands: Commands,
-    mut clipmaps: Query<(Entity, &mut ClipmapRvt), With<RebakeRequested>>,
+    quality: Res<TerrainQuality>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<
+        Assets<bevy::pbr::ExtendedMaterial<StandardMaterial, crate::material::GridMaterial>>,
+    >,
+    mut clipmaps: Query<
+        (
+            Entity,
+            &mut Clipmap,
+            &mut ClipmapRvt,
+            &crate::clipmap::ClipmapMaterials,
+        ),
+        With<RebakeRequested>,
+    >,
 ) {
-    for (entity, mut rvt) in &mut clipmaps {
+    for (entity, mut clipmap, mut rvt, clipmap_materials) in &mut clipmaps {
         if !rvt.initialized || rvt.pending_bakes > 0 {
             continue;
+        }
+        let drifted = quality.rvt_size != rvt.quality.rvt_size
+            || quality.ambient_gather != rvt.quality.ambient_gather
+            || quality.detail_layers != rvt.quality.detail_layers;
+        if drifted {
+            let mut resize = |handle: &Handle<Image>, size: u32, format: TextureFormat| {
+                if let Some(mut image) = images.get_mut(handle) {
+                    let mut target = Image::new_target_texture(size, size, format, None);
+                    if clipmap.looping {
+                        target.sampler = crate::texture::looping_rvt_sampler();
+                    }
+                    *image = target;
+                }
+            };
+            let size = quality.rvt_size;
+            resize(&rvt.albedo, size, TextureFormat::Rgba8UnormSrgb);
+            resize(&rvt.normal, size, TextureFormat::Rgba8Unorm);
+            // Same stub rule as `init_clipmaps`: gather off = 4×4 placeholder.
+            let ao_size = if quality.ambient_gather { size } else { 4 };
+            resize(&rvt.ao, ao_size, TextureFormat::Rgba8Unorm);
+            // Re-pack the quality bits (bit1 gather, bit2 single-layer detail),
+            // preserving the wireframe and looping bits.
+            let quality_bits = ((quality.ambient_gather as u32) << 1)
+                | (((quality.detail_layers <= 1) as u32) << 2);
+            for handle in [&clipmap_materials.solid, &clipmap_materials.wireframe] {
+                if let Some(mut material) = materials.get_mut(handle) {
+                    material.extension.flags = (material.extension.flags & !0b110) | quality_bits;
+                }
+            }
+            rvt.quality = *quality;
+            // The blanked targets have nothing to show; clay until the bake
+            // lands (`clear_clay_on_bake` lifts it on `ClipmapReady`).
+            clipmap.clay = true;
         }
         rvt.initialized = false;
         rvt.sun_direction = Vec3::ZERO;
@@ -244,13 +297,22 @@ pub(crate) fn warn_unbaked_terrain(
 /// spawn (a rebake), so the change silently does nothing. Only `fog` applies live.
 pub(crate) fn warn_late_quality(
     quality: Res<TerrainQuality>,
-    clipmaps: Query<&ClipmapRvt>,
+    clipmaps: Query<(Entity, &ClipmapRvt)>,
+    #[cfg(feature = "editing")] rebaking: Query<(), With<RebakeRequested>>,
     mut warned: Local<bool>,
 ) {
     if !quality.is_changed() || *warned {
         return;
     }
-    for rvt in &clipmaps {
+    for (entity, rvt) in &clipmaps {
+        // A queued rebake will apply the change (`process_rebake_requests`),
+        // so it isn't a silent no-op.
+        #[cfg(feature = "editing")]
+        if rebaking.contains(entity) {
+            continue;
+        }
+        #[cfg(not(feature = "editing"))]
+        let _ = entity;
         let baked = &rvt.quality;
         if rvt.initialized
             && (baked.rvt_size != quality.rvt_size

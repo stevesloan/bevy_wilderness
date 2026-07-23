@@ -208,8 +208,8 @@ impl ClipmapGrid {
 /// clipmap and shared by every grid, not rebuilt per level.
 #[derive(Component)]
 pub(crate) struct ClipmapMaterials {
-    solid: Handle<ExtendedMaterial<StandardMaterial, GridMaterial>>,
-    wireframe: Handle<ExtendedMaterial<StandardMaterial, GridMaterial>>,
+    pub(crate) solid: Handle<ExtendedMaterial<StandardMaterial, GridMaterial>>,
+    pub(crate) wireframe: Handle<ExtendedMaterial<StandardMaterial, GridMaterial>>,
 }
 
 /// Marker inserted on a [`Clipmap`] entity once its RVT bake has finished — the

@@ -67,9 +67,10 @@ pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged
 pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
-// The manual-bake trigger and bake-completion marker (design doc §5/D10),
-// re-exported so a UI crate can drive bakes without depending on the renderer.
-pub use bevy_wilderness::{ClipmapReady, RebakeRequested};
+// The manual-bake trigger, bake-completion marker (design doc §5/D10), and the
+// quality profile a UI's quality section edits, re-exported so a UI crate can
+// drive bakes without depending on the renderer.
+pub use bevy_wilderness::{ClipmapReady, FogTier, RebakeRequested, TerrainQuality};
 
 /// The editor's `Update` phases. Host tool systems go in
 /// [`Tools`](EditorSet::Tools), between the shared pick and the flush:

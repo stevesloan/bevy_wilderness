@@ -23,10 +23,10 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
-    ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, HeightmapExported,
+    ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, FogTier, HeightmapExported,
     LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
     RedoRequest, SculptMode, SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded,
-    ToolId, UndoBuffer, UndoHistory, UndoRequest,
+    TerrainQuality, ToolId, UndoBuffer, UndoHistory, UndoRequest,
 };
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -216,6 +216,8 @@ pub struct TerrainUi<'w, 's> {
     load: MessageWriter<'w, LoadRequested>,
     loaded: MessageReader<'w, 's, TerrainLoaded>,
     rebake: ResMut<'w, RebakeSettings>,
+    quality: ResMut<'w, TerrainQuality>,
+    staged_quality: Local<'s, Option<TerrainQuality>>,
     commands: Commands<'w, 's>,
     ready: Query<'w, 's, Has<ClipmapReady>, With<EditableTerrain>>,
     active_stamp: ResMut<'w, ActiveStamp>,
@@ -240,6 +242,7 @@ impl TerrainUi<'_, '_> {
         self.mask_section(ui);
         self.erosion_section(ui);
         self.bake_section(ui);
+        self.quality_section(ui);
         self.seam_section(ui);
         self.export_section(ui);
     }
@@ -552,6 +555,66 @@ impl TerrainUi<'_, '_> {
             }
         }
         ui.small("erodes the masked region, or the whole map if none");
+    }
+
+    /// Terrain performance profile. Fog applies live; the bake-time knobs (RVT
+    /// size, ambient gather, detail layers) stage locally until "Apply +
+    /// rebake" writes them and queues the rebake that makes them real
+    /// (`process_rebake_requests` resizes the RVT targets to match).
+    pub fn quality_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label("Quality");
+        let current = *self.quality;
+        ui.horizontal(|ui| {
+            ui.label("fog");
+            let mut fog = current.fog;
+            ui.selectable_value(&mut fog, FogTier::Low, "inline")
+                .on_hover_text("terrain-only fog, no extra pass (iGPU/VR-friendly)");
+            ui.selectable_value(&mut fog, FogTier::High, "fullscreen")
+                .on_hover_text("fogs the sky too; needs Msaa::Off on the camera");
+            if fog != current.fog {
+                self.quality.fog = fog; // live, no rebake needed
+            }
+        });
+        let mut staged = self.staged_quality.unwrap_or(current);
+        ui.horizontal(|ui| {
+            ui.label("RVT");
+            egui::ComboBox::from_id_salt("quality_rvt_size")
+                .selected_text(format!("{}²", staged.rvt_size))
+                .show_ui(ui, |ui| {
+                    for size in [2048u32, 4096, 8192] {
+                        ui.selectable_value(&mut staged.rvt_size, size, format!("{size}²"));
+                    }
+                })
+                .response
+                .on_hover_text("Baked material resolution — the dominant VRAM/bake cost");
+        });
+        ui.checkbox(&mut staged.ambient_gather, "ambient gather")
+            .on_hover_text("Bake + sample the macro-AO / bent-normal / cavity channel");
+        ui.horizontal(|ui| {
+            ui.label("detail layers");
+            ui.selectable_value(&mut staged.detail_layers, 1, "1");
+            ui.selectable_value(&mut staged.detail_layers, 2, "2");
+        });
+        let dirty = staged.rvt_size != current.rvt_size
+            || staged.ambient_gather != current.ambient_gather
+            || staged.detail_layers != current.detail_layers;
+        *self.staged_quality = dirty.then_some(staged);
+        if ui
+            .add_enabled(dirty, egui::Button::new("Apply + rebake"))
+            .clicked()
+        {
+            self.quality.rvt_size = staged.rvt_size;
+            self.quality.ambient_gather = staged.ambient_gather;
+            self.quality.detail_layers = staged.detail_layers;
+            *self.staged_quality = None;
+            for (entity, _) in &self.terrains {
+                self.commands.entity(entity).insert(RebakeRequested);
+            }
+        }
+        if dirty {
+            ui.small("pending — Apply rebakes at the new settings");
+        }
     }
 
     /// The seam-ring overlay toggle — a view option, not a tool setting, so
