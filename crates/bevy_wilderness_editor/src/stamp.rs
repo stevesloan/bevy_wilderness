@@ -40,10 +40,12 @@ pub struct StampData {
     floor: u16,
     /// What the current `heights`/`image` were baked with.
     baked_params: BakeParams,
-    /// Baked heights 0..1, row-major.
+    /// Baked heights -1..1, row-major — negative values carve under
+    /// positive strength.
     heights: Vec<f32>,
     dims: UVec2,
-    /// The preview texture (`R16Unorm`, render-world only).
+    /// The preview texture (`R16Snorm` so the shader sees the same signed
+    /// values `heights` holds; render-world only).
     pub image: Handle<Image>,
 }
 
@@ -80,7 +82,7 @@ impl StampData {
         let floor = if min == max { 0 } else { min };
         let params = BakeParams::default();
         let baked = bake(texels, dims, floor, params);
-        let heights = baked.iter().map(|&t| t as f32 / 65535.0).collect();
+        let heights = baked.iter().map(|&t| t as f32 / 32767.0).collect();
         let image = make_image(&baked, dims, images);
         Self {
             raw: texels.to_vec(),
@@ -100,7 +102,7 @@ impl StampData {
             return;
         }
         let baked = bake(&self.raw, self.dims, self.floor, params);
-        self.heights = baked.iter().map(|&t| t as f32 / 65535.0).collect();
+        self.heights = baked.iter().map(|&t| t as f32 / 32767.0).collect();
         self.image = make_image(&baked, self.dims, images);
         self.baked_params = params;
     }
@@ -141,23 +143,21 @@ pub struct BakeParams {
     pub feather: f32,
     /// Signed shift after baseline removal, in stamp units (1 = full
     /// strength). Positive re-adds a floor (a plateau with a cliff edge);
-    /// negative keeps only relief above `-offset`, clamping the rest flat.
+    /// negative sinks the stamp below zero, where it carves — a stamp can
+    /// raise and lower terrain in one click.
     pub offset: f32,
 }
 
 /// The bake pass: baseline, then offset, then feather — so the feather
 /// tapers the adjusted relief (including a deliberate offset pedestal),
-/// not the raw export's.
-fn bake(raw: &[u16], dims: UVec2, floor: u16, params: BakeParams) -> Vec<u16> {
-    if floor == 0 && params == BakeParams::default() {
-        return raw.to_vec();
-    }
+/// not the raw export's. Signed snorm output, -1..1.
+fn bake(raw: &[u16], dims: UVec2, floor: u16, params: BakeParams) -> Vec<i16> {
     let inv = dims.as_vec2().recip();
     raw.iter()
         .enumerate()
         .map(|(i, &t)| {
             let mut v = (t.saturating_sub(floor)) as f32 / 65535.0;
-            v = (v + params.offset).clamp(0.0, 1.0);
+            v = (v + params.offset).clamp(-1.0, 1.0);
             if params.feather > 0.0 {
                 // Texel centers at half-integers, matching `sample` and the
                 // shader; distance to the nearest edge in normalized uv.
@@ -168,14 +168,14 @@ fn bake(raw: &[u16], dims: UVec2, floor: u16, params: BakeParams) -> Vec<u16> {
                 let t = (d / params.feather).clamp(0.0, 1.0);
                 v *= t * t * (3.0 - 2.0 * t);
             }
-            (v * 65535.0).round() as u16
+            (v * 32767.0).round() as i16
         })
         .collect()
 }
 
 /// The preview texture for a set of baked texels. Render-world only: the CPU
 /// side reads `heights`, not the image.
-fn make_image(baked: &[u16], dims: UVec2, images: &mut Assets<Image>) -> Handle<Image> {
+fn make_image(baked: &[i16], dims: UVec2, images: &mut Assets<Image>) -> Handle<Image> {
     let data = baked.iter().flat_map(|t| t.to_le_bytes()).collect();
     images.add(Image::new(
         Extent3d {
@@ -185,7 +185,7 @@ fn make_image(baked: &[u16], dims: UVec2, images: &mut Assets<Image>) -> Handle<
         },
         TextureDimension::D2,
         data,
-        TextureFormat::R16Unorm,
+        TextureFormat::R16Snorm,
         RenderAssetUsages::RENDER_WORLD,
     ))
 }
@@ -461,8 +461,8 @@ mod tests {
         // Texel centers at half-integers: uv 0.25 = texel (0,0) exactly.
         assert_eq!(data.sample(Vec2::splat(0.25)), 0.0);
         assert_eq!(data.sample(Vec2::new(0.75, 0.25)), 1.0);
-        // Dead center bilinearly mixes all four: 0.5.
-        assert!((data.sample(Vec2::splat(0.5)) - 0.5).abs() < 1e-6);
+        // Dead center bilinearly mixes all four: 0.5 (within snorm quantum).
+        assert!((data.sample(Vec2::splat(0.5)) - 0.5).abs() < 1e-4);
         // Out-of-range clamps to the edge texel's value, never wraps: the
         // left edge texel is 0.0, the right edge texel is 1.0.
         assert_eq!(data.sample(Vec2::new(-0.2, 0.25)), 0.0);
@@ -541,16 +541,14 @@ mod tests {
     }
 
     #[test]
-    fn negative_offset_clips_low_relief_flat() {
+    fn negative_offset_sinks_the_stamp_below_zero() {
         let mut images = Assets::default();
         let mut data = StampData::from_r16(&[0, 32768, 65535], UVec2::new(3, 1), &mut images);
         data.rebake(offset(-0.25), &mut images);
-        // Texel centers of a 3×1 at u = 1/6, 3/6, 5/6.
-        assert_eq!(
-            data.sample(Vec2::new(1.0 / 6.0, 0.5)),
-            0.0,
-            "low clamps flat"
-        );
+        // Texel centers of a 3×1 at u = 1/6, 3/6, 5/6. The whole stamp
+        // shifts down; the low texel goes negative (it carves), not flat.
+        let low = data.sample(Vec2::new(1.0 / 6.0, 0.5));
+        assert!((low + 0.25).abs() < 1e-4, "low carves at -0.25, got {low}");
         let mid = data.sample(Vec2::new(0.5, 0.5));
         assert!((mid - 0.25).abs() < 1e-4, "mid sinks by 0.25, got {mid}");
         let peak = data.sample(Vec2::new(5.0 / 6.0, 0.5));
