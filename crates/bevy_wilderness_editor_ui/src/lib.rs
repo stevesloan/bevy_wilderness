@@ -433,7 +433,9 @@ impl TerrainUi<'_, '_> {
         {
             self.stamp_settings.rotation = degrees.to_radians();
         }
-        ui.small("wheel: strength · ctrl: size · shift: rotate");
+        ui.add(egui::Slider::new(&mut self.stamp_settings.feather, 0.0..=0.5).text("feather"));
+        ui.add(egui::Slider::new(&mut self.stamp_settings.offset, -1.0..=1.0).text("offset"));
+        ui.small("wheel: strength · ctrl: size · shift: rotate · alt: feather");
         // The gallery: every PNG in the stamps folder, click to arm.
         let mut clicked = None;
         egui::ScrollArea::vertical()

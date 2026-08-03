@@ -61,7 +61,7 @@ pub use field::TerrainField;
 pub use rebake::RebakeSettings;
 pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
-pub use stamp::{ActiveStamp, StampData, StampSettings};
+pub use stamp::{ActiveStamp, BakeParams, StampData, StampSettings};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
 pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
@@ -146,7 +146,10 @@ impl Plugin for TerrainEditorPlugin {
                     erosion::request_on_click
                         .run_if(tool_active(ToolId::ERODE))
                         .in_set(EditorSet::Tools),
-                    stamp::drive_stamp_tool
+                    // Rebake first so a changed bake setting previews (and
+                    // could commit) the same frame.
+                    (stamp::rebake_on_settings_change, stamp::drive_stamp_tool)
+                        .chain()
                         .run_if(tool_active(ToolId::STAMP))
                         .in_set(EditorSet::Tools),
                     // Drop a floating preview the frame the tool deactivates.

@@ -6,9 +6,10 @@
 //! nothing pops.
 //!
 //! Controls while aiming at terrain: **wheel** = strength (signed — negative
-//! carves), **Ctrl+wheel** = scale, **Shift+wheel** = rotation. The wheel is
-//! read only while the shared pick hits terrain, so a UI scrolling its own
-//! panels (pick blocked via `PointerBlocked`) never fights it.
+//! carves), **Ctrl+wheel** = scale, **Shift+wheel** = rotation, **Alt+wheel**
+//! = edge feather. The wheel is read only while the shared pick hits terrain,
+//! so a UI scrolling its own panels (pick blocked via `PointerBlocked`) never
+//! fights it.
 //!
 //! The core owns only the *active* stamp ([`ActiveStamp`]) and its transform
 //! ([`StampSettings`]); where stamps come from is the host's business (the
@@ -30,10 +31,16 @@ use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::terrain::EditableTerrain;
 use crate::undo::UndoHistory;
 
-/// A loaded stamp: normalized heights for the CPU commit and a texture for
-/// the GPU preview — the same data in both places, so preview ≡ commit.
+/// A loaded stamp: heights for the CPU commit and a texture for the GPU
+/// preview, both derived from the same bake output so preview ≡ commit.
 pub struct StampData {
-    /// Heights 0..1, row-major.
+    /// Original texels as loaded, pre-bake, row-major.
+    raw: Vec<u16>,
+    /// The raw minimum, subtracted during bake.
+    floor: u16,
+    /// What the current `heights`/`image` were baked with.
+    baked_params: BakeParams,
+    /// Baked heights 0..1, row-major.
     heights: Vec<f32>,
     dims: UVec2,
     /// The preview texture (`R16Unorm`, render-world only).
@@ -62,28 +69,40 @@ impl StampData {
         Ok(Self::from_r16(&texels, dims, images))
     }
 
-    /// Build a stamp from raw `R16` texels (row-major).
+    /// Build a stamp from raw `R16` texels (row-major). Bakes with default
+    /// params; [`rebake`](Self::rebake) reconciles to the live settings.
     pub fn from_r16(texels: &[u16], dims: UVec2, images: &mut Assets<Image>) -> Self {
         debug_assert_eq!(texels.len(), (dims.x * dims.y) as usize);
-        let heights = texels.iter().map(|&t| t as f32 / 65535.0).collect();
-        let data = texels.iter().flat_map(|t| t.to_le_bytes()).collect();
-        // Render-world only: the CPU side reads `heights`, not the image.
-        let image = images.add(Image::new(
-            Extent3d {
-                width: dims.x,
-                height: dims.y,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            data,
-            TextureFormat::R16Unorm,
-            RenderAssetUsages::RENDER_WORLD,
-        ));
+        let min = texels.iter().copied().min().unwrap_or(0);
+        let max = texels.iter().copied().max().unwrap_or(0);
+        // A constant stamp (flat plateau) would bake to nothing if its own
+        // value were subtracted as the baseline.
+        let floor = if min == max { 0 } else { min };
+        let params = BakeParams::default();
+        let baked = bake(texels, dims, floor, params);
+        let heights = baked.iter().map(|&t| t as f32 / 65535.0).collect();
+        let image = make_image(&baked, dims, images);
         Self {
+            raw: texels.to_vec(),
+            floor,
+            baked_params: params,
             heights,
             dims,
             image,
         }
+    }
+
+    /// Re-run the bake if `params` differ from what's currently baked; no-op
+    /// otherwise. Swaps in a fresh image handle — the texture is render-world
+    /// only, so there is no CPU copy to edit in place.
+    pub fn rebake(&mut self, params: BakeParams, images: &mut Assets<Image>) {
+        if params == self.baked_params {
+            return;
+        }
+        let baked = bake(&self.raw, self.dims, self.floor, params);
+        self.heights = baked.iter().map(|&t| t as f32 / 65535.0).collect();
+        self.image = make_image(&baked, self.dims, images);
+        self.baked_params = params;
     }
 
     /// Stamp dimensions in texels.
@@ -113,6 +132,64 @@ impl StampData {
     }
 }
 
+/// The user-adjustable half of the bake. Default is the identity bake
+/// (baseline removal only).
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct BakeParams {
+    /// Edge feather as a fraction of the half-extent per axis (0 = hard
+    /// edge, 0.5 = falloff reaches the center).
+    pub feather: f32,
+    /// Signed shift after baseline removal, in stamp units (1 = full
+    /// strength). Positive re-adds a floor (a plateau with a cliff edge);
+    /// negative keeps only relief above `-offset`, clamping the rest flat.
+    pub offset: f32,
+}
+
+/// The bake pass: baseline, then offset, then feather — so the feather
+/// tapers the adjusted relief (including a deliberate offset pedestal),
+/// not the raw export's.
+fn bake(raw: &[u16], dims: UVec2, floor: u16, params: BakeParams) -> Vec<u16> {
+    if floor == 0 && params == BakeParams::default() {
+        return raw.to_vec();
+    }
+    let inv = dims.as_vec2().recip();
+    raw.iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            let mut v = (t.saturating_sub(floor)) as f32 / 65535.0;
+            v = (v + params.offset).clamp(0.0, 1.0);
+            if params.feather > 0.0 {
+                // Texel centers at half-integers, matching `sample` and the
+                // shader; distance to the nearest edge in normalized uv.
+                let x = i as u32 % dims.x;
+                let y = i as u32 / dims.x;
+                let uv = (Vec2::new(x as f32, y as f32) + 0.5) * inv;
+                let d = uv.min(1.0 - uv).min_element();
+                let t = (d / params.feather).clamp(0.0, 1.0);
+                v *= t * t * (3.0 - 2.0 * t);
+            }
+            (v * 65535.0).round() as u16
+        })
+        .collect()
+}
+
+/// The preview texture for a set of baked texels. Render-world only: the CPU
+/// side reads `heights`, not the image.
+fn make_image(baked: &[u16], dims: UVec2, images: &mut Assets<Image>) -> Handle<Image> {
+    let data = baked.iter().flat_map(|t| t.to_le_bytes()).collect();
+    images.add(Image::new(
+        Extent3d {
+            width: dims.x,
+            height: dims.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::R16Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    ))
+}
+
 /// The stamp the tool previews and commits. `None` = tool does nothing (a UI
 /// should prompt for a stamp). A host sets this from its own source — the
 /// default UI's folder gallery, a game's manifest.
@@ -131,6 +208,20 @@ pub struct StampSettings {
     pub strength: f32,
     /// Rotation about +Y, radians.
     pub rotation: f32,
+    /// Edge feather (see [`BakeParams::feather`]).
+    pub feather: f32,
+    /// Signed value shift (see [`BakeParams::offset`]).
+    pub offset: f32,
+}
+
+impl StampSettings {
+    /// The bake half of the settings, for [`StampData::rebake`].
+    pub fn bake_params(&self) -> BakeParams {
+        BakeParams {
+            feather: self.feather,
+            offset: self.offset,
+        }
+    }
 }
 
 impl Default for StampSettings {
@@ -139,7 +230,31 @@ impl Default for StampSettings {
             size: 1000.0,
             strength: 200.0,
             rotation: 0.0,
+            feather: 0.0,
+            offset: 0.0,
         }
+    }
+}
+
+/// Re-bake the active stamp when a bake setting changes. Also catches a
+/// freshly armed stamp (loaded at defaults) up to live settings.
+pub(crate) fn rebake_on_settings_change(
+    mut active: ResMut<ActiveStamp>,
+    settings: Res<StampSettings>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // Peek before the mutable deref so a no-op frame doesn't flag the
+    // resource as changed.
+    if active
+        .bypass_change_detection()
+        .0
+        .as_ref()
+        .is_none_or(|data| data.baked_params == settings.bake_params())
+    {
+        return;
+    }
+    if let Some(data) = &mut active.0 {
+        data.rebake(settings.bake_params(), &mut images);
     }
 }
 
@@ -165,11 +280,14 @@ pub(crate) fn drive_stamp_tool(
     if dy != 0.0 && cursor.0.is_some() {
         let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
         let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
         if ctrl {
             settings.size = (settings.size * 1.1f32.powf(dy)).clamp(1.0, 100_000.0);
         } else if shift {
             settings.rotation =
                 (settings.rotation + dy * 5f32.to_radians()).rem_euclid(std::f32::consts::TAU);
+        } else if alt {
+            settings.feather = (settings.feather + dy * 0.02).clamp(0.0, 0.5);
         } else {
             // Additive with a magnitude-scaled step, so the wheel can cross
             // zero into carving.
@@ -349,6 +467,94 @@ mod tests {
         // left edge texel is 0.0, the right edge texel is 1.0.
         assert_eq!(data.sample(Vec2::new(-0.2, 0.25)), 0.0);
         assert_eq!(data.sample(Vec2::new(1.2, 0.25)), 1.0);
+    }
+
+    #[test]
+    fn baseline_offset_is_subtracted_at_load() {
+        let mut images = Assets::default();
+        // An offset export: darkest texel 0.25, not black — without baseline
+        // removal the whole footprint would stamp a pedestal.
+        let quarter = 16384u16;
+        let data = StampData::from_r16(&[quarter, 65535], UVec2::new(2, 1), &mut images);
+        assert_eq!(
+            data.sample(Vec2::new(0.25, 0.5)),
+            0.0,
+            "floor drops to zero"
+        );
+        let peak = data.sample(Vec2::new(0.75, 0.5));
+        let relief = (65535 - quarter) as f32 / 65535.0;
+        assert!((peak - relief).abs() < 1e-4, "relief preserved, got {peak}");
+    }
+
+    #[test]
+    fn constant_stamp_survives_baseline_removal() {
+        let mut images = Assets::default();
+        let data = StampData::from_r16(&[65535; 4], UVec2::new(2, 2), &mut images);
+        assert_eq!(data.sample(Vec2::splat(0.5)), 1.0, "plateau not zeroed");
+    }
+
+    fn feather(feather: f32) -> BakeParams {
+        BakeParams {
+            feather,
+            ..default()
+        }
+    }
+
+    fn offset(offset: f32) -> BakeParams {
+        BakeParams {
+            offset,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn feather_rebake_tapers_edges_and_reverts() {
+        let mut images = Assets::default();
+        let mut data = StampData::from_r16(&[65535; 81], UVec2::splat(9), &mut images);
+        let original = data.image.clone();
+
+        data.rebake(feather(0.5), &mut images);
+        assert_ne!(data.image, original, "rebake swaps in a fresh texture");
+        let center = data.sample(Vec2::splat(0.5));
+        let edge = data.sample(Vec2::new(0.5 / 9.0, 0.5));
+        assert!(center > 0.9, "center keeps its height, got {center}");
+        assert!(edge < 0.1, "edge tapers toward zero, got {edge}");
+
+        let feathered = data.image.clone();
+        data.rebake(feather(0.5), &mut images);
+        assert_eq!(data.image, feathered, "same value is a no-op");
+
+        data.rebake(feather(0.0), &mut images);
+        let restored = data.sample(Vec2::new(0.5 / 9.0, 0.5));
+        assert_eq!(restored, 1.0, "raw stamp restored exactly");
+    }
+
+    #[test]
+    fn positive_offset_readds_a_pedestal() {
+        let mut images = Assets::default();
+        let mut data = StampData::from_r16(&[0, 65535], UVec2::new(2, 1), &mut images);
+        data.rebake(offset(0.25), &mut images);
+        let low = data.sample(Vec2::new(0.25, 0.5));
+        assert!((low - 0.25).abs() < 1e-4, "floor lifts to 0.25, got {low}");
+        let peak = data.sample(Vec2::new(0.75, 0.5));
+        assert_eq!(peak, 1.0, "peak clamps at full white");
+    }
+
+    #[test]
+    fn negative_offset_clips_low_relief_flat() {
+        let mut images = Assets::default();
+        let mut data = StampData::from_r16(&[0, 32768, 65535], UVec2::new(3, 1), &mut images);
+        data.rebake(offset(-0.25), &mut images);
+        // Texel centers of a 3×1 at u = 1/6, 3/6, 5/6.
+        assert_eq!(
+            data.sample(Vec2::new(1.0 / 6.0, 0.5)),
+            0.0,
+            "low clamps flat"
+        );
+        let mid = data.sample(Vec2::new(0.5, 0.5));
+        assert!((mid - 0.25).abs() < 1e-4, "mid sinks by 0.25, got {mid}");
+        let peak = data.sample(Vec2::new(5.0 / 6.0, 0.5));
+        assert!((peak - 0.75).abs() < 1e-4, "peak sinks by 0.25, got {peak}");
     }
 
     #[test]
