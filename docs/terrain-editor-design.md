@@ -272,7 +272,10 @@ User requirement. f32 field 67 MB, R16 display 33 MB, + erosion working buffers
 
 ### D2 — Sculpt brushes, live, toroidal-aware
 Raise / lower / smooth / flatten; adjustable radius + strength; radial falloff.
-Cursor→terrain via the shared raycast. Edit f32 field → re-quantize dirty region
+**Held modifiers override the mode** — Shift smooths, Ctrl inverts (a sign flip
+on the per-texel delta, so raise↔lower, smooth→sharpen, flatten→exaggerate) —
+so the two moves a stroke constantly reaches for don't cost a trip to the mode
+row. Cursor→terrain via the shared raycast. Edit f32 field → re-quantize dirty region
 to R16 → geometry follows next frame. When `looping`, brush footprints **wrap
 modulo heightmap dimensions**.
 

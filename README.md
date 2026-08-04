@@ -70,7 +70,8 @@ doc comment atop
 [`examples/editor.rs`](crates/bevy_wilderness_editor_ui/examples/editor.rs)
 for the full list):
 
-- **Sculpt** (S) — raise / lower / smooth / flatten under an adjustable brush.
+- **Sculpt** (S) — raise / lower / smooth / flatten under an adjustable brush;
+  hold Shift to smooth or Ctrl to invert without leaving the current mode.
 - **Mask** (M) — paint a feathered mask that confines sculpting and erosion.
 - **Erode** (E) — background hydraulic + thermal erosion with a live progress
   bar: slope-gated droplets, flow-accumulation-carved dendritic channels,

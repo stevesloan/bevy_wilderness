@@ -174,10 +174,7 @@ fn scan_stamps(
 
 /// Mirror egui's pointer claim into the core's [`PointerBlocked`] — the only
 /// input-focus handshake the core needs from a UI (design doc §6).
-fn block_pointer_over_ui(
-    mut contexts: EguiContexts,
-    mut blocked: ResMut<PointerBlocked>,
-) {
+fn block_pointer_over_ui(mut contexts: EguiContexts, mut blocked: ResMut<PointerBlocked>) {
     let over_ui = contexts
         .ctx_mut()
         .map(|ctx| ctx.egui_wants_pointer_input() || ctx.is_pointer_over_egui())
@@ -397,6 +394,7 @@ impl TerrainUi<'_, '_> {
                     .logarithmic(true)
                     .text("strength (m/s)"),
             );
+            ui.small("hold shift: smooth · ctrl: invert");
         }
     }
 

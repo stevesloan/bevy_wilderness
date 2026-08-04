@@ -13,6 +13,7 @@
 //! - **S / M / E / P / T** — sculpt / mask paint / erode / place-prop /
 //!   stamp tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
+//! - **Shift / Ctrl** (sculpt tool, held) — smooth / invert the current mode
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
@@ -278,7 +279,7 @@ fn brush_controls(
     }
     if keys.just_pressed(KeyCode::KeyS) {
         active.0 = Some(ToolId::SCULPT);
-        info!("tool: sculpt");
+        info!("tool: sculpt (hold shift to smooth, ctrl to invert)");
     }
     if keys.just_pressed(KeyCode::KeyM) {
         active.0 = Some(ToolId::MASK);

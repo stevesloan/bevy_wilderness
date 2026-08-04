@@ -162,7 +162,15 @@ mod tests {
         };
         let mut gesture = TerrainGesture::default();
         let stroke = |terrain: &mut EditableTerrain, gesture: &mut TerrainGesture| {
-            crate::sculpt::sculpt_at(terrain, Vec2::new(26.0, 32.0), &brush, 1.0, 0.0, gesture);
+            crate::sculpt::sculpt_at(
+                terrain,
+                Vec2::new(26.0, 32.0),
+                &brush,
+                crate::sculpt::SculptOp::new(SculptMode::Raise),
+                1.0,
+                0.0,
+                gesture,
+            );
         };
 
         // Control: the same stroke with no mask painted.

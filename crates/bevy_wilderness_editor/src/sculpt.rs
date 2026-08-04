@@ -3,6 +3,10 @@
 //! held. Edits mark dirty regions; the sync in `EditorSet::Apply` re-quantizes
 //! them into the display heightmap the same frame, so geometry deforms live.
 //! On looping terrain the brush footprint wraps modulo the heightmap.
+//!
+//! Holding **Shift** smooths and **Ctrl** inverts, whatever the selected mode
+//! is — the two things a stroke reaches for constantly, without giving up the
+//! mode you came back to.
 
 use bevy::prelude::*;
 
@@ -30,15 +34,66 @@ pub(crate) struct StrokeState {
     flatten_target: Option<f32>,
 }
 
+/// What a stroke actually does this frame: the brush's mode with the held
+/// modifiers folded in. Shift smooths regardless of mode, and Ctrl inverts —
+/// implemented as negating the per-texel delta, so it inverts every mode
+/// uniformly (raise↔lower, smooth→sharpen, flatten→exaggerate) rather than
+/// only the pair that has a named opposite.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct SculptOp {
+    /// The effective mode — supersedes [`BrushSettings::mode`].
+    pub mode: SculptMode,
+    /// Negate the delta this op writes.
+    pub invert: bool,
+}
+
+impl SculptOp {
+    /// The plain, unmodified op — what tests sculpt with when they aren't
+    /// exercising the modifiers themselves.
+    #[cfg(test)]
+    pub fn new(mode: SculptMode) -> Self {
+        Self {
+            mode,
+            invert: false,
+        }
+    }
+
+    /// The brush's mode under the currently held modifiers.
+    fn from_modifiers(mode: SculptMode, smooth: bool, invert: bool) -> Self {
+        Self {
+            mode: if smooth { SculptMode::Smooth } else { mode },
+            invert,
+        }
+    }
+
+    /// What the undo entry calls this op.
+    fn label(self) -> &'static str {
+        match (self.mode, self.invert) {
+            (SculptMode::Raise, false) | (SculptMode::Lower, true) => "Raise",
+            (SculptMode::Lower, false) | (SculptMode::Raise, true) => "Lower",
+            (SculptMode::Smooth, false) => "Smooth",
+            (SculptMode::Smooth, true) => "Sharpen",
+            (SculptMode::Flatten, false) => "Flatten",
+            (SculptMode::Flatten, true) => "Exaggerate",
+        }
+    }
+}
+
 /// Apply the brush to the terrain under the cursor while LMB is held. Runs in
 /// `EditorSet::Tools`, gated on the sculpt tool being active. Each stroke is
 /// one undo entry: begun on press, captured as it touches tiles, sealed on
 /// release.
+///
+/// Modifiers are read every frame, so a held stroke can switch to smoothing
+/// (Shift) or reverse (Ctrl) without lifting the button; the undo label names
+/// whatever the stroke started as, since the whole press→release stays one
+/// entry.
 // Bevy systems legitimately take one param per resource they touch.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_sculpt(
     time: Res<Time>,
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     cursor: Res<TerrainCursor>,
     brush: Res<BrushSettings>,
     mut history: ResMut<UndoHistory>,
@@ -57,12 +112,17 @@ pub(crate) fn apply_sculpt(
     let Ok(mut terrain) = terrains.get_mut(hit.terrain) else {
         return;
     };
+    let op = SculptOp::from_modifiers(
+        brush.mode,
+        keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight),
+        keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight),
+    );
     if stroke.flatten_target.is_none() {
         // First frame of the stroke (or first frame back over terrain).
         gesture.begin(
             &mut history,
             hit.terrain,
-            format!("Sculpt ({:?})", brush.mode),
+            format!("Sculpt ({})", op.label()),
         );
     }
     let flatten_target = *stroke
@@ -72,6 +132,7 @@ pub(crate) fn apply_sculpt(
         &mut terrain,
         hit.texel,
         &brush,
+        op,
         time.delta_secs(),
         flatten_target,
         &mut gesture,
@@ -82,10 +143,16 @@ pub(crate) fn apply_sculpt(
 /// the unwrapped footprint so falloff distances are computed in continuous
 /// space, resolving each write through `wrap_texel` (wraps when looping,
 /// drops the overhang when finite).
+///
+/// `op` is the effective operation (mode plus modifiers) and supersedes
+/// `brush.mode`; `brush` supplies the radius and strength.
+// Bevy systems legitimately take one param per resource they touch.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sculpt_at(
     terrain: &mut EditableTerrain,
     center: Vec2,
     brush: &BrushSettings,
+    op: SculptOp,
     dt: f32,
     flatten_target: f32,
     gesture: &mut TerrainGesture,
@@ -112,7 +179,7 @@ pub(crate) fn sculpt_at(
     // taken before the write loop mutates the field — sampling live would let
     // already-written texels feed back into their neighbors' targets, biasing
     // the result along iteration order.
-    let smooth = (brush.mode == SculptMode::Smooth).then(|| {
+    let smooth = (op.mode == SculptMode::Smooth).then(|| {
         let k = (radius_texels * SMOOTH_KERNEL_FRACTION).round().max(1.0) as i32;
         (
             blur_footprint(&terrain.field, min, max, k),
@@ -143,26 +210,29 @@ pub(crate) fn sculpt_at(
             let t = 1.0 - d;
             let falloff = t * t * (3.0 - 2.0 * t) * mask_weight;
             let h = terrain.field.get(x as i64, y as i64);
-            let new_h = match brush.mode {
-                SculptMode::Raise => h + brush.strength * falloff * dt,
-                SculptMode::Lower => h - brush.strength * falloff * dt,
+            // Every mode contributes a signed delta, so Ctrl inverts them all
+            // by flipping one sign — no mirrored arm per mode.
+            let delta = match op.mode {
+                SculptMode::Raise => brush.strength * falloff * dt,
+                SculptMode::Lower => -brush.strength * falloff * dt,
                 // Relax toward the blurred copy; `strength` acts as a rate
                 // (full strength ≈ settled in ~1 s), matching Flatten.
                 SculptMode::Smooth => match &smooth {
                     Some((blur, stride)) => {
                         let i = (y - min.y) as usize * stride + (x - min.x) as usize;
                         let blend = (brush.strength * 0.025 * falloff * dt).min(1.0);
-                        h + (blur[i] - h) * blend
+                        (blur[i] - h) * blend
                     }
                     // Unreachable: built above for exactly this mode.
-                    None => h,
+                    None => 0.0,
                 },
                 SculptMode::Flatten => {
                     // Pull toward the stroke-start height; `strength` as rate.
                     let blend = (brush.strength * 0.025 * falloff * dt).min(1.0);
-                    h + (flatten_target - h) * blend
+                    (flatten_target - h) * blend
                 }
             };
+            let new_h = if op.invert { h - delta } else { h + delta };
             terrain
                 .field
                 .set(tx, ty, new_h.clamp(encode_min, encode_max));
@@ -235,6 +305,166 @@ mod tests {
         }
     }
 
+    /// Shift overrides whatever mode is selected; Ctrl only flips the sign.
+    #[test]
+    fn modifiers_fold_into_the_op() {
+        let cases = [
+            (false, false, SculptOp::new(SculptMode::Raise), "Raise"),
+            (
+                true,
+                false,
+                SculptOp {
+                    mode: SculptMode::Smooth,
+                    invert: false,
+                },
+                "Smooth",
+            ),
+            (
+                false,
+                true,
+                SculptOp {
+                    mode: SculptMode::Raise,
+                    invert: true,
+                },
+                "Lower",
+            ),
+            // Both held: smoothing, inverted — sharpen.
+            (
+                true,
+                true,
+                SculptOp {
+                    mode: SculptMode::Smooth,
+                    invert: true,
+                },
+                "Sharpen",
+            ),
+        ];
+        for (shift, ctrl, want, label) in cases {
+            let op = SculptOp::from_modifiers(SculptMode::Raise, shift, ctrl);
+            assert_eq!(op, want, "shift={shift} ctrl={ctrl}");
+            assert_eq!(op.label(), label);
+        }
+        // Lower inverts back to raising, and reads that way in undo.
+        let op = SculptOp::from_modifiers(SculptMode::Lower, false, true);
+        assert_eq!(op.label(), "Raise");
+    }
+
+    /// Ctrl+Raise must land on exactly what Lower would, texel for texel —
+    /// invert is a sign flip on the delta, not an approximation of it.
+    #[test]
+    fn inverted_raise_matches_lower() {
+        let stroke = |b: SculptMode, op: SculptOp| {
+            let field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, false, 0.0);
+            let mut terrain = EditableTerrain::new(field);
+            sculpt_at(
+                &mut terrain,
+                Vec2::new(16.0, 16.0),
+                &brush(b),
+                op,
+                1.0,
+                0.0,
+                &mut TerrainGesture::default(),
+            );
+            terrain
+        };
+        let lowered = stroke(SculptMode::Lower, SculptOp::new(SculptMode::Lower));
+        let inverted = stroke(
+            SculptMode::Raise,
+            SculptOp {
+                mode: SculptMode::Raise,
+                invert: true,
+            },
+        );
+        assert!(lowered.field.get(16, 16) < -9.9, "sanity: lower carves");
+        for y in 0..32 {
+            for x in 0..32 {
+                assert_eq!(
+                    lowered.field.get(x, y),
+                    inverted.field.get(x, y),
+                    "texel ({x},{y})"
+                );
+            }
+        }
+    }
+
+    /// Inverted smooth is a sharpen: it pushes each texel away from the local
+    /// average instead of toward it, steepening the step it's dragged over.
+    #[test]
+    fn inverted_smooth_sharpens() {
+        let mut field = TerrainField::flat(64, 64, 1.0, -500.0, 500.0, false, 0.0);
+        // A ramp between two plateaus: its foot and shoulder sit below and
+        // above the local average, which is exactly what a sharpen exploits.
+        for y in 0..64 {
+            for x in 0..64 {
+                field.set(x, y, ((x as f32 - 28.0) / 8.0).clamp(0.0, 1.0) * 100.0);
+            }
+        }
+        let mut terrain = EditableTerrain::new(field);
+        let b = BrushSettings {
+            mode: SculptMode::Smooth,
+            radius: 16.0,
+            strength: 40.0,
+        };
+        let ramp_before = terrain.field.get(36, 32) - terrain.field.get(28, 32);
+        for _ in 0..30 {
+            sculpt_at(
+                &mut terrain,
+                Vec2::new(32.0, 32.0),
+                &b,
+                SculptOp {
+                    mode: SculptMode::Smooth,
+                    invert: true,
+                },
+                1.0 / 60.0,
+                0.0,
+                &mut TerrainGesture::default(),
+            );
+        }
+        let (foot, shoulder) = (terrain.field.get(28, 32), terrain.field.get(36, 32));
+        let ramp_after = shoulder - foot;
+        assert!(
+            ramp_after > ramp_before,
+            "sharpen must steepen the ramp: {ramp_before} -> {ramp_after}"
+        );
+        assert!(foot < 0.0, "foot must dip below the plateau: {foot}");
+        assert!(
+            shoulder > 100.0,
+            "shoulder must rise above the plateau: {shoulder}"
+        );
+        // Still bounded by the encode range, however long it's held.
+        assert!(shoulder <= 500.0);
+    }
+
+    /// Inverting flatten drives heights away from the stroke-start plane.
+    #[test]
+    fn inverted_flatten_pushes_away_from_the_target() {
+        let mut field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, false, 0.0);
+        for y in 0..32 {
+            for x in 0..32 {
+                field.set(x, y, x as f32);
+            }
+        }
+        let mut terrain = EditableTerrain::new(field);
+        let before = terrain.field.get(16, 16);
+        sculpt_at(
+            &mut terrain,
+            Vec2::new(16.0, 16.0),
+            &brush(SculptMode::Flatten),
+            SculptOp {
+                mode: SculptMode::Flatten,
+                invert: true,
+            },
+            1.0,
+            5.0,
+            &mut TerrainGesture::default(),
+        );
+        let after = terrain.field.get(16, 16);
+        assert!(
+            (after - 5.0).abs() > (before - 5.0).abs(),
+            "must move away from the target: {before} -> {after}"
+        );
+    }
+
     #[test]
     fn raise_peaks_at_center_and_ends_at_rim() {
         let field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, false, 0.0);
@@ -243,6 +473,7 @@ mod tests {
             &mut terrain,
             Vec2::new(16.0, 16.0),
             &brush(SculptMode::Raise),
+            SculptOp::new(SculptMode::Raise),
             1.0,
             0.0,
             &mut TerrainGesture::default(),
@@ -264,6 +495,7 @@ mod tests {
             &mut terrain,
             Vec2::new(0.0, 16.0),
             &brush(SculptMode::Raise),
+            SculptOp::new(SculptMode::Raise),
             1.0,
             0.0,
             &mut TerrainGesture::default(),
@@ -280,6 +512,7 @@ mod tests {
             &mut terrain,
             Vec2::new(0.0, 16.0),
             &brush(SculptMode::Raise),
+            SculptOp::new(SculptMode::Raise),
             1.0,
             0.0,
             &mut TerrainGesture::default(),
@@ -300,6 +533,7 @@ mod tests {
                 &mut terrain,
                 center,
                 &brush(SculptMode::Raise),
+                SculptOp::new(SculptMode::Raise),
                 1.0,
                 0.0,
                 &mut TerrainGesture::default(),
@@ -335,6 +569,7 @@ mod tests {
             &mut terrain,
             Vec2::new(16.0, 16.0),
             &brush(SculptMode::Flatten),
+            SculptOp::new(SculptMode::Flatten),
             20.0,
             5.0,
             &mut TerrainGesture::default(),
@@ -369,6 +604,7 @@ mod tests {
                 &mut terrain,
                 Vec2::new(64.0, 64.0),
                 &wide,
+                SculptOp::new(SculptMode::Smooth),
                 1.0 / 60.0,
                 0.0,
                 &mut TerrainGesture::default(),
@@ -414,6 +650,7 @@ mod tests {
                 &mut terrain,
                 Vec2::new(31.5, 32.0),
                 &b,
+                SculptOp::new(SculptMode::Smooth),
                 1.0 / 60.0,
                 0.0,
                 &mut TerrainGesture::default(),
@@ -437,6 +674,7 @@ mod tests {
             &mut terrain,
             Vec2::new(8.0, 8.0),
             &brush(SculptMode::Raise),
+            SculptOp::new(SculptMode::Raise),
             10.0,
             0.0,
             &mut TerrainGesture::default(),
