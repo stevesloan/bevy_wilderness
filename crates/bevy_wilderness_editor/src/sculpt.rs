@@ -7,10 +7,21 @@
 use bevy::prelude::*;
 
 use crate::cursor::TerrainCursor;
+use crate::field::TerrainField;
 use crate::gesture::{TerrainGesture, UndoBuffer};
 use crate::settings::{BrushSettings, SculptMode};
 use crate::terrain::EditableTerrain;
 use crate::undo::UndoHistory;
+
+/// Smooth's blur kernel, as a fraction of the brush radius.
+///
+/// It scales with the brush rather than being fixed, because relaxing toward a
+/// fixed-size neighborhood is diffusion: the time to soften a feature of width
+/// W grows as W². A one-texel kernel therefore never converges on anything
+/// broad — a stamp seam takes tens of minutes of held stroke. Tying the kernel
+/// to the brush makes the cost independent of the feature scale the brush was
+/// sized for.
+const SMOOTH_KERNEL_FRACTION: f32 = 0.25;
 
 /// Per-stroke state: the flatten target is the terrain height under the cursor
 /// when the stroke starts, so a whole drag levels toward one plane.
@@ -97,6 +108,18 @@ pub(crate) fn sculpt_at(
     // confinement.
     let masked = terrain.mask_active();
 
+    // Smooth relaxes toward a blurred copy of the footprint, which has to be
+    // taken before the write loop mutates the field — sampling live would let
+    // already-written texels feed back into their neighbors' targets, biasing
+    // the result along iteration order.
+    let smooth = (brush.mode == SculptMode::Smooth).then(|| {
+        let k = (radius_texels * SMOOTH_KERNEL_FRACTION).round().max(1.0) as i32;
+        (
+            blur_footprint(&terrain.field, min, max, k),
+            (max.x - min.x) as usize,
+        )
+    });
+
     for y in min.y..max.y {
         for x in min.x..max.x {
             // Texel centers sample at integer coordinates (shader convention).
@@ -123,19 +146,17 @@ pub(crate) fn sculpt_at(
             let new_h = match brush.mode {
                 SculptMode::Raise => h + brush.strength * falloff * dt,
                 SculptMode::Lower => h - brush.strength * falloff * dt,
-                SculptMode::Smooth => {
-                    // Relax toward the 3×3 neighborhood average; `strength`
-                    // acts as a rate (full strength ≈ settled in ~1 s).
-                    let (x, y) = (x as i64, y as i64);
-                    let mut sum = 0.0;
-                    for dy in -1..=1i64 {
-                        for dx in -1..=1i64 {
-                            sum += terrain.field.get(x + dx, y + dy);
-                        }
+                // Relax toward the blurred copy; `strength` acts as a rate
+                // (full strength ≈ settled in ~1 s), matching Flatten.
+                SculptMode::Smooth => match &smooth {
+                    Some((blur, stride)) => {
+                        let i = (y - min.y) as usize * stride + (x - min.x) as usize;
+                        let blend = (brush.strength * 0.025 * falloff * dt).min(1.0);
+                        h + (blur[i] - h) * blend
                     }
-                    let blend = (brush.strength * 0.025 * falloff * dt).min(1.0);
-                    h + (sum / 9.0 - h) * blend
-                }
+                    // Unreachable: built above for exactly this mode.
+                    None => h,
+                },
                 SculptMode::Flatten => {
                     // Pull toward the stroke-start height; `strength` as rate.
                     let blend = (brush.strength * 0.025 * falloff * dt).min(1.0);
@@ -151,6 +172,54 @@ pub(crate) fn sculpt_at(
     for rect in terrain.field.wrap_rect(min, max) {
         terrain.mark_dirty(rect);
     }
+}
+
+/// Box-blurred copy of the write footprint `[min, max)`, kernel radius `k`
+/// texels, row-major and `max.x - min.x` wide.
+///
+/// Two separable sliding-window passes, so cost is O(area) regardless of `k` —
+/// the kernel scales with the brush, and a naive per-texel gather would make a
+/// large brush quadratically slower. The horizontal pass covers `k` extra rows
+/// on each side, which the vertical pass then consumes.
+///
+/// Reads go through [`TerrainField::get`], which wraps on looping terrain and
+/// clamps otherwise, so the footprint needs no seam special-casing. Sums are
+/// `f64` because a sliding window add/subtracts across the whole span and `f32`
+/// would accumulate drift along the row.
+fn blur_footprint(field: &TerrainField, min: IVec2, max: IVec2, k: i32) -> Vec<f32> {
+    let w = (max.x - min.x) as usize;
+    let h = (max.y - min.y) as usize;
+    let span = (2 * k + 1) as usize;
+    let inv = 1.0 / span as f64;
+    let (kx, my) = (i64::from(k), i64::from(min.y));
+
+    let rows = h + 2 * k as usize;
+    let mut tmp = vec![0.0f32; w * rows];
+    for row in 0..rows {
+        let y = my - kx + row as i64;
+        let mut sum: f64 = (-kx..=kx)
+            .map(|dx| f64::from(field.get(i64::from(min.x) + dx, y)))
+            .sum();
+        tmp[row * w] = (sum * inv) as f32;
+        for col in 1..w {
+            let x = i64::from(min.x) + col as i64;
+            sum += f64::from(field.get(x + kx, y));
+            sum -= f64::from(field.get(x - kx - 1, y));
+            tmp[row * w + col] = (sum * inv) as f32;
+        }
+    }
+
+    let mut out = vec![0.0f32; w * h];
+    for col in 0..w {
+        let mut sum: f64 = (0..span).map(|r| f64::from(tmp[r * w + col])).sum();
+        out[col] = (sum * inv) as f32;
+        for row in 1..h {
+            sum += f64::from(tmp[(row + span - 1) * w + col]);
+            sum -= f64::from(tmp[(row - 1) * w + col]);
+            out[row * w + col] = (sum * inv) as f32;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -276,6 +345,88 @@ mod tests {
             "must move toward the target: {before} -> {after}"
         );
         assert!((after - 5.0).abs() < 0.5, "center should converge: {after}");
+    }
+
+    /// A stamp seam is a step, and softening one is the tool's main job. The
+    /// kernel scales with the brush, so the ramp must widen well past the
+    /// immediate neighbors a fixed 3×3 could reach.
+    #[test]
+    fn smooth_widens_a_step_across_the_brush() {
+        let mut field = TerrainField::flat(128, 128, 1.0, -500.0, 500.0, false, 0.0);
+        for y in 0..128 {
+            for x in 64..128 {
+                field.set(x, y, 200.0);
+            }
+        }
+        let mut terrain = EditableTerrain::new(field);
+        let wide = BrushSettings {
+            mode: SculptMode::Smooth,
+            radius: 30.0,
+            strength: 40.0,
+        };
+        for _ in 0..60 {
+            sculpt_at(
+                &mut terrain,
+                Vec2::new(64.0, 64.0),
+                &wide,
+                1.0 / 60.0,
+                0.0,
+                &mut TerrainGesture::default(),
+            );
+        }
+        // Texels well outside the old 3×3 reach must have moved off the step.
+        let low = terrain.field.get(58, 64);
+        let high = terrain.field.get(70, 64);
+        assert!(low > 1.0, "step foot should lift: {low}");
+        assert!(high < 199.0, "step shoulder should drop: {high}");
+        // The step's total height is redistributed, not added to.
+        assert!(
+            terrain.field.get(64, 64) > 50.0 && terrain.field.get(64, 64) < 150.0,
+            "midpoint should sit inside the step: {}",
+            terrain.field.get(64, 64)
+        );
+        // Beyond the brush nothing is touched.
+        assert_eq!(terrain.field.get(20, 64), 0.0);
+        assert_eq!(terrain.field.get(110, 64), 200.0);
+    }
+
+    /// The blur is sampled before any write, so a stroke can't feed
+    /// already-updated texels back into its neighbors' targets. A symmetric
+    /// step must therefore stay symmetric about its midpoint.
+    #[test]
+    fn smooth_is_order_independent() {
+        let mut field = TerrainField::flat(64, 64, 1.0, -500.0, 500.0, false, 0.0);
+        for y in 0..64 {
+            for x in 32..64 {
+                field.set(x, y, 100.0);
+            }
+        }
+        let mut terrain = EditableTerrain::new(field);
+        let b = BrushSettings {
+            mode: SculptMode::Smooth,
+            radius: 16.0,
+            strength: 200.0,
+        };
+        // Centered on the step itself (between texels 31 and 32), so the
+        // radial falloff is symmetric about it and can't mask an ordering bias.
+        for _ in 0..30 {
+            sculpt_at(
+                &mut terrain,
+                Vec2::new(31.5, 32.0),
+                &b,
+                1.0 / 60.0,
+                0.0,
+                &mut TerrainGesture::default(),
+            );
+        }
+        for d in 1..12i64 {
+            let below = terrain.field.get(32 - d, 32) - 0.0;
+            let above = 100.0 - terrain.field.get(32 + d - 1, 32);
+            assert!(
+                (below - above).abs() < 0.5,
+                "asymmetric at d={d}: {below} vs {above}"
+            );
+        }
     }
 
     #[test]
