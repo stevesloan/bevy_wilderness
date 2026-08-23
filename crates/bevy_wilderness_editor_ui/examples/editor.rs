@@ -374,7 +374,7 @@ fn erosion_progress(runs: Query<&ErosionRun>, mut last: Local<Option<u32>>) {
             let pct = (run.progress() * 100.0) as u32 / 20 * 20;
             if *last != Some(pct) {
                 *last = Some(pct);
-                info!("erosion: {pct}% of droplets simulated");
+                info!("erosion: {pct}% simulated");
             }
         }
         None => {

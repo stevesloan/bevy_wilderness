@@ -157,10 +157,16 @@ impl Plugin for TerrainEditorPlugin {
                         .run_if(not(tool_active(ToolId::STAMP)))
                         .in_set(EditorSet::Tools),
                     // Between Tools and Apply: a click's request starts its
-                    // task the same frame, and a landed result's dirty region
+                    // GPU run the same frame, each frame advances a bounded
+                    // chunk of iterations, and a landed result's dirty region
                     // flushes (quantize + event + re-bake debounce) the same
                     // frame it applies.
-                    (erosion::start_requested_runs, erosion::apply_finished_runs)
+                    (
+                        erosion::start_requested_runs,
+                        erosion::drive_runs,
+                        erosion::apply_finished_runs,
+                    )
+                        .chain()
                         .after(EditorSet::Tools)
                         .before(EditorSet::Apply),
                     // Same slot: an undone action's dirty regions flush

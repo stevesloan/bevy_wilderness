@@ -17,4 +17,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [dev-dependencies]
 # Parses the hand-written KTX2 export in tests (same version bevy loads with).
 ktx2 = "0.5"
+# The erosion tests drive the GPU sim against a headless device (bevy's own
+# wgpu version; tests skip gracefully when the machine has no adapter), and
+# naga validates the embedded WGSL without needing any GPU at all.
+wgpu = "29"
+naga = { version = "29", features = ["wgsl-in"] }
 

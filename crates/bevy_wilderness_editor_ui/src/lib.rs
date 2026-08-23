@@ -509,36 +509,60 @@ impl TerrainUi<'_, '_> {
         ui.separator();
         ui.label("Erosion");
         ui.add(
-            egui::Slider::new(&mut self.erosion.droplet_density, 0.01..=2.0)
+            egui::Slider::new(&mut self.erosion.iterations, 100..=4000)
                 .logarithmic(true)
-                .text("droplet density"),
-        );
+                .text("iterations"),
+        )
+        .on_hover_text("Simulated weather: more carves deeper, linearly slower");
         ui.add(
-            egui::Slider::new(&mut self.erosion.sediment_capacity, 0.5..=16.0)
+            egui::Slider::new(&mut self.erosion.rain_rate, 0.001..=0.05)
+                .logarithmic(true)
+                .text("rainfall"),
+        )
+        .on_hover_text("The main strength knob: meters of rain per simulated second");
+        ui.add(
+            egui::Slider::new(&mut self.erosion.capacity, 0.01..=0.5)
                 .logarithmic(true)
                 .text("capacity"),
+        )
+        .on_hover_text("Sediment the flow can carry: higher = deeper channels, bigger fans");
+        ui.add(
+            egui::Slider::new(&mut self.erosion.dissolve_rate, 0.05..=2.0).text("erode rate"),
         );
-        ui.add(egui::Slider::new(&mut self.erosion.erode_rate, 0.05..=1.0).text("erode rate"));
-        ui.add(egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=1.0).text("deposit rate"));
+        ui.add(
+            egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=2.0).text("deposit rate"),
+        );
         ui.add(
             egui::Slider::new(&mut self.erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
         );
         // The D12 realism knobs — sane defaults, tucked away.
         egui::CollapsingHeader::new("Realism").show(ui, |ui| {
             ui.add(
-                egui::Slider::new(&mut self.erosion.min_slope_deg, 0.0..=5.0).text("min slope °"),
+                egui::Slider::new(&mut self.erosion.evaporation, 0.0..=0.2).text("evaporation"),
             )
-            .on_hover_text("Slopes shallower than this deposit instead of carving");
-            ui.add(egui::Slider::new(&mut self.erosion.inertia, 0.0..=0.5).text("inertia"));
+            .on_hover_text("Water lost per second; bounds how far flows and fans reach");
             ui.add(
-                egui::Slider::new(&mut self.erosion.flow_strength, 0.0..=8.0).text("flow carving"),
+                egui::Slider::new(&mut self.erosion.min_tilt_deg, 0.0..=10.0).text("min tilt °"),
             )
-            .on_hover_text("Concentrates carving where drainage accumulates; 0 disables");
+            .on_hover_text("Channels that grade themselves flat keep incising at this tilt");
             ui.add(
-                egui::Slider::new(&mut self.erosion.deposit_blur_radius, 0..=8)
-                    .text("deposit blur"),
+                egui::Slider::new(&mut self.erosion.max_erosion_depth, 0.0..=3.0)
+                    .text("max depth m"),
             )
-            .on_hover_text("Smooths each round's deposits into fans; carving stays crisp");
+            .on_hover_text("Water deeper than this armors the bed instead of digging pits");
+            ui.add(
+                egui::Slider::new(&mut self.erosion.max_flow_speed, 1.0..=15.0)
+                    .text("max flow speed"),
+            )
+            .on_hover_text("Caps how fast water can carve; low values soften striping");
+            ui.add(
+                egui::Slider::new(&mut self.erosion.thermal_rate, 0.0..=20.0).text("thermal rate"),
+            )
+            .on_hover_text("How fast over-steep slopes shed talus; 0 disables");
+            ui.add(
+                egui::Slider::new(&mut self.erosion.time_step, 0.01..=0.1).text("time step s"),
+            )
+            .on_hover_text("Solver step; larger simulates more per iteration but can destabilize");
         });
         match self.runs.iter().next() {
             Some(run) => {
