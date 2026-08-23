@@ -70,6 +70,10 @@ pub struct WorldImportSettings {
     /// Vertical exaggeration: 1 = true relief (clamped into the encode
     /// range), lower flattens, higher dramatizes.
     pub vertical_scale: f32,
+    /// Condition the import to tile without a seam (see [`crate::periodic`]).
+    /// A crop of Earth is not periodic, so a looping terrain otherwise repeats
+    /// against a cliff hundreds of meters high. Ignored on finite terrains.
+    pub seamless: bool,
 }
 
 impl Default for WorldImportSettings {
@@ -79,6 +83,7 @@ impl Default for WorldImportSettings {
             latitude: 45.9766,
             longitude: 7.6585,
             vertical_scale: 1.0,
+            seamless: true,
         }
     }
 }
@@ -239,6 +244,7 @@ struct ImportJob {
     latitude: f64,
     longitude: f64,
     vertical_scale: f32,
+    seamless: bool,
     zoom: u8,
     fetch: Fetch,
     done: Arc<AtomicU32>,
@@ -257,6 +263,8 @@ impl ImportJob {
             latitude,
             longitude: settings.longitude,
             vertical_scale: settings.vertical_scale,
+            // A finite terrain has no repeat, so nothing to reconcile.
+            seamless: settings.seamless && field.looping(),
             zoom: 0,
             fetch,
             done: Arc::new(AtomicU32::new(0)),
@@ -382,6 +390,10 @@ impl ImportJob {
             }
         });
 
+        if self.seamless {
+            crate::periodic::make_periodic(&mut heights, dims.x as usize, dims.y as usize);
+        }
+
         // Relative landing: the region's floor sits at the encode minimum,
         // relief rises from there (scaled), clamped into the encode range.
         let floor = heights.iter().copied().fold(f32::MAX, f32::min);
@@ -450,6 +462,7 @@ mod tests {
             latitude,
             longitude,
             vertical_scale: 1.0,
+            seamless: false,
         }
     }
 
@@ -553,6 +566,61 @@ mod tests {
             (rise - expected_rise).abs() / expected_rise < 0.05,
             "rise {rise:.1} vs expected {expected_rise:.1}"
         );
+    }
+
+    /// A looping terrain repeats forever, so a crop of a non-periodic world
+    /// meets itself at a cliff. Conditioning must bring that step down to the
+    /// scale of an ordinary step inside the map — the point at which it stops
+    /// reading as an edge.
+    #[test]
+    fn seamless_import_closes_the_wrap() {
+        let looping = EditableTerrain::new(TerrainField::flat(
+            64, 64, 100.0, 0.0, 10_000.0, true, 0.0,
+        ));
+        // The synthetic ramp rises eastward, so west and east disagree by the
+        // map's full span.
+        let seam_and_step = |seamless: bool| {
+            let mut cfg = settings(0.0, 0.0);
+            cfg.seamless = seamless;
+            let heights = ImportJob::new(&looping, &cfg, ramp_fetch())
+                .run()
+                .expect("must run");
+            let seam: f32 = (0..64)
+                .map(|y| (heights[y * 64] - heights[y * 64 + 63]).powi(2))
+                .sum::<f32>()
+                / 64.0;
+            let step: f32 = (0..64)
+                .flat_map(|y| (1..64).map(move |x| (y, x)))
+                .map(|(y, x)| (heights[y * 64 + x] - heights[y * 64 + x - 1]).powi(2))
+                .sum::<f32>()
+                / (64.0 * 63.0);
+            (seam.sqrt(), step.sqrt())
+        };
+
+        let (raw, step) = seam_and_step(false);
+        assert!(
+            raw > step * 20.0,
+            "an unconditioned import should wrap against a cliff: {raw} vs step {step}"
+        );
+        // The ramp is pure trend, so conditioning leaves almost nothing behind
+        // and the residual step is not a meaningful yardstick; that the wrap
+        // collapses at all is what this checks. `periodic` covers the
+        // "falls to interior scale" bar on a field that has detail to keep.
+        let (conditioned, _) = seam_and_step(true);
+        assert!(
+            conditioned < raw / 20.0,
+            "conditioning must collapse the wrap: {conditioned} vs raw {raw}"
+        );
+    }
+
+    /// Finite terrain never repeats, so there is no seam to reconcile and the
+    /// trend removal would only cost relief.
+    #[test]
+    fn seamless_is_inert_on_finite_terrain() {
+        let finite = terrain(32, 100.0, 0.0, 10_000.0);
+        let mut cfg = settings(0.0, 0.0);
+        cfg.seamless = true;
+        assert!(!ImportJob::new(&finite, &cfg, ramp_fetch()).seamless);
     }
 
     #[test]

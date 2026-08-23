@@ -16,6 +16,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Fetches the public AWS terrain tiles for real-world import (blocking HTTP,
 # run on AsyncComputeTaskPool).
 ureq = "2"
+# The 2-D FFT behind the periodic-plus-smooth decomposition that makes an
+# imported real-world crop tile without a seam.
+rustfft = "6"
 
 [dev-dependencies]
 # Parses the hand-written KTX2 export in tests (same version bevy loads with).

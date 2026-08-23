@@ -47,6 +47,7 @@ mod export;
 mod field;
 mod gesture;
 mod mask;
+mod periodic;
 mod rebake;
 mod sculpt;
 mod seam;

@@ -536,6 +536,12 @@ impl TerrainUi<'_, '_> {
                 .text("vertical scale"),
         )
         .on_hover_text("1 = true relief; higher dramatizes, lower flattens");
+        ui.checkbox(&mut self.world_import.seamless, "seamless loop")
+            .on_hover_text(
+                "Earth doesn't tile: without this the map repeats against a cliff \
+                 hundreds of meters high. Removes the overall trend across the map \
+                 (its tilt) and keeps every ridge. No effect on finite terrains.",
+            );
         match self.world_runs.iter().next() {
             Some(run) => {
                 ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
