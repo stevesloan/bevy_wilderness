@@ -161,8 +161,9 @@ fn world_size(existing: Option<&EditableTerrain>) -> Option<f32> {
 
 /// Point `clipmap` at the new field's display heightmap and replace its
 /// editable state, marking everything dirty so the Apply path re-quantizes,
-/// re-snaps props, and re-bakes. Shared by the new-terrain and load paths.
-fn swap_in(
+/// re-snaps props, and re-bakes. Shared by the new-terrain, load, and
+/// world-import paths.
+pub(crate) fn swap_in(
     commands: &mut Commands,
     terrain: Entity,
     clipmap: &mut Clipmap,
@@ -183,10 +184,10 @@ fn swap_in(
     commands
         .entity(terrain)
         // Drop the load marker in case a swap pre-empts an in-flight decode,
-        // and cancel any in-flight erosion run (dropping its task aborts it):
-        // its delta buffer and changed rect are sized for the replaced field —
+        // and cancel any in-flight erosion or world-import run (dropping the
+        // task aborts it): their buffers are sized for the replaced field —
         // landing them would corrupt the new one, or index out of its bounds.
-        .remove::<(Editable, ErosionRun)>()
+        .remove::<(Editable, ErosionRun, crate::world::WorldImportRun)>()
         .insert(editable);
     // The old tile snapshots describe a field that no longer exists.
     history.clear();

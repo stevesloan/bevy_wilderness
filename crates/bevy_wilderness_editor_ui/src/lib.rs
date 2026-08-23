@@ -26,8 +26,20 @@ use bevy_wilderness_editor::{
     ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, FogTier, HeightmapExported,
     LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
     RedoRequest, SculptMode, SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded,
-    TerrainQuality, ToolId, UndoBuffer, UndoHistory, UndoRequest,
+    TerrainQuality, ToolId, UndoBuffer, UndoHistory, UndoRequest, WorldImportRequested,
+    WorldImportRun, WorldImportSettings, WorldImported,
 };
+
+/// Named lat/lon starting points for the world-import section — famous
+/// relief, one click away.
+const WORLD_PRESETS: [(&str, f64, f64); 6] = [
+    ("Matterhorn", 45.9766, 7.6585),
+    ("Grand Canyon", 36.0980, -112.0970),
+    ("Everest", 27.9881, 86.9250),
+    ("Iceland highlands", 63.9800, -19.0600),
+    ("Death Valley", 36.2400, -116.8200),
+    ("Norwegian fjords", 62.1000, 7.0000),
+];
 
 /// Base path for the panel's Export button. One click writes **both** export
 /// formats beside each other — `<base>.ktx2` (the engine master a `Clipmap`
@@ -206,6 +218,11 @@ pub struct TerrainUi<'w, 's> {
     terrains: Query<'w, 's, (Entity, &'static mut EditableTerrain)>,
     runs: Query<'w, 's, &'static ErosionRun>,
     erode: MessageWriter<'w, ErosionRequested>,
+    world_import: ResMut<'w, WorldImportSettings>,
+    world_runs: Query<'w, 's, &'static WorldImportRun>,
+    world_requests: MessageWriter<'w, WorldImportRequested>,
+    world_imported: MessageReader<'w, 's, WorldImported>,
+    world_status: Local<'s, Option<String>>,
     export_path: Res<'w, UiExportPath>,
     export: MessageWriter<'w, ExportRequested>,
     exported: MessageReader<'w, 's, HeightmapExported>,
@@ -232,6 +249,7 @@ impl TerrainUi<'_, '_> {
     /// subset call the individual methods instead.
     pub fn all_sections(&mut self, ui: &mut egui::Ui, contexts: &mut EguiContexts) {
         self.file_section(ui);
+        self.world_section(ui);
         self.tools_section(ui);
         self.undo_section(ui);
         self.brush_section(ui);
@@ -473,6 +491,68 @@ impl TerrainUi<'_, '_> {
         if self.active_stamp.0.is_none() {
             ui.small("pick a stamp to start previewing");
         }
+    }
+
+    /// Real-world terrain import: presets, lat/lon, vertical scale, and the
+    /// import button/progress. Tool-independent (it replaces the whole map,
+    /// like Load), so it draws whenever a terrain exists.
+    pub fn world_section(&mut self, ui: &mut egui::Ui) {
+        for done in self.world_imported.read() {
+            *self.world_status = Some(match &done.error {
+                None => "imported".into(),
+                Some(error) => format!("import failed: {error}"),
+            });
+        }
+        ui.separator();
+        ui.label("World");
+        ui.horizontal(|ui| {
+            ui.label("preset");
+            for chunk in WORLD_PRESETS.chunks(3) {
+                for &(name, lat, lon) in chunk {
+                    if ui.small_button(name).clicked() {
+                        self.world_import.latitude = lat;
+                        self.world_import.longitude = lon;
+                    }
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::DragValue::new(&mut self.world_import.latitude)
+                    .speed(0.01)
+                    .range(-85.0..=85.0)
+                    .prefix("lat "),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.world_import.longitude)
+                    .speed(0.01)
+                    .range(-180.0..=180.0)
+                    .prefix("lon "),
+            );
+        });
+        ui.add(
+            egui::Slider::new(&mut self.world_import.vertical_scale, 0.25..=4.0)
+                .logarithmic(true)
+                .text("vertical scale"),
+        )
+        .on_hover_text("1 = true relief; higher dramatizes, lower flattens");
+        match self.world_runs.iter().next() {
+            Some(run) => {
+                ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
+            }
+            None => {
+                if ui.button("Import real terrain").clicked() {
+                    *self.world_status = None;
+                    for (entity, _) in &self.terrains {
+                        self.world_requests.write(WorldImportRequested { terrain: entity });
+                    }
+                }
+            }
+        }
+        if let Some(status) = self.world_status.as_deref() {
+            ui.small(status.to_owned());
+        }
+        ui.small("replaces the map with Earth elevation at this point (AWS terrain tiles)");
     }
 
     /// Clear-mask button, for the mask tool and the erode tool (erosion runs

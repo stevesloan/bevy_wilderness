@@ -28,6 +28,9 @@
 //! - [`NewTerrainRequested`] / [`LoadRequested`] / [`TerrainLoaded`] — reset a
 //!   terrain to a fresh flat plain (the default starting state) or load a
 //!   heightmap file into it at runtime.
+//! - [`WorldImportRequested`] / [`WorldImportRun`] / [`WorldImported`] — fill
+//!   the map with real-world elevation centered on a lat/lon
+//!   ([`WorldImportSettings`]), fetched from the public AWS terrain tiles.
 //! - [`RebakeSettings`] — auto re-bake on/off (D10); with it off, bake
 //!   manually by inserting [`RebakeRequested`] on the terrain
 //!   ([`ClipmapReady`]'s absence = a bake is in flight).
@@ -53,6 +56,7 @@ mod swap;
 mod terrain;
 mod tools;
 mod undo;
+mod world;
 
 pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionMaps, ErosionRequested, ErosionRun};
@@ -67,6 +71,7 @@ pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged
 pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
+pub use world::{WorldImportRequested, WorldImportRun, WorldImportSettings, WorldImported};
 // The manual-bake trigger, bake-completion marker (design doc §5/D10), and the
 // quality profile a UI's quality section edits, re-exported so a UI crate can
 // drive bakes without depending on the renderer.
@@ -100,6 +105,7 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<PointerBlocked>()
             .init_resource::<BrushSettings>()
             .init_resource::<ErosionSettings>()
+            .init_resource::<WorldImportSettings>()
             .init_resource::<UndoHistory>()
             .init_resource::<TerrainGesture>()
             .init_resource::<RebakeSettings>()
@@ -115,6 +121,8 @@ impl Plugin for TerrainEditorPlugin {
             .add_message::<NewTerrainRequested>()
             .add_message::<LoadRequested>()
             .add_message::<TerrainLoaded>()
+            .add_message::<WorldImportRequested>()
+            .add_message::<WorldImported>()
             .add_message::<UndoRequest>()
             .add_message::<RedoRequest>()
             .add_message::<UndoApplied>()
@@ -131,11 +139,17 @@ impl Plugin for TerrainEditorPlugin {
                     (
                         swap::apply_new_terrain,
                         swap::apply_load,
+                        world::apply_finished_imports,
                         terrain::init_editable_terrains,
                         terrain::init_edit_overlays,
                     )
                         .chain()
                         .before(EditorSet::Pick),
+                    // Import requests just spawn download tasks; landing
+                    // happens in the swap slot above on a later frame.
+                    world::start_requested_imports
+                        .after(EditorSet::Tools)
+                        .before(EditorSet::Apply),
                     cursor::update_terrain_cursor.in_set(EditorSet::Pick),
                     sculpt::apply_sculpt
                         .run_if(tool_active(ToolId::SCULPT))

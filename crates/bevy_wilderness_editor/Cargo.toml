@@ -13,6 +13,9 @@ bevy_wilderness = { path = "../bevy_wilderness", version = "0.1.0", features = [
 ] }
 # Writes the 16-bit PNG interchange export (D7); already in bevy's tree.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Fetches the public AWS terrain tiles for real-world import (blocking HTTP,
+# run on AsyncComputeTaskPool).
+ureq = "2"
 
 [dev-dependencies]
 # Parses the hand-written KTX2 export in tests (same version bevy loads with).
