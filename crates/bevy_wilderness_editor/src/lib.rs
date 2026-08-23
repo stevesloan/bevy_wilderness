@@ -30,7 +30,9 @@
 //!   heightmap file into it at runtime.
 //! - [`WorldImportRequested`] / [`WorldImportRun`] / [`WorldImported`] — fill
 //!   the map with real-world elevation centered on a lat/lon
-//!   ([`WorldImportSettings`]), fetched from the public AWS terrain tiles.
+//!   ([`WorldImportSettings`]). [`WorldImportSource`] picks between the
+//!   worldwide terrain tiles (~10 m) and USGS 3DEP 1 m lidar, which resolves
+//!   an FPS-scale terrain properly but only covers the United States.
 //! - [`RebakeSettings`] — auto re-bake on/off (D10); with it off, bake
 //!   manually by inserting [`RebakeRequested`] on the terrain
 //!   ([`ClipmapReady`]'s absence = a bake is in flight).
@@ -41,6 +43,7 @@
 
 use bevy::prelude::*;
 
+mod cog;
 mod cursor;
 mod erosion;
 mod export;
@@ -57,6 +60,8 @@ mod swap;
 mod terrain;
 mod tools;
 mod undo;
+mod usgs;
+mod utm;
 mod world;
 
 pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
@@ -72,7 +77,9 @@ pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged
 pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
-pub use world::{WorldImportRequested, WorldImportRun, WorldImportSettings, WorldImported};
+pub use world::{
+    WorldImportRequested, WorldImportRun, WorldImportSettings, WorldImportSource, WorldImported,
+};
 // The manual-bake trigger, bake-completion marker (design doc §5/D10), and the
 // quality profile a UI's quality section edits, re-exported so a UI crate can
 // drive bakes without depending on the renderer.

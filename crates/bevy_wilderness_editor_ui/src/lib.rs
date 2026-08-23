@@ -27,18 +27,19 @@ use bevy_wilderness_editor::{
     LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
     RedoRequest, SculptMode, SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded,
     TerrainQuality, ToolId, UndoBuffer, UndoHistory, UndoRequest, WorldImportRequested,
-    WorldImportRun, WorldImportSettings, WorldImported,
+    WorldImportRun, WorldImportSettings, WorldImportSource, WorldImported,
 };
 
-/// Named lat/lon starting points for the world-import section — famous
-/// relief, one click away.
+/// Named lat/lon starting points for the world-import section — dramatic,
+/// varied relief one click away. All sit inside USGS 1 m lidar coverage, so
+/// they stay useful as the highest-resolution source available.
 const WORLD_PRESETS: [(&str, f64, f64); 6] = [
-    ("Matterhorn", 45.9766, 7.6585),
     ("Grand Canyon", 36.0980, -112.0970),
-    ("Everest", 27.9881, 86.9250),
-    ("Iceland highlands", 63.9800, -19.0600),
+    ("Zion", 37.2982, -113.0263),
+    ("Monument Valley", 36.9980, -110.0985),
     ("Death Valley", 36.2400, -116.8200),
-    ("Norwegian fjords", 62.1000, 7.0000),
+    ("Grand Teton", 43.7410, -110.8020),
+    ("Mt St Helens", 46.1912, -122.1944),
 ];
 
 /// Base path for the panel's Export button. One click writes **both** export
@@ -498,9 +499,10 @@ impl TerrainUi<'_, '_> {
     /// like Load), so it draws whenever a terrain exists.
     pub fn world_section(&mut self, ui: &mut egui::Ui) {
         for done in self.world_imported.read() {
-            *self.world_status = Some(match &done.error {
-                None => "imported".into(),
-                Some(error) => format!("import failed: {error}"),
+            *self.world_status = Some(match (&done.error, &done.note) {
+                (Some(error), _) => format!("import failed: {error}"),
+                (None, Some(note)) => format!("imported — {note}"),
+                (None, None) => "imported".into(),
             });
         }
         ui.separator();
@@ -536,6 +538,19 @@ impl TerrainUi<'_, '_> {
                 .text("vertical scale"),
         )
         .on_hover_text("1 = true relief; higher dramatizes, lower flattens");
+        egui::ComboBox::from_label("source")
+            .selected_text(self.world_import.source.label())
+            .show_ui(ui, |ui| {
+                for source in WorldImportSource::ALL {
+                    ui.selectable_value(&mut self.world_import.source, source, source.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "USGS lidar resolves about ten times finer than the global tiles, \
+                 but only covers the United States. Auto uses it where it reaches \
+                 and falls back everywhere else.",
+            );
         ui.checkbox(&mut self.world_import.seamless, "seamless loop")
             .on_hover_text(
                 "Earth doesn't tile: without this the map repeats against a cliff \
