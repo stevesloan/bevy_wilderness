@@ -146,6 +146,20 @@ fn sun_visibility(world_xz: vec2<f32>) -> f32 {
     return vis;
 }
 
+// Cosine-weighted sky visible above elevation `h` within one azimuth's vertical
+// plane, where `a`/`b` are the surface normal's components along the azimuth and
+// along up — so the normal's cosine at elevation θ is `a*cos(θ) + b*sin(θ)`.
+// Closed form of ∫_h^{π/2} (a·cosθ + b·sinθ)·cosθ dθ; the trailing cosθ is the
+// solid-angle Jacobian. Everything the gather integrates is measured about the
+// surface normal through this, not about world up — an unoccluded plane must
+// gather the same sky however it is tilted, or every slope in the terrain reads
+// as partly occluded and shades toward the same flat tone.
+fn cos_arc(a: f32, b: f32, h: f32) -> f32 {
+    const QUARTER_PI = 0.7853981634;
+    return a * (QUARTER_PI - h * 0.5 - sin(2.0 * h) * 0.25)
+         + b * (0.5 - sin(h) * sin(h) * 0.5);
+}
+
 // Macro ambient occlusion + bent normal + curvature, gathered from the
 // heightfield. Horizon-based: for each azimuth, march outward and track the
 // highest occluding horizon angle; the open sky above it drives AO and the
@@ -164,13 +178,22 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
     const HALF_PI = 1.5707963;
 
     let origin_h = terrain_height(world_xz);
-    var ao = 0.0;
+    let n = geo_normal(world_xz);
+    var ao_num = 0.0;
+    var ao_den = 0.0;
     var bent = vec3<f32>(0.0);
     for (var d = 0; d < DIRS; d++) {
-        let phi = TAU * f32(d) / f32(DIRS);
-        let dir = vec2<f32>(cos(phi), sin(phi));
+        let az = TAU * f32(d) / f32(DIRS);
+        let dir = vec2<f32>(cos(az), sin(az));
+        // The normal resolved into this azimuth's plane: `a` along `dir`, `b` up.
+        let a = dot(vec2<f32>(n.x, n.z), dir);
+        let b = n.y;
+        // The surface occludes its own lower hemisphere, so the march starts at
+        // the tangent plane rather than the horizontal — downhill azimuths see
+        // below the horizon, uphill ones start already partly closed.
+        let h_self = atan2(b, a) - HALF_PI;
         // Highest horizon tangent (rise/run) seen along this azimuth.
-        var max_tan = 0.0;
+        var max_tan = -a / b;                   // == tan(h_self); b > 0 for a heightfield
         var t = R0;
         var step = R0;
         for (var s = 0; s < STEPS; s++) {
@@ -182,17 +205,20 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
             step *= GROWTH;
             t += step;
         }
-        let horizon = atan(max_tan);            // elevation of the horizon (>= 0)
-        // Cosine-weighted open sky in this wedge over a flat upper hemisphere
-        // integrates to ~1 - sin(horizon): flat ground (horizon 0) -> 1.
-        let vis = 1.0 - sin(max(horizon, 0.0));
-        ao += vis;
+        let horizon = atan(max_tan);
+        let vis = cos_arc(a, b, horizon);
+        ao_num += vis;
+        // Normalizing against the unoccluded tangent-plane arc is what makes an
+        // open slope bake 1.0 whatever its steepness; only real occluders darken.
+        ao_den += cos_arc(a, b, h_self);
         // Average unoccluded direction: aim at the middle of the open wedge.
         let mid = 0.5 * (horizon + HALF_PI);
-        bent += vec3<f32>(dir.x * cos(mid), sin(mid), dir.y * cos(mid)) * vis;
+        bent += vec3<f32>(dir.x * cos(mid), sin(mid), dir.y * cos(mid)) * max(vis, 0.0);
     }
-    ao /= f32(DIRS);
-    let bent_n = normalize(bent + vec3<f32>(0.0, 1e-3, 0.0));
+    // Recovers the surface normal on open ground (within the DIRS quadrature) and
+    // only tilts where something actually blocks the sky.
+    let ao = clamp(ao_num / max(ao_den, 1e-5), 0.0, 1.0);
+    let bent_n = normalize(bent + n * 1e-3);
 
     // Curvature / cavity from the height Laplacian: concave (valleys, cracks) vs
     // convex (ridges, ledges). >0.5 convex, <0.5 concave, 0.5 flat. The 8.0
