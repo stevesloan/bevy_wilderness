@@ -498,15 +498,24 @@ fn fragment(
         // is lerped in for smooth boundaries — skipped for single-layer detail (VR)
         // and wherever one material dominates (`mblend == 0`, the common case, which
         // the bake quantizes exactly to 0), saving three `textureSampleGrad`s.
+        // The RVT already holds this same albedo array blended at macro tiling, so
+        // the detail sample must contribute *variation*, not colour, or the two
+        // multiply into albedo squared. Its coarsest mip is the layer's own mean,
+        // so `da / da_avg` is unit-mean by construction and leaves the macro
+        // albedo intact for any texture set, whatever its average brightness.
+        let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
         var dn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id0, ddx, ddy).xyz * 2.0 - 1.0;
         var da = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id0, ddx, ddy).rgb;
+        var da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id0, da_lod).rgb;
         var dorm = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id0, ddx, ddy);
         if (flags & 4u) == 0u && mblend > 0.0 {
             let dn1 = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id1, ddx, ddy).xyz * 2.0 - 1.0;
             let da1 = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id1, ddx, ddy).rgb;
+            let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id1, da_lod).rgb;
             let dorm1 = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id1, ddx, ddy);
             dn = mix(dn, dn1, mblend);
             da = mix(da, da1, mblend);
+            da_avg = mix(da_avg, da1_avg, mblend);
             dorm = mix(dorm, dorm1, mblend);
         }
         // Flip X (see bake) and reorient onto the base normal.
@@ -517,7 +526,10 @@ fn fragment(
         let db = cross(base_normal, dt);
         world_normal = normalize(dt * dn_scaled.x + db * dn_scaled.y + base_normal * dn_scaled.z);
 
-        albedo *= mix(vec3<f32>(1.0), 2.0 * da, detail.albedo_strength * detail_fade);
+        // Epsilon guards a layer that is black in some channel; without it the
+        // ratio is a division by zero rather than the intended no-op.
+        let da_ratio = da / max(da_avg, vec3<f32>(1e-4));
+        albedo *= mix(vec3<f32>(1.0), da_ratio, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
     }
