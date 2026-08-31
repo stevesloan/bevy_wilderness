@@ -1,6 +1,6 @@
 use bevy::{
-    asset::{embedded_path, AssetPath},
-    camera::{visibility::RenderLayers, RenderTarget, ScalingMode},
+    asset::{AssetPath, embedded_path},
+    camera::{RenderTarget, ScalingMode, visibility::RenderLayers},
     core_pipeline::tonemapping::Tonemapping,
     pbr::Material,
     prelude::*,
@@ -13,17 +13,19 @@ use bevy::{
 
 #[cfg(feature = "editing")]
 use crate::RebakeRequested;
-use crate::{Clipmap, ClipmapReady, TerrainQuality, MAX_TERRAIN_LAYERS};
+use crate::{Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, TerrainQuality};
 
 /// Render layers isolating the RVT bake cameras/quads from the main view.
 const RVT_ALBEDO_LAYER: usize = 1;
 const RVT_NORMAL_LAYER: usize = 2;
 /// Macro AO + bent normal + cavity gather target (bake mode 2).
 const RVT_AO_LAYER: usize = 3;
+/// Sun shadow-ceiling field (bake mode 3). See [`crate::TerrainSunShadow`].
+const RVT_SUN_SHADOW_LAYER: usize = 4;
 /// Layer offset for the tiny sentinel targets that detect bake readiness. Must
 /// exceed the number of bake targets so sentinel layers can't collide with a
 /// target's base layer.
-const RVT_SENTINEL_LAYER_OFFSET: usize = 3;
+const RVT_SENTINEL_LAYER_OFFSET: usize = 4;
 
 /// Per-layer parameters packed for the GPU. `Vec4` lanes index the layers.
 #[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
@@ -96,6 +98,7 @@ pub(crate) struct ClipmapRvt {
     pub(crate) albedo: Handle<Image>,
     pub(crate) normal: Handle<Image>,
     pub(crate) ao: Handle<Image>,
+    pub(crate) sun_shadow: Handle<Image>,
     pub(crate) initialized: bool,
     /// Whether any bake has ever *completed* for this clipmap. Never reset —
     /// unlike `initialized`, which re-arms per re-bake — so it distinguishes
@@ -105,10 +108,6 @@ pub(crate) struct ClipmapRvt {
     /// Bake targets not yet finished. Set when the bake cameras spawn; each
     /// decrements as it completes, and [`ClipmapReady`] is inserted at zero.
     pub(crate) pending_bakes: u32,
-    /// Sun direction the shadow was baked against (from the scene `DirectionalLight`,
-    /// resolved in `init_rvt`), so [`SunVisibility`] marches toward the same sun.
-    /// `ZERO` until `initialized`.
-    pub(crate) sun_direction: Vec3,
     /// The quality profile this clipmap baked with — its bake-time fields are
     /// locked in at spawn, so `warn_late_quality` can flag later changes.
     pub(crate) quality: TerrainQuality,
@@ -142,6 +141,7 @@ pub(crate) fn drive_rvt_bake(
     mut commands: Commands,
     mut cameras: Query<(Entity, &mut Camera, &mut RvtBakeCamera)>,
     mut rvts: Query<&mut ClipmapRvt>,
+    mut sun_shadows: Query<&mut crate::TerrainSunShadow>,
 ) {
     for (camera_entity, mut camera, mut state) in &mut cameras {
         if !state.ready {
@@ -159,6 +159,10 @@ pub(crate) fn drive_rvt_bake(
                 rvt.pending_bakes = rvt.pending_bakes.saturating_sub(1);
                 if rvt.pending_bakes == 0 {
                     rvt.ever_baked = true;
+                    // Only now is the shadow field drawn rather than undefined.
+                    if let Ok(mut sun_shadow) = sun_shadows.get_mut(state.clipmap) {
+                        sun_shadow.params.mark_baked();
+                    }
                     commands.entity(state.clipmap).try_insert(ClipmapReady);
                 }
             }
@@ -202,17 +206,19 @@ pub(crate) fn process_rebake_requests(
             &mut Clipmap,
             &mut ClipmapRvt,
             &crate::clipmap::ClipmapMaterials,
+            &mut crate::TerrainSunShadow,
         ),
         With<RebakeRequested>,
     >,
 ) {
-    for (entity, mut clipmap, mut rvt, clipmap_materials) in &mut clipmaps {
+    for (entity, mut clipmap, mut rvt, clipmap_materials, mut sun_shadow) in &mut clipmaps {
         if !rvt.initialized || rvt.pending_bakes > 0 {
             continue;
         }
         let drifted = quality.rvt_size != rvt.quality.rvt_size
             || quality.ambient_gather != rvt.quality.ambient_gather
-            || quality.detail_layers != rvt.quality.detail_layers;
+            || quality.detail_layers != rvt.quality.detail_layers
+            || quality.sun_shadow_size != rvt.quality.sun_shadow_size;
         if drifted {
             let mut resize = |handle: &Handle<Image>, size: u32, format: TextureFormat| {
                 if let Some(mut image) = images.get_mut(handle) {
@@ -229,6 +235,11 @@ pub(crate) fn process_rebake_requests(
             // Same stub rule as `init_clipmaps`: gather off = 4×4 placeholder.
             let ao_size = if quality.ambient_gather { size } else { 4 };
             resize(&rvt.ao, ao_size, TextureFormat::Rgba8Unorm);
+            let sun_shadow_size = quality.sun_shadow_size.max(1);
+            resize(&rvt.sun_shadow, sun_shadow_size, TextureFormat::Rgba16Float);
+            // Resizing blanks the target, so the old field is gone: back to full
+            // sun until the new bake lands, rather than sampling undefined data.
+            sun_shadow.params.invalidate();
             // Re-pack the quality bits (bit1 gather, bit2 single-layer detail),
             // preserving the wireframe and looping bits.
             let quality_bits = ((quality.ambient_gather as u32) << 1)
@@ -244,7 +255,6 @@ pub(crate) fn process_rebake_requests(
             clipmap.clay = true;
         }
         rvt.initialized = false;
-        rvt.sun_direction = Vec3::ZERO;
         // Re-arm the stall diagnostic for this bake.
         rvt.stall_secs = 0.0;
         rvt.stall_warned = false;
@@ -317,13 +327,14 @@ pub(crate) fn warn_late_quality(
         if rvt.initialized
             && (baked.rvt_size != quality.rvt_size
                 || baked.ambient_gather != quality.ambient_gather
-                || baked.detail_layers != quality.detail_layers)
+                || baked.detail_layers != quality.detail_layers
+                || baked.sun_shadow_size != quality.sun_shadow_size)
         {
             *warned = true;
             warn!(
                 "bevy_wilderness: a TerrainQuality bake-time field (rvt_size / ambient_gather / \
-                 detail_layers) changed after the terrain baked — no effect without a rebake; \
-                 only `fog` applies live"
+                 detail_layers / sun_shadow_size) changed after the terrain baked — no effect \
+                 without a rebake; only `fog` applies live"
             );
             break;
         }
@@ -381,10 +392,15 @@ pub(crate) fn init_rvt(
     mut meshes: ResMut<Assets<Mesh>>,
     mut bake_materials: ResMut<Assets<BakeMaterial>>,
     mut images: ResMut<Assets<Image>>,
-    mut clipmaps: Query<(Entity, &Clipmap, &mut ClipmapRvt)>,
+    mut clipmaps: Query<(
+        Entity,
+        &Clipmap,
+        &mut ClipmapRvt,
+        &mut crate::TerrainSunShadow,
+    )>,
     suns: Query<&GlobalTransform, With<DirectionalLight>>,
 ) {
-    for (clipmap_entity, clipmap, mut rvt) in &mut clipmaps {
+    for (clipmap_entity, clipmap, mut rvt, mut sun_shadow) in &mut clipmaps {
         if rvt.initialized {
             continue;
         }
@@ -401,12 +417,17 @@ pub(crate) fn init_rvt(
             continue;
         };
         let world_size = clipmap.texel_size * heightmap.texture_descriptor.size.width as f32;
+        // A re-bake keeps the previous field on screen until the new one lands
+        // (same as the other RVT targets), so validity carries over — unless the
+        // target was blanked by a resize, which clears it in the rebake path.
+        let was_valid = sun_shadow.params.valid;
+        sun_shadow.params = crate::SunShadowParams::pending(world_size, clipmap.min);
+        sun_shadow.params.valid = was_valid;
         rvt.initialized = true;
-        rvt.sun_direction = sun_direction;
-        // Albedo + normal/ORM always; the AO/bent-normal/cavity target only when
-        // the ambient gather is enabled (see `TerrainQuality`). All must finish
-        // before the clipmap is marked ready — kept in sync with the loop below.
-        rvt.pending_bakes = if quality.ambient_gather { 3 } else { 2 };
+        // Albedo, normal/ORM and the sun-shadow field always; the
+        // AO/bent-normal target only with the ambient gather. All must finish
+        // before the clipmap is ready — kept in sync with the loop below.
+        rvt.pending_bakes = if quality.ambient_gather { 4 } else { 3 };
 
         let mut make_bake = |mode: u32| {
             bake_materials.add(BakeMaterial {
@@ -476,6 +497,13 @@ pub(crate) fn init_rvt(
                 -1isize,
             ));
         }
+        targets.push((
+            3u32,
+            rvt.sun_shadow.clone(),
+            TextureFormat::Rgba16Float,
+            RVT_SUN_SHADOW_LAYER,
+            -4isize,
+        ));
         for (mode, target, format, layer, order) in targets {
             let material = make_bake(mode);
             let sentinel_layer = layer + RVT_SENTINEL_LAYER_OFFSET;

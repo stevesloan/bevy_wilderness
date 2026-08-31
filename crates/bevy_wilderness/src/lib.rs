@@ -10,11 +10,11 @@ mod mesh;
 mod mesh_fog;
 mod quality;
 mod rvt;
+mod sun_shadow;
 mod texture;
 
 pub use clipmap::{
-    Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, SunVisibility,
-    TerrainLayer,
+    Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer,
 };
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};
@@ -25,6 +25,7 @@ pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
 pub use heightfield::Heightfield;
 pub use mesh_fog::HeightFogExtension;
 pub use quality::{FogTier, InlineFog, TerrainFog, TerrainQuality};
+pub use sun_shadow::{SunShadowParams, TerrainSunShadow};
 pub use texture::{build_terrain_array, load_terrain_array};
 
 use clipmap::{init_clipmaps, init_grids, retag_png_heightmaps, update_grids};
@@ -38,6 +39,9 @@ impl Plugin for ClipmapPlugin {
         // Shared fog math, imported by terrain.wgsl (inline VR fog) and the
         // height_fog.wgsl post-process (flatscreen fog).
         load_shader_library!(app, "fog_functions.wgsl");
+        // Sampling for the baked sun shadow-ceiling field, imported by game
+        // materials that want terrain shadow on their own meshes.
+        load_shader_library!(app, "sun_shadow.wgsl");
         embedded_asset!(app, "terrain.wgsl");
         embedded_asset!(app, "bake.wgsl");
         embedded_asset!(app, "mesh_fog.wgsl");

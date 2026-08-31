@@ -33,7 +33,8 @@ pub enum FogTier {
 /// Terrain performance profile — set **once at startup** from device detection
 /// (dial the knobs down for a standalone headset, up for desktop). Only
 /// [`fog`](Self::fog) applies live; the bake-time fields
-/// (`rvt_size`, `ambient_gather`, `detail_layers`) are read when a clipmap bakes —
+/// (`rvt_size`, `ambient_gather`, `detail_layers`, `sun_shadow_size`) are read
+/// when a clipmap bakes —
 /// changing them after has no effect (it would need a rebake). [`default`]
 /// (Self::default) is desktop-grade.
 #[derive(Resource, Clone, Copy, Debug)]
@@ -50,6 +51,12 @@ pub struct TerrainQuality {
     /// Near-detail overlay: blend the top `1` (cheapest, ~3 fewer samples) or `2`
     /// (smoothest boundaries) materials per fragment.
     pub detail_layers: u8,
+    /// Resolution (square) of the sun shadow-ceiling field that shadows *meshes*
+    /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Sized
+    /// separately from [`rvt_size`](Self::rvt_size) and much smaller: it holds a
+    /// height, not surface detail, and terrain shadow edges are metres wide, so
+    /// resolution buys little. `size²·8` bytes.
+    pub sun_shadow_size: u32,
 }
 
 impl Default for TerrainQuality {
@@ -62,6 +69,7 @@ impl Default for TerrainQuality {
             rvt_size: 8192,
             ambient_gather: true,
             detail_layers: 2,
+            sun_shadow_size: 2048,
         }
     }
 }

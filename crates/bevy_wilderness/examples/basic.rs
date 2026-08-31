@@ -157,6 +157,7 @@ fn setup(
         rvt_size: 8192,
         ambient_gather: true,
         detail_layers: 2,
+        sun_shadow_size: 2048,
     });
 
     // The atmosphere renders its planet limb as a hard brown line at eye level

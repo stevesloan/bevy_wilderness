@@ -112,8 +112,8 @@ impl TerrainField {
 
     /// Quantize the whole field into a new `R16Unorm` image suitable as a
     /// [`Clipmap`](bevy_wilderness::Clipmap) heightmap. `MAIN_WORLD |
-    /// RENDER_WORLD`, so CPU queries (`Heightfield`, `SunVisibility`) keep
-    /// working alongside the GPU copy.
+    /// RENDER_WORLD`, so CPU queries (`Heightfield`) keep working alongside the
+    /// GPU copy.
     pub fn to_image(&self) -> Image {
         let mut data = Vec::with_capacity(self.heights.len() * 2);
         for &h in &self.heights {

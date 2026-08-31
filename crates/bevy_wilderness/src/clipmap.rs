@@ -2,14 +2,12 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::{
     camera::{primitives::Aabb, visibility::NoAutoAabb},
-    ecs::system::SystemParam,
     light::NotShadowCaster,
     pbr::ExtendedMaterial,
     prelude::*,
     render::render_resource::TextureFormat,
 };
 
-use crate::heightfield::Heightfield;
 use crate::material::{DetailParams, DevParams, GridMaterial};
 use crate::mesh::{ClipmapPart, ClipmapParts, build_clipmap_parts};
 use crate::quality::{TerrainFog, TerrainQuality, inline_fog_params};
@@ -111,10 +109,10 @@ pub struct Clipmap {
     ///
     /// A **CPU-resident heightmap is a supported mode**: keep the image
     /// `RenderAssetUsages::MAIN_WORLD | RENDER_WORLD` (the loader default) and
-    /// [`SunVisibility`] / `Heightfield` queries work; an editor may own the
-    /// image, mutate its texels (the vertex shader displaces from it, so geometry
-    /// follows next frame with no mesh rebuild), and request a `RebakeRequested`
-    /// re-bake for the shading (both `editing`-feature API).
+    /// `Heightfield` queries work; an editor may own the image, mutate its texels
+    /// (the vertex shader displaces from it, so geometry follows next frame with
+    /// no mesh rebuild), and request a `RebakeRequested` re-bake for the shading
+    /// (both `editing`-feature API).
     pub heightmap: Handle<Image>,
 
     /// Albedo texture array (`2d_array`), one slice per layer. The alpha channel
@@ -301,6 +299,14 @@ pub(crate) fn init_clipmaps(
         // the full-size target (and its bake + sample) are skipped.
         let ao_size = if quality.ambient_gather { size } else { 4 };
         let rvt_ao = make_rvt_target(ao_size, ao_size, TextureFormat::Rgba8Unorm);
+        // Sun shadow ceiling (R, biased) + occluder distance (G). `Rgba16Float`
+        // rather than the `Rg16Float` the data wants: it is bevy's own HDR
+        // target format, so the 3d pipeline renders to it without any
+        // format-specialization surprises, and this field is a fraction of the
+        // RVT's size either way.
+        let sun_shadow_size = quality.sun_shadow_size.max(1);
+        let rvt_sun_shadow =
+            make_rvt_target(sun_shadow_size, sun_shadow_size, TextureFormat::Rgba16Float);
 
         // Editor overlay: the clipmap's texture, or a 1×1 zero stub so the
         // binding is always valid (an editor typically assigns the real one
@@ -358,14 +364,18 @@ pub(crate) fn init_clipmaps(
             Transform::default(),
             Visibility::default(),
             clipmap_materials,
+            crate::TerrainSunShadow {
+                field: rvt_sun_shadow.clone(),
+                params: crate::SunShadowParams::unbaked(),
+            },
             ClipmapRvt {
                 albedo: rvt_albedo,
                 normal: rvt_normal,
                 ao: rvt_ao,
+                sun_shadow: rvt_sun_shadow,
                 initialized: false,
                 ever_baked: false,
                 pending_bakes: 0,
-                sun_direction: Vec3::ZERO,
                 quality: *quality,
                 stall_secs: 0.0,
                 stall_warned: false,
@@ -789,62 +799,6 @@ pub(crate) fn sync_clay_shadows(
         } else if !state.forced && !not_caster {
             commands.entity(entity).insert(NotShadowCaster);
         }
-    }
-}
-
-/// Terrain sun-visibility at an arbitrary world point — the CPU counterpart of the
-/// self-shadow the RVT bakes for the terrain *surface*.
-///
-/// The baked RVT channel is a 2D function of world XZ, valid only *on* the surface,
-/// so it's wrong for a point at altitude. This marches the heightmap from the given
-/// 3D point toward the fixed sun instead, correct at any height — the query flying
-/// characters need (design doc §4.3).
-///
-/// O(points marched), not per-pixel: call it **once per entity**, never per
-/// fragment; throttle or cache for more headroom.
-///
-/// ```no_run
-/// # use bevy::prelude::*;
-/// # use bevy_wilderness::SunVisibility;
-/// fn shade_flyers(sun: SunVisibility, flyers: Query<&GlobalTransform>) {
-///     for xf in &flyers {
-///         if let Some(vis) = sun.sample(xf.translation()) {
-///             // vis: 1 = full sun, 0 = fully shadowed by terrain.
-///         }
-///     }
-/// }
-/// ```
-#[derive(SystemParam)]
-pub struct SunVisibility<'w, 's> {
-    clipmaps: Query<'w, 's, (&'static Clipmap, &'static ClipmapRvt)>,
-    images: Res<'w, Assets<Image>>,
-}
-
-impl SunVisibility<'_, '_> {
-    /// Sun visibility at `world_pos`: `1.0` = full sun, `0.0` = fully shadowed,
-    /// soft penumbra between. Marches from `world_pos` itself, so pass a point above
-    /// the surface (an entity's position) — an on-surface point reads a self-shadow.
-    ///
-    /// `None` if the point is outside every clipmap, the bake hasn't initialized, or
-    /// the heightmap isn't CPU-resident (needs the default `MAIN_WORLD` asset usage).
-    pub fn sample(&self, world_pos: Vec3) -> Option<f32> {
-        for (clipmap, rvt) in &self.clipmaps {
-            if !rvt.initialized {
-                continue;
-            }
-            let Some(image) = self.images.get(&clipmap.heightmap) else {
-                continue;
-            };
-            let Some(field) = Heightfield::new(image, clipmap.texel_size, clipmap.min, clipmap.max)
-            else {
-                continue;
-            };
-            if !field.contains(world_pos) {
-                continue;
-            }
-            return Some(field.sun_visibility(world_pos, rvt.sun_direction));
-        }
-        None
     }
 }
 

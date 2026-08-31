@@ -434,6 +434,7 @@ fn setup(
         rvt_size: 4096,
         ambient_gather: true,
         detail_layers: 1,
+        sun_shadow_size: 1024,
     });
 
     let atmosphere = Atmosphere::earth(scattering_mediums.add(ScatteringMedium::earth(256, 256)));

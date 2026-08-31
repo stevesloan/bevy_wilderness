@@ -1,7 +1,7 @@
 use bevy::{prelude::*, render::render_resource::TextureFormat};
 
-/// CPU view over a clipmap heightmap. Mirrors `bake.wgsl`'s `terrain_height` /
-/// `sun_visibility` so the CPU march agrees with the GPU bake — keep the two in sync.
+/// CPU view over a clipmap heightmap. Mirrors `bake.wgsl`'s `terrain_height`, so
+/// CPU and GPU agree on where the ground is — keep the two in sync.
 ///
 /// Public under the `editing` feature so editor crates reuse this world↔texel +
 /// bilinear math instead of reimplementing it (it must stay in sync with the
@@ -86,36 +86,6 @@ impl<'a> Heightfield<'a> {
             (h00 * (1.0 - f.x) + h10 * f.x) * (1.0 - f.y) + (h01 * (1.0 - f.x) + h11 * f.x) * f.y;
         h * (self.max - self.min) + self.min
     }
-
-    /// Soft-march toward the sun from `origin` — the CPU twin of `bake.wgsl`
-    /// `sun_visibility`, minus its surface normal bias (`origin` is a real 3D point).
-    pub fn sun_visibility(&self, origin: Vec3, sun_direction: Vec3) -> f32 {
-        const STEPS: u32 = 96;
-        const MAX_DIST: f32 = 6000.0;
-        const SOFTNESS: f32 = 10.0;
-        const STEP0: f32 = 3.0;
-        const GROWTH: f32 = 1.12;
-        let mut vis = 1.0f32;
-        let mut step = STEP0;
-        let mut t = STEP0;
-        for _ in 0..STEPS {
-            if t > MAX_DIST {
-                break;
-            }
-            let p = origin + sun_direction * t;
-            if p.y > self.max {
-                break; // above the highest terrain -> can't be occluded
-            }
-            let clearance = p.y - self.height(p.xz());
-            vis = vis.min((SOFTNESS * clearance / t).clamp(0.0, 1.0));
-            if vis <= 0.001 {
-                break;
-            }
-            step *= GROWTH;
-            t += step;
-        }
-        vis
-    }
 }
 
 #[cfg(test)]
@@ -156,34 +126,5 @@ mod tests {
         assert!(field.height(Vec2::new(-5.0, 0.0)).abs() < 1e-2);
         assert!(field.contains(Vec3::new(7.0, 0.0, 0.0)));
         assert!(!field.contains(Vec3::new(9.0, 0.0, 0.0)));
-    }
-
-    #[test]
-    fn flat_terrain_is_fully_lit() {
-        let img = heightmap(|_, _| 0);
-        let field = Heightfield::new(&img, 1.0, 0.0, 100.0).unwrap();
-        let sun = Vec3::new(1.0, 0.3, 0.0).normalize();
-        // A point above flat ground sees the sun unobstructed.
-        assert!((field.sun_visibility(Vec3::new(0.0, 5.0, 0.0), sun) - 1.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn tall_wall_casts_shadow_toward_the_sun() {
-        // Wall along +X; sun is low in the +X sky, so points on the -X side of the
-        // wall are occluded.
-        let img = heightmap(|x, _| if x >= 12 { u16::MAX } else { 0 });
-        let field = Heightfield::new(&img, 1.0, 0.0, 100.0).unwrap();
-        let sun = Vec3::new(1.0, 0.3, 0.0).normalize();
-        let shadowed = field.sun_visibility(Vec3::new(-6.0, 2.0, 0.0), sun);
-        assert!(
-            shadowed < 0.5,
-            "expected shadow behind the wall, got {shadowed}"
-        );
-        // Above the wall's height, nothing occludes the same column.
-        let lit = field.sun_visibility(Vec3::new(-6.0, 150.0, 0.0), sun);
-        assert!(
-            (lit - 1.0).abs() < 1e-3,
-            "expected full sun above the wall, got {lit}"
-        );
     }
 }

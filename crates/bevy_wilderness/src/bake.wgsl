@@ -16,7 +16,8 @@
 @group(#{MATERIAL_BIND_GROUP}) @binding(11) var orm_array: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(12) var orm_sampler: sampler;
 // 0 = albedo target (rgb albedo, a sun-visibility); 1 = normal target (rg
-// octahedral world normal, b roughness, a = packed top-2 material ids + blend).
+// octahedral world normal, b roughness, a = packed top-2 material ids + blend);
+// 2 = ambient gather; 3 = sun shadow-ceiling field (see `shadow_ceiling`).
 @group(#{MATERIAL_BIND_GROUP}) @binding(13) var<uniform> output_mode: u32;
 // Normalized direction toward the fixed sun.
 @group(#{MATERIAL_BIND_GROUP}) @binding(14) var<uniform> sun_direction: vec3<f32>;
@@ -388,6 +389,66 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     return out;
 }
 
+// The sun shadow ceiling: the world height at which the sun ray grazing this
+// column's last occluder passes. A point (x, y, z) is lit exactly when
+// `y >= ceiling(x, z)` — occlusion by a heightfield under a fixed sun is a 2D
+// field with no loss of accuracy, which is what lets a flying character resolve
+// its shadowing with one texture fetch instead of a march.
+//
+// Marching horizontally by `t` along the sun's ground track, an occluder of
+// height `h` there shadows everything below `h - t·tan(elevation)`, so the
+// ceiling is the max of that over the ray. `.y` also returns the `t` at which
+// the max occurred: the distance to the occluder that actually casts here, which
+// is what sets penumbra width (the sun is a disc, not a point).
+//
+// Returns `vec2(ceiling, occluder_distance)`.
+fn shadow_ceiling(world_xz: vec2<f32>) -> vec2<f32> {
+    const STEPS = 128;
+    const MAX_DIST = 6000.0;
+    const GROWTH = 1.12;        // geometric growth -> long reach without huge step count
+    let STEP0 = texel_size * 1.0;
+
+    // The column's own ground is the floor of the ceiling: at t = 0 the terrain
+    // occludes everything below itself. Keeps the result >= `minmax.x`, which the
+    // R-channel bias downstream relies on.
+    let ground = terrain_height(world_xz);
+    var ceiling = ground;
+    var distance = 0.0;
+
+    // A sun directly overhead has no ground track to march: nothing but the
+    // column's own ground can occlude it.
+    let ground_track = sun_direction.xz;
+    let track_len = length(ground_track);
+    if track_len < 1e-4 {
+        return vec2<f32>(ceiling, distance);
+    }
+    let dir = ground_track / track_len;
+    // Height the ray gains per metre travelled horizontally.
+    let rise = sun_direction.y / track_len;
+
+    var step = STEP0;
+    var t = STEP0;
+    for (var i = 0; i < STEPS; i++) {
+        if t > MAX_DIST {
+            break;
+        }
+        // Nothing beyond here can win: even terrain at max height would graze
+        // below the ceiling we already have. Ends the march early under a high
+        // sun, where the ray clears the terrain almost immediately.
+        if minmax.y - t * rise <= ceiling {
+            break;
+        }
+        let candidate = terrain_height(world_xz + dir * t) - t * rise;
+        if candidate > ceiling {
+            ceiling = candidate;
+            distance = t;
+        }
+        step *= GROWTH;
+        t += step;
+    }
+    return vec2<f32>(ceiling, distance);
+}
+
 // Octahedral encode of a unit vector into 0..1 (2 channels).
 fn oct_wrap(v: vec2<f32>) -> vec2<f32> {
     return (1.0 - abs(v.yx)) * select(vec2(-1.0), vec2(1.0), v >= vec2(0.0));
@@ -403,9 +464,16 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let world_xz = in.world_position.xz;
-    // Mode 2 skips the splat entirely — only the heightfield gather.
+    // Modes 2 and 3 skip the splat entirely — only the heightfield.
     if output_mode == 2u {
         return ambient_gather(world_xz);
+    }
+    if output_mode == 3u {
+        let shadow = shadow_ceiling(world_xz);
+        // R is biased by `minmax.x - 1` so it is always >= 1: the bake's
+        // readiness sentinel treats an all-zero readback as "not drawn yet", and
+        // a legitimately zero height would read as a stall forever.
+        return vec4<f32>(shadow.x - (minmax.x - 1.0), shadow.y, 0.0, 1.0);
     }
     let splat = splat_terrain(world_xz, geo_normal(world_xz));
     if output_mode == 0u {
