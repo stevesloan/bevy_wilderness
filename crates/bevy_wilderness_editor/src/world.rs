@@ -89,7 +89,11 @@ fn blend_gaps(detail: &mut [f32], coarse: &[f32]) -> f32 {
             count += 1;
         }
     }
-    let offset = if count > 0 { (total / count as f64) as f32 } else { 0.0 };
+    let offset = if count > 0 {
+        (total / count as f64) as f32
+    } else {
+        0.0
+    };
     for (fine, coarse) in detail.iter_mut().zip(coarse) {
         if !fine.is_finite() {
             *fine = coarse + offset;
@@ -143,8 +147,8 @@ impl Framing {
         let east = (texel_x - self.dims.x as f64 * 0.5) * self.texel_size as f64;
         let south = (texel_y - self.dims.y as f64 * 0.5) * self.texel_size as f64;
         let latitude = self.latitude - south / METERS_PER_DEGREE;
-        let longitude = self.longitude
-            + east / (METERS_PER_DEGREE * self.latitude.to_radians().cos());
+        let longitude =
+            self.longitude + east / (METERS_PER_DEGREE * self.latitude.to_radians().cos());
         (latitude, longitude)
     }
 
@@ -181,7 +185,12 @@ impl Framing {
             }
         }
         let margin = self.texel_size as f64 * 2.0;
-        (min_e - margin, min_n - margin, max_e + margin, max_n + margin)
+        (
+            min_e - margin,
+            min_n - margin,
+            max_e + margin,
+            max_n + margin,
+        )
     }
 }
 
@@ -291,7 +300,8 @@ fn aws_fetch() -> Fetch {
         .user_agent("bevy_wilderness_editor")
         .build();
     Arc::new(move |zoom, x, y| {
-        let url = format!("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{x}/{y}.png");
+        let url =
+            format!("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{zoom}/{x}/{y}.png");
         // One retry: transient S3 hiccups are common enough to be worth it.
         let mut last_error = String::new();
         for _ in 0..2 {
@@ -480,8 +490,8 @@ impl ImportJob {
         let world = (TILE as f64) * (1u64 << self.zoom) as f64;
         let x = (longitude + 180.0) / 360.0 * world;
         let lat_rad = latitude.clamp(-85.051, 85.051).to_radians();
-        let y = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0
-            * world;
+        let y =
+            (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0 * world;
         (x, y)
     }
 
@@ -621,7 +631,10 @@ impl ImportJob {
         let mut heights = vec![0.0f32; (dims.x * dims.y) as usize];
         let rows_per_batch = (dims.y as usize).div_ceil(pool.thread_num().max(1));
         pool.scope(|scope| {
-            for (batch, chunk) in heights.chunks_mut(rows_per_batch * dims.x as usize).enumerate() {
+            for (batch, chunk) in heights
+                .chunks_mut(rows_per_batch * dims.x as usize)
+                .enumerate()
+            {
                 let row0 = batch * rows_per_batch;
                 let stitched = &stitched;
                 scope.spawn(async move {
@@ -846,9 +859,8 @@ mod tests {
     /// reading as an edge.
     #[test]
     fn seamless_import_closes_the_wrap() {
-        let looping = EditableTerrain::new(TerrainField::flat(
-            64, 64, 100.0, 0.0, 10_000.0, true, 0.0,
-        ));
+        let looping =
+            EditableTerrain::new(TerrainField::flat(64, 64, 100.0, 0.0, 10_000.0, true, 0.0));
         // The synthetic ramp rises eastward, so west and east disagree by the
         // map's full span.
         let seam_and_step = |seamless: bool| {

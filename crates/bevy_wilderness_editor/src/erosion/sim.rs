@@ -24,8 +24,8 @@ use bevy::{
     math::UVec2,
     render::{
         render_resource::{
-            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingType,
-            Buffer, BufferBindingType, BufferDescriptor, BufferUsages, CommandEncoderDescriptor,
+            BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingType, Buffer,
+            BufferBindingType, BufferDescriptor, BufferUsages, CommandEncoderDescriptor,
             ComputePassDescriptor, ComputePipeline, MapMode, PipelineCompilationOptions,
             PipelineLayoutDescriptor, PollType, RawComputePipelineDescriptor,
             ShaderModuleDescriptor, ShaderSource, ShaderStages,
@@ -344,8 +344,12 @@ impl GpuErosion {
             done_iters: 0,
             finalized: false,
             map_height: Arc::new(AtomicU8::new(MAP_PENDING)),
-            map_wd: input.keep_maps.then(|| Arc::new(AtomicU8::new(MAP_PENDING))),
-            map_flow: input.keep_maps.then(|| Arc::new(AtomicU8::new(MAP_PENDING))),
+            map_wd: input
+                .keep_maps
+                .then(|| Arc::new(AtomicU8::new(MAP_PENDING))),
+            map_flow: input
+                .keep_maps
+                .then(|| Arc::new(AtomicU8::new(MAP_PENDING))),
             delivered: false,
         }
     }

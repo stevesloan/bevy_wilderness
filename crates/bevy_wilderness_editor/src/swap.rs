@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use bevy::{
-    image::{ktx2_buffer_to_image, CompressedImageFormats},
+    image::{CompressedImageFormats, ktx2_buffer_to_image},
     prelude::*,
 };
 use bevy_wilderness::Clipmap;
@@ -311,14 +311,16 @@ mod tests {
     #[test]
     fn load_field_reports_errors_without_panicking() {
         // Missing file.
-        assert!(load_field(
-            Path::new("/nonexistent/heightmap.ktx2"),
-            64.0,
-            0.0,
-            100.0,
-            false
-        )
-        .is_err());
+        assert!(
+            load_field(
+                Path::new("/nonexistent/heightmap.ktx2"),
+                64.0,
+                0.0,
+                100.0,
+                false
+            )
+            .is_err()
+        );
         // Not a KTX2 / not a PNG: garbage bytes under both extensions.
         for ext in ["ktx2", "png"] {
             let path = std::env::temp_dir().join(format!("wilderness_load_garbage.{ext}"));

@@ -55,7 +55,9 @@ pub(crate) fn make_periodic(heights: &mut [f32], width: usize, height: usize) {
     // Divide by the discrete Laplacian's eigenvalues. Only DC has a zero
     // denominator (it is the decomposition's free additive constant), and the
     // relative landing in `world` re-floors the field anyway.
-    let cos_x: Vec<f32> = (0..width).map(|x| (TAU * x as f32 / width as f32).cos()).collect();
+    let cos_x: Vec<f32> = (0..width)
+        .map(|x| (TAU * x as f32 / width as f32).cos())
+        .collect();
     for y in 0..height {
         let cos_y = (TAU * y as f32 / height as f32).cos();
         for x in 0..width {
@@ -176,7 +178,10 @@ mod tests {
         make_periodic(&mut field, size, size);
         let (after, interior) = seam_and_interior(&field, size);
 
-        assert!(before > 50.0, "ramp should start with a big seam, got {before}");
+        assert!(
+            before > 50.0,
+            "ramp should start with a big seam, got {before}"
+        );
         // The bar that makes a seam invisible is "no worse than an ordinary
         // step inside the map", not zero.
         assert!(

@@ -258,7 +258,9 @@ mod tests {
             point.easting - span as f64 / 2.0,
             point.northing + span as f64 / 2.0,
         );
-        let bytes = synthetic::cog(span, 128, 1, 1.0, origin, 26911, |e, _| (e - origin.0) as f32);
+        let bytes = synthetic::cog(span, 128, 1, 1.0, origin, 26911, |e, _| {
+            (e - origin.0) as f32
+        });
         (origin.0, origin.1, bytes)
     }
 
@@ -285,7 +287,10 @@ mod tests {
         discover(&framing(36.0, -117.0, 64, 4.0), &get).expect("must run");
         let url = seen.lock().unwrap().clone();
         assert!(url.contains("bbox=-117.001"), "{url}");
-        assert!(url.contains("1%20meter"), "must ask for the 1 m dataset: {url}");
+        assert!(
+            url.contains("1%20meter"),
+            "must ask for the 1 m dataset: {url}"
+        );
     }
 
     #[test]
@@ -370,7 +375,10 @@ mod tests {
             import.resolution
         );
         assert!(import.coverage > 0.99, "coverage {}", import.coverage);
-        assert_eq!(import.resolution, 1.0, "a 1 m map must read full resolution");
+        assert_eq!(
+            import.resolution, 1.0,
+            "a 1 m map must read full resolution"
+        );
         assert!(
             (-95.0..-70.0).contains(&low) && (-95.0..-70.0).contains(&high),
             "Death Valley floor should sit near -85 m, got {low}..{high}"

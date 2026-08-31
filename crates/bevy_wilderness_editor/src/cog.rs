@@ -91,8 +91,8 @@ impl Read for RangeReader {
                 continue;
             }
             let length = (want as u64).max(BLOCK).min(self.length - self.position);
-            let (bytes, _) = (self.fetch)(&self.url, self.position, length)
-                .map_err(io::Error::other)?;
+            let (bytes, _) =
+                (self.fetch)(&self.url, self.position, length).map_err(io::Error::other)?;
             if bytes.is_empty() {
                 break;
             }
@@ -398,7 +398,11 @@ pub(crate) fn http_fetch() -> RangeFetch {
                     if whole {
                         bytes.drain(..(offset as usize).min(bytes.len()));
                     }
-                    let total = if total > 0 { total } else { offset + bytes.len() as u64 };
+                    let total = if total > 0 {
+                        total
+                    } else {
+                        offset + bytes.len() as u64
+                    };
                     return Ok((bytes, total));
                 }
                 Err(error) => last_error = format!("{url}: {error}"),
@@ -544,19 +548,25 @@ pub(crate) mod synthetic {
 
     fn append(out: &mut Vec<u8>, values: &[u32]) -> u32 {
         let at = out.len() as u32;
-        values.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+        values
+            .iter()
+            .for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
         at
     }
 
     fn append_f64(out: &mut Vec<u8>, values: &[f64]) -> u32 {
         let at = out.len() as u32;
-        values.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+        values
+            .iter()
+            .for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
         at
     }
 
     fn append_u16(out: &mut Vec<u8>, values: &[u16]) -> u32 {
         let at = out.len() as u32;
-        values.iter().for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
+        values
+            .iter()
+            .for_each(|v| out.extend_from_slice(&v.to_le_bytes()));
         at
     }
 }
@@ -569,9 +579,15 @@ mod tests {
     /// A 1 m raster whose height is its distance east of the origin, so any
     /// sample has a known answer.
     fn ramp_cog(levels: u32) -> Vec<u8> {
-        synthetic::cog(512, 128, levels, 1.0, (500_000.0, 4_000_000.0), 26911, |e, _| {
-            (e - 500_000.0) as f32
-        })
+        synthetic::cog(
+            512,
+            128,
+            levels,
+            1.0,
+            (500_000.0, 4_000_000.0),
+            26911,
+            |e, _| (e - 500_000.0) as f32,
+        )
     }
 
     #[test]
@@ -617,7 +633,10 @@ mod tests {
             .expect("must read");
         let got = window.sample(500_500.0, 3_999_500.0).expect("inside");
         assert!((got - 500.0).abs() < 0.01, "corner sample {got}");
-        assert!(window.sample(500_600.0, 3_999_500.0).is_none(), "past the edge");
+        assert!(
+            window.sample(500_600.0, 3_999_500.0).is_none(),
+            "past the edge"
+        );
     }
 
     #[test]
@@ -654,7 +673,10 @@ CA_FEMAR9Southeast_D24/TIFF/USGS_1M_11_x51y402_CA_FEMAR9Southeast_D24.tif";
         let mut cog = ElevationCog::open(URL, http_fetch()).expect("must open");
         assert_eq!(cog.zone, 11);
         let (min_e, min_n, max_e, max_n) = cog.bounds();
-        println!("bounds E {min_e:.0}..{max_e:.0} N {min_n:.0}..{max_n:.0}, zone {}", cog.zone);
+        println!(
+            "bounds E {min_e:.0}..{max_e:.0} N {min_n:.0}..{max_n:.0}, zone {}",
+            cog.zone
+        );
 
         // The pyramid must offer a 2 m level for a 2 m terrain, and 1 m below.
         assert_eq!(cog.level_for(1.0), 0, "1 m terrain reads full resolution");
@@ -665,10 +687,17 @@ CA_FEMAR9Southeast_D24/TIFF/USGS_1M_11_x51y402_CA_FEMAR9Southeast_D24.tif";
         // independent sources agreeing pins the projection and the decode.
         let point = crate::utm::project(36.2400, -116.8200, Some(11));
         let window = cog
-            .read_window(0, point.easting - 300.0, point.northing - 300.0,
-                         point.easting + 300.0, point.northing + 300.0)
+            .read_window(
+                0,
+                point.easting - 300.0,
+                point.northing - 300.0,
+                point.easting + 300.0,
+                point.northing + 300.0,
+            )
             .expect("must read");
-        let here = window.sample(point.easting, point.northing).expect("must sample");
+        let here = window
+            .sample(point.easting, point.northing)
+            .expect("must sample");
         println!("1 m lidar reads {here:.2} m (terrarium reads -82.1 m)");
         assert!(
             (here - -82.1).abs() < 10.0,

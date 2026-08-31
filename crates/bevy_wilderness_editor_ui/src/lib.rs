@@ -565,7 +565,8 @@ impl TerrainUi<'_, '_> {
                 if ui.button("Import real terrain").clicked() {
                     *self.world_status = None;
                     for (entity, _) in &self.terrains {
-                        self.world_requests.write(WorldImportRequested { terrain: entity });
+                        self.world_requests
+                            .write(WorldImportRequested { terrain: entity });
                     }
                 }
             }
@@ -627,21 +628,15 @@ impl TerrainUi<'_, '_> {
                 .text("capacity"),
         )
         .on_hover_text("Sediment the flow can carry: higher = deeper channels, bigger fans");
-        ui.add(
-            egui::Slider::new(&mut self.erosion.dissolve_rate, 0.05..=2.0).text("erode rate"),
-        );
-        ui.add(
-            egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=2.0).text("deposit rate"),
-        );
+        ui.add(egui::Slider::new(&mut self.erosion.dissolve_rate, 0.05..=2.0).text("erode rate"));
+        ui.add(egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=2.0).text("deposit rate"));
         ui.add(
             egui::Slider::new(&mut self.erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
         );
         // The D12 realism knobs — sane defaults, tucked away.
         egui::CollapsingHeader::new("Realism").show(ui, |ui| {
-            ui.add(
-                egui::Slider::new(&mut self.erosion.evaporation, 0.0..=0.2).text("evaporation"),
-            )
-            .on_hover_text("Water lost per second; bounds how far flows and fans reach");
+            ui.add(egui::Slider::new(&mut self.erosion.evaporation, 0.0..=0.2).text("evaporation"))
+                .on_hover_text("Water lost per second; bounds how far flows and fans reach");
             ui.add(
                 egui::Slider::new(&mut self.erosion.min_tilt_deg, 0.0..=10.0).text("min tilt °"),
             )
@@ -660,10 +655,10 @@ impl TerrainUi<'_, '_> {
                 egui::Slider::new(&mut self.erosion.thermal_rate, 0.0..=20.0).text("thermal rate"),
             )
             .on_hover_text("How fast over-steep slopes shed talus; 0 disables");
-            ui.add(
-                egui::Slider::new(&mut self.erosion.time_step, 0.01..=0.1).text("time step s"),
-            )
-            .on_hover_text("Solver step; larger simulates more per iteration but can destabilize");
+            ui.add(egui::Slider::new(&mut self.erosion.time_step, 0.01..=0.1).text("time step s"))
+                .on_hover_text(
+                    "Solver step; larger simulates more per iteration but can destabilize",
+                );
         });
         match self.runs.iter().next() {
             Some(run) => {

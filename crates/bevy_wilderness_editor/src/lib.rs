@@ -68,13 +68,13 @@ pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
 pub use erosion::{ErosionMaps, ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
+pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use rebake::RebakeSettings;
 pub use seam::SeamOverlay;
 pub use settings::{BrushSettings, ErosionSettings, SculptMode};
 pub use stamp::{ActiveStamp, BakeParams, StampData, StampSettings};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
-pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use tools::{ActiveTool, EditorTools, ToolId, ToolInfo, tool_active};
 pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
 pub use world::{
