@@ -3,8 +3,8 @@ use bevy::{
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     image::ImageLoaderSettings,
     light::{
-        Atmosphere, AtmosphereEnvironmentMapLight, SunDisk, atmosphere::ScatteringMedium,
-        light_consts::lux,
+        atmosphere::ScatteringMedium, light_consts::lux, Atmosphere, AtmosphereEnvironmentMapLight,
+        SunDisk,
     },
     pbr::AtmosphereSettings,
     post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter},
@@ -13,8 +13,9 @@ use bevy::{
 
 use bevy::pbr::ExtendedMaterial;
 use bevy_wilderness::{
-    Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog, HeightFogExtension, HeightFogPlugin,
-    HeightRule, SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
+    load_terrain_array, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog,
+    HeightFogExtension, HeightFogPlugin, HeightRule, SlopeRule, TerrainFog, TerrainLayer,
+    TerrainQuality,
 };
 
 fn main() {
@@ -270,6 +271,20 @@ fn setup(
         albedo_array,
         normal_array,
         orm_array,
+        // Two demo holes ahead of the camera (it looks down -Z from 150 m up): a
+        // circle and a rect turned 30° — see them cut at any LOD ring they span
+        // ≥ HOLE_MIN_CELLS of, and seal when flown far enough away.
+        holes: vec![
+            bevy_wilderness::HoleShape::Circle {
+                center: Vec2::new(0.0, -300.0),
+                radius: 40.0,
+            },
+            bevy_wilderness::HoleShape::Rect {
+                center: Vec2::new(160.0, -420.0),
+                half_extents: Vec2::new(60.0, 15.0),
+                basis: Vec2::new(0.866, 0.5),
+            },
+        ],
         // Fully procedural placement (no control map): grass/dirt/rock partition
         // by slope, snow by height. Snowline ~700 m (height range is ±1312.5).
         layers: vec![

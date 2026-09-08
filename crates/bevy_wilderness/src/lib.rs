@@ -5,6 +5,7 @@ mod clipmap;
 mod dev_controls;
 mod height_fog;
 mod heightfield;
+mod holes;
 mod material;
 mod mesh;
 mod mesh_fog;
@@ -19,6 +20,7 @@ pub use clipmap::{
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};
 pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
+pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
 /// that must stay in sync with the shaders (design doc §5.3).
 #[cfg(feature = "editing")]
@@ -77,6 +79,7 @@ impl Plugin for ClipmapPlugin {
                 Update,
                 (
                     update_grids,
+                    clipmap::sync_holes,
                     init_rvt,
                     drive_rvt_bake,
                     quality::apply_terrain_quality,

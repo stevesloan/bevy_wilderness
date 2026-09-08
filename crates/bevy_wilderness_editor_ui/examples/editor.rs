@@ -562,6 +562,7 @@ fn setup(
         albedo_array,
         normal_array,
         orm_array,
+        holes: Vec::new(),
         layers: vec![
             TerrainLayer {
                 tiling_scale: 150.0,

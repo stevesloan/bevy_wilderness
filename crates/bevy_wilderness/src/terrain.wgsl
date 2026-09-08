@@ -71,7 +71,19 @@ struct DevParams {
     stamp_half_size: vec2<f32>,
     stamp_rotation: f32,
     stamp_strength: f32,
+    holes: HoleBuffer,
+    hole_count: u32,
 }
+// Terrain holes, two vec4 per shape (packed by Rust `HoleBuffer::pack`):
+//   [0] = center.xy, basis.xy      (basis = rect local +X; unused for circles)
+//   [1] = half.xy | radius, kind (0 rect / 1 circle), min_extent
+struct HoleBuffer {
+    shapes: array<vec4<f32>, 48>,
+}
+// A shape only cuts a LOD ring whose cells it spans at least this many times
+// over, so small holes seal at distance rather than removing huge far
+// triangles. Tune in-headset; 3 bounds the visible hole to ~1.7× authored.
+const HOLE_MIN_CELLS: f32 = 3.0;
 @group(#{MATERIAL_BIND_GROUP}) @binding(110) var<uniform> dev: DevParams;
 // Inline height fog params (VR tier). density == 0 skips it. Shading-only:
 // the HeightFog type comes from the gated fog_functions import above.
@@ -208,6 +220,42 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     // When looping there is no "outside" — the tiled heightmap covers every ring.
     let in_coverage = all(height_uv >= vec2(0.0)) && all(height_uv <= vec2(1.0));
     out.world_position.y = select(minmax.x, world_y, in_coverage || looping);
+
+#ifdef WILDERNESS_HOLES
+    // Collapse every triangle touching a vertex inside a hole: a NaN clip
+    // position is culled before rasterization, so no fragment work and no
+    // early-Z loss. Tested on world XZ (wrapped to the canonical tile when
+    // looping) with the ring's cell size read off the instance transform —
+    // both view-independent, so stereo eyes cull identically.
+    {
+        let cell = length(model[0].xyz);
+        var p = out.world_position.xz;
+        if looping {
+            p -= world_size * round(p / world_size);
+        }
+        for (var i = 0u; i < dev.hole_count; i++) {
+            let a = dev.holes.shapes[i * 2u];
+            let b = dev.holes.shapes[i * 2u + 1u];
+            if b.w < HOLE_MIN_CELLS * cell {
+                continue;
+            }
+            let d = p - a.xy;
+            var inside = false;
+            if b.z < 0.5 {
+                let u = d.x * a.z + d.y * a.w;
+                let v = -d.x * a.w + d.y * a.z;
+                inside = abs(u) <= b.x && abs(v) <= b.y;
+            } else {
+                inside = dot(d, d) <= b.x * b.x;
+            }
+            if inside {
+                out.position = vec4<f32>(bitcast<f32>(0x7fc00000u));
+                return out;
+            }
+        }
+    }
+#endif
+
     out.position = position_world_to_clip(out.world_position.xyz);
 
     return out;

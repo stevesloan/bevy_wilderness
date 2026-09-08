@@ -1,24 +1,29 @@
 use bevy::{
-    asset::{AssetPath, embedded_path},
+    asset::{embedded_path, AssetPath},
     pbr::MaterialExtension,
     prelude::*,
     render::render_resource::{AsBindGroup, ShaderType},
     shader::ShaderRef,
 };
 
-use crate::DetailConfig;
 use crate::height_fog::HeightFogParams;
+use crate::holes::HoleBuffer;
+use crate::DetailConfig;
 
+/// Pipeline-specializing state. `holes` keys a separate pipeline so terrain
+/// without holes compiles a vertex shader with no shape loop at all.
 #[repr(C)]
 #[derive(Eq, PartialEq, Hash, Copy, Clone)]
-pub(crate) struct WireframeKey {
+pub(crate) struct GridMaterialKey {
     wireframe: bool,
+    holes: bool,
 }
 
-impl From<&GridMaterial> for WireframeKey {
+impl From<&GridMaterial> for GridMaterialKey {
     fn from(material: &GridMaterial) -> Self {
         Self {
             wireframe: material.flags & 1 != 0,
+            holes: material.dev.hole_count > 0,
         }
     }
 }
@@ -48,6 +53,11 @@ pub(crate) struct DevParams {
     /// Stamp preview height contribution at full-white texels, meters
     /// (signed: negative carves).
     pub(crate) stamp_strength: f32,
+    /// Terrain holes, packed — see `holes.rs`. Read by the vertex shader only
+    /// when `hole_count > 0` (which also selects the pipeline that loops).
+    #[reflect(ignore)]
+    pub(crate) holes: HoleBuffer,
+    pub(crate) hole_count: u32,
 }
 
 impl Default for DevParams {
@@ -60,6 +70,8 @@ impl Default for DevParams {
             stamp_half_size: Vec2::ZERO,
             stamp_rotation: 0.0,
             stamp_strength: 0.0,
+            holes: HoleBuffer::default(),
+            hole_count: 0,
         }
     }
 }
@@ -96,7 +108,7 @@ impl DetailParams {
 /// rather than adding one (the RVT and detail textures each share a single sampler
 /// below). Quality knobs ride in `flags` for exactly this reason.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-#[bind_group_data(WireframeKey)]
+#[bind_group_data(GridMaterialKey)]
 pub(crate) struct GridMaterial {
     #[texture(102)]
     #[sampler(103)]
@@ -221,6 +233,14 @@ impl MaterialExtension for GridMaterial {
         if key.bind_group_data.wireframe {
             descriptor.primitive.polygon_mode = bevy::render::render_resource::PolygonMode::Line;
             descriptor.depth_stencil.as_mut().unwrap().bias.slope_scale = 1.0;
+        }
+        // Vertex-stage only: the cut collapses triangles before rasterization,
+        // so every pipeline (shadow/prepass included) gets it from `fn vertex`.
+        if key.bind_group_data.holes {
+            descriptor
+                .vertex
+                .shader_defs
+                .push("WILDERNESS_HOLES".into());
         }
         // terrain.wgsl's fragment machinery only compiles in pipelines that
         // shade: the forward pass and the deferred g-buffer pass. Depth-only

@@ -8,6 +8,7 @@ use bevy::{
     render::render_resource::TextureFormat,
 };
 
+use crate::holes::{HoleBuffer, HoleShape};
 use crate::material::{DetailParams, DevParams, GridMaterial};
 use crate::mesh::{ClipmapPart, ClipmapParts, build_clipmap_parts};
 use crate::quality::{TerrainFog, TerrainQuality, inline_fog_params};
@@ -141,6 +142,11 @@ pub struct Clipmap {
 
     /// Tile the heightmap toroidally so the terrain repeats
     pub looping: bool,
+
+    /// Holes cut out of the terrain (world XZ), at most
+    /// [`MAX_HOLES`](crate::MAX_HOLES). Visual only — a host cuts the same
+    /// shapes from its collider. Mutate any time; the materials follow.
+    pub holes: Vec<HoleShape>,
 
     /// Editor visualization overlay (`editing` feature): a single-channel 0..1
     /// texture covering the terrain like the heightmap does, tinted into the
@@ -337,7 +343,14 @@ pub(crate) fn init_clipmaps(
                     rvt_albedo: rvt_albedo.clone(),
                     rvt_normal: rvt_normal.clone(),
                     rvt_ao: rvt_ao.clone(),
-                    dev: DevParams::default(),
+                    dev: {
+                        let (holes, hole_count) = HoleBuffer::pack(&clipmap.holes);
+                        DevParams {
+                            holes,
+                            hole_count,
+                            ..DevParams::default()
+                        }
+                    },
                     fog: initial_fog.clone(),
                     detail_albedo_array: clipmap.detail.albedo_array.clone(),
                     detail_normal_array: clipmap.detail.normal_array.clone(),
@@ -653,6 +666,32 @@ pub(crate) fn sync_stamp_preview(
                 if let Some(texture) = texture {
                     material.extension.stamp = texture;
                 }
+            }
+        }
+    }
+}
+
+/// Push a changed [`Clipmap::holes`] into both materials. `init_grids` packs the
+/// initial list, so this only runs on change; crossing zero re-specializes the
+/// pipeline via `GridMaterialKey`.
+pub(crate) fn sync_holes(
+    clipmaps: Query<(&Clipmap, &ClipmapMaterials), Changed<Clipmap>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (clipmap, mats) in &clipmaps {
+        let (holes, hole_count) = HoleBuffer::pack(&clipmap.holes);
+        for handle in [&mats.solid, &mats.wireframe] {
+            let Some(material) = materials.get(handle) else {
+                continue;
+            };
+            if material.extension.dev.holes == holes
+                && material.extension.dev.hole_count == hole_count
+            {
+                continue;
+            }
+            if let Some(mut material) = materials.get_mut(handle) {
+                material.extension.dev.holes = holes;
+                material.extension.dev.hole_count = hole_count;
             }
         }
     }
