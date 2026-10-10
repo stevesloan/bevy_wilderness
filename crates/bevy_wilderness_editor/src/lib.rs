@@ -5,7 +5,7 @@
 //! editor through this API — with its own UI, the default egui UI crate, or
 //! none.
 //!
-//! Extension points for host tools (design doc §6):
+//! Extension points for host tools (docs/editor.md):
 //! - [`EditorTools`] / [`ActiveTool`] / [`tool_active`] — the tool registry.
 //! - [`TerrainCursor`] — the shared cursor→terrain pick every tool uses.
 //! - [`PointerBlocked`] — a UI sets it while it owns the pointer; the pick
@@ -13,13 +13,13 @@
 //! - [`TerrainHeight`] — height at (x, z), for snapping props to the surface.
 //! - [`TerrainRegionChanged`] — emitted when terrain changes; re-snap props.
 //! - [`BrushSettings`] — the state a UI reads/writes.
-//! - [`SeamOverlay`] — toggle the looping tile-boundary visualization (D6).
+//! - [`SeamOverlay`] — toggle the looping tile-boundary visualization.
 //! - [`ActiveStamp`] / [`StampSettings`] — the stamp tool's heightfield PNG
-//!   and transform (D11); the GPU preview floats it under the cursor, a
+//!   and transform; the GPU preview floats it under the cursor, a
 //!   click commits it.
 //! - [`ExportRequested`] / [`HeightmapExported`] — write the heightmap to an
 //!   R16 KTX2 (round-trips through the asset loader) and/or a 16-bit PNG
-//!   interchange copy, by extension (D7).
+//!   interchange copy, by extension.
 //! - [`NewTerrainRequested`] / [`LoadRequested`] / [`TerrainLoaded`] — reset a
 //!   terrain to a fresh flat plain (the default starting state) or load a
 //!   heightmap file into it at runtime.
@@ -28,10 +28,10 @@
 //!   ([`WorldImportSettings`]). [`WorldImportSource`] picks between the
 //!   worldwide terrain tiles (~10 m) and USGS 3DEP 1 m lidar, which resolves
 //!   an FPS-scale terrain properly but only covers the United States.
-//! - [`RebakeSettings`] — auto re-bake on/off (D10); with it off, bake
+//! - [`RebakeSettings`] — auto re-bake on/off; with it off, bake
 //!   manually by inserting [`RebakeRequested`] on the terrain
 //!   ([`ClipmapReady`]'s absence = a bake is in flight).
-//! - [`UndoHistory`] — the shared undo/redo stack (D8): terrain gestures and
+//! - [`UndoHistory`] — the shared undo/redo stack: terrain gestures and
 //!   host actions ([`UndoAction`], e.g. prop placement) interleave in one
 //!   stream. A UI binds Ctrl+Z to [`UndoRequest`] / [`RedoRequest`] and shows
 //!   [`UndoApplied`] labels.
@@ -73,7 +73,7 @@ pub use undo::{RedoRequest, UndoAction, UndoApplied, UndoHistory, UndoRequest};
 pub use world::{
     WorldImportRequested, WorldImportRun, WorldImportSettings, WorldImportSource, WorldImported,
 };
-// The manual-bake trigger, bake-completion marker (design doc §5/D10), and the
+// The manual-bake trigger, bake-completion marker (docs/editor.md), and the
 // quality profile a UI's quality section edits, re-exported so a UI crate can
 // drive bakes without depending on the renderer.
 pub use bevy_wilderness::{ClipmapReady, FogTier, RebakeRequested, TerrainQuality};

@@ -16,7 +16,7 @@ use crate::rvt::ClipmapRvt;
 use crate::texture::looping_rvt_sampler;
 
 /// Maximum number of terrain material layers, blended per pixel by their
-/// procedural slope/height weights (§3.2). Bounded by the `Vec4` lanes in
+/// procedural slope/height weights. Bounded by the `Vec4` lanes in
 /// `TerrainParams`; widen those to raise it.
 pub const MAX_TERRAIN_LAYERS: usize = 4;
 
@@ -155,7 +155,7 @@ pub struct Clipmap {
     #[cfg(feature = "editing")]
     pub edit_overlay: Option<Handle<Image>>,
 
-    /// Clay display mode (`editing` feature, D10): render neutral grey with
+    /// Clay display mode (`editing` feature): render neutral grey with
     /// screen-derivative normals instead of the baked RVT — the "shading is
     /// stale" look for modeling sessions. An editor sets this while unbaked
     /// edits exist; independent of it, terrain renders clay until its *first*
@@ -165,7 +165,7 @@ pub struct Clipmap {
     #[cfg(feature = "editing")]
     pub clay: bool,
 
-    /// Stamp floating preview (`editing` feature, D11): while `Some`, the
+    /// Stamp floating preview (`editing` feature): while `Some`, the
     /// vertex shader composites this stamp heightfield into the terrain —
     /// live, GPU-side, at any stamp size — without touching the heightmap.
     /// An editor updates it as the cursor moves and sets it back to `None`
@@ -595,7 +595,7 @@ pub(crate) fn sync_editable_materials(
     }
 }
 
-/// Keeps the clay-mode flag bit (D10) in the materials matching its two
+/// Keeps the clay-mode flag bit in the materials matching its two
 /// sources: `Clipmap::clay` (editor-driven staleness) and a bake never having
 /// *completed* (`ClipmapRvt::ever_baked` — replacing the chrome-mirror spawn
 /// look). Deliberately not `ClipmapReady`: that's also absent during every
@@ -625,7 +625,7 @@ pub(crate) fn sync_clay_flag(
     }
 }
 
-/// Mirrors [`Clipmap::stamp`] into the materials (D11): the stamp texture
+/// Mirrors [`Clipmap::stamp`] into the materials: the stamp texture
 /// binding, its transform in the `DevParams` uniform, and flags bit5/bit6.
 /// Runs unfiltered — the preview moves every frame while floating — with the
 /// check-before-`get_mut` keeping the no-stamp steady state free.
@@ -709,7 +709,7 @@ pub(crate) struct ClayShadowState {
     prev: Vec<(Entity, bool, bevy::light::CascadeShadowConfig)>,
 }
 
-/// Dynamic shadows while clay, baked shadows otherwise (D10). Clay renders
+/// Dynamic shadows while clay, baked shadows otherwise. Clay renders
 /// with sun-visibility 1.0 — the baked self-shadow is stale or absent — so
 /// while any terrain is clay this enables the directional lights' CSM and
 /// lets the *solid* terrain parts cast (their material's prepass vertex

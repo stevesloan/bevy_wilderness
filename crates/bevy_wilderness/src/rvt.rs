@@ -102,7 +102,7 @@ pub(crate) struct ClipmapRvt {
     pub(crate) initialized: bool,
     /// Whether any bake has ever *completed* for this clipmap. Never reset —
     /// unlike `initialized`, which re-arms per re-bake — so it distinguishes
-    /// "never shaded" (the D10 clay fallback) from "re-baking with the
+    /// "never shaded" (the clay fallback) from "re-baking with the
     /// previous bake still on screen".
     pub(crate) ever_baked: bool,
     /// Bake targets not yet finished. Set when the bake cameras spawn; each

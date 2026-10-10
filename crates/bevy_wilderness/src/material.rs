@@ -33,7 +33,7 @@ impl From<&GridMaterial> for GridMaterialKey {
 /// binding *slots*, so growing this struct is the sanctioned way to pass new
 /// scalars). `ao_strength`/`bent_strength` toggle the two halves of the
 /// ambient bake (B / N keys); `debug_view` cycles the channel isolation
-/// (V key). The `stamp_*` fields are the D11 stamp preview's transform, read
+/// (V key). The `stamp_*` fields are the stamp preview's transform, read
 /// by the vertex shader while flags bit5 is set; zeroed and ignored
 /// otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
@@ -150,7 +150,7 @@ pub(crate) struct GridMaterial {
     #[cfg(feature = "editing")]
     #[texture(115)]
     pub(crate) edit_overlay: Handle<Image>,
-    /// Stamp preview heightfield (`editing`, D11): a grayscale texture the
+    /// Stamp preview heightfield (`editing`): a grayscale texture the
     /// vertex shader composites under the cursor while flags bit5 is set —
     /// the GPU floating preview. Same ceiling story as `edit_overlay`: a
     /// texture binding sharing the heightmap sampler, compiled out of
@@ -163,7 +163,7 @@ pub(crate) struct GridMaterial {
     #[uniform(109)]
     pub(crate) minmax: Vec2,
     /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail,
-    /// bit3 looping, bit4 clay display mode (D10, `editing`). Quality knobs ride
+    /// bit3 looping, bit4 clay display mode (`editing`). Quality knobs ride
     /// here rather than adding uniforms (this material is at the bind-group binding
     /// limit — extra uniforms silently break its pipeline).
     #[uniform(111)]
@@ -171,16 +171,16 @@ pub(crate) struct GridMaterial {
 }
 
 impl GridMaterial {
-    /// `flags` bit4: clay display mode (D10) — grey + screen-derivative
+    /// `flags` bit4: clay display mode — grey + screen-derivative
     /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
     #[cfg(feature = "editing")]
     pub(crate) const FLAG_CLAY: u32 = 1 << 4;
-    /// `flags` bit5: stamp preview active (D11) — the vertex shader
+    /// `flags` bit5: stamp preview active — the vertex shader
     /// composites the stamp texture through the `DevParams::stamp_*`
     /// transform. Kept in sync by `sync_stamp_preview`.
     #[cfg(feature = "editing")]
     pub(crate) const FLAG_STAMP: u32 = 1 << 5;
-    /// `flags` bit6: the stamp preview is mask-confined (D11) — its
+    /// `flags` bit6: the stamp preview is mask-confined — its
     /// contribution is weighted by the edit-overlay (mask) texture, matching
     /// what the commit will do.
     #[cfg(feature = "editing")]
@@ -202,7 +202,7 @@ impl MaterialExtension for GridMaterial {
 
     /// The shadow pass renders casters with the *prepass* vertex shader;
     /// without this override it would use the default mesh vertex and cast the
-    /// flat, undisplaced grid. Needed for clay mode's dynamic shadows (D10) —
+    /// flat, undisplaced grid. Needed for clay mode's dynamic shadows —
     /// the terrain only ever casts while clay (`sync_clay_shadows`), but the
     /// pipeline must displace whenever it does. Same shader file: `fn vertex`
     /// already compiles under `PREPASS_PIPELINE` (the deferred path uses it).
@@ -245,7 +245,7 @@ impl MaterialExtension for GridMaterial {
         // terrain.wesl's fragment machinery only compiles in pipelines that
         // shade: the forward pass and the deferred g-buffer pass. Depth-only
         // pipelines — the shadow pass casting the terrain's displaced
-        // silhouette (clay mode, D10) and depth/normal prepasses — compile
+        // silhouette (clay mode) and depth/normal prepasses — compile
         // `fn vertex` alone; `pbr_fragment` doesn't build against their
         // trimmed VertexOutput and their layouts lack the light bindings.
         let has_def = |defs: &[bevy::shader::ShaderDefVal], name: &str| {

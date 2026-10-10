@@ -1,4 +1,4 @@
-//! Terrain tile snapshots (D8): the built-in tools' [`UndoAction`], built up
+//! Terrain tile snapshots: the built-in tools' [`UndoAction`], built up
 //! over a gesture.
 //!
 //! One input gesture (a stroke's press→release, one stamp commit) becomes one
@@ -29,7 +29,7 @@ pub const UNDO_TILE_SIZE: u32 = 64;
 pub enum UndoBuffer {
     /// The f32 height field.
     Height,
-    /// The 0..1 paint mask (D4).
+    /// The 0..1 paint mask.
     Mask,
 }
 

@@ -1,4 +1,4 @@
-//! The built-in mask paint tool (D4): paint a 0..1 weight mask with the shared
+//! The built-in mask paint tool: paint a 0..1 weight mask with the shared
 //! brush while LMB is held (Shift+LMB erases). The brush's smoothstep falloff
 //! feathers the edge by construction — no hard rectangular seam — and masked
 //! ops (sculpt, stamp) weight their deltas by it so edited
@@ -82,7 +82,7 @@ pub(crate) fn paint_mask_at(
     let min = (center - radius_texels).floor().as_ivec2();
     let max = (center + radius_texels).ceil().as_ivec2() + IVec2::ONE;
 
-    // Snapshot first-touch undo tiles *before* mutating (D8).
+    // Snapshot first-touch undo tiles *before* mutating.
     for rect in terrain.field.wrap_rect(min, max) {
         gesture.capture(terrain, UndoBuffer::Mask, rect);
     }
@@ -97,7 +97,7 @@ pub(crate) fn paint_mask_at(
             let Some((tx, ty)) = terrain.field.wrap_texel(x as i64, y as i64) else {
                 continue;
             };
-            // Smoothstep falloff = the feathered edge (D4).
+            // Smoothstep falloff = the feathered edge.
             let t = 1.0 - d;
             let falloff = t * t * (3.0 - 2.0 * t);
             let value = terrain.mask_weight(x as i64, y as i64);

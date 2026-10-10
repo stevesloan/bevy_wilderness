@@ -1,4 +1,4 @@
-//! The tool registry (design doc §6): one active tool at a time, built-ins and
+//! The tool registry (docs/editor.md): one active tool at a time, built-ins and
 //! host-registered tools alike. UI-agnostic — a UI lists [`EditorTools`] and
 //! writes [`ActiveTool`]; tool behavior lives in systems gated by
 //! [`tool_active`].
@@ -11,11 +11,11 @@ use bevy::prelude::*;
 pub struct ToolId(pub &'static str);
 
 impl ToolId {
-    /// Built-in sculpt tool (raise / lower / smooth / flatten) — Phase 2.
+    /// Built-in sculpt tool (raise / lower / smooth / flatten).
     pub const SCULPT: ToolId = ToolId("wilderness.sculpt");
-    /// Built-in mask paint tool — Phase 4.
+    /// Built-in mask paint tool.
     pub const MASK: ToolId = ToolId("wilderness.mask");
-    /// Built-in stamp tool (heightfield PNG stamps) — Phase 11.
+    /// Built-in stamp tool (heightfield PNG stamps).
     pub const STAMP: ToolId = ToolId("wilderness.stamp");
 }
 
@@ -61,7 +61,7 @@ impl EditorTools {
     }
 }
 
-/// The single active tool (design doc §6: shared camera, selection, and input
+/// The single active tool (docs/editor.md: shared camera, selection, and input
 /// focus — one tool owns the cursor at a time). `None` = no tool active. A UI
 /// writes this; tool systems gate on [`tool_active`].
 #[derive(Resource, Default, PartialEq, Eq, Debug)]

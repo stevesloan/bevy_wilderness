@@ -18,7 +18,7 @@ bevy = "0.20.0"
 dev-controls = []
 # Opt-in editable-terrain API for the terrain editor: the RebakeRequested
 # re-bake trigger and the public Heightfield. Default consumers gain no runtime
-# cost (docs/terrain-editor-design.md §5).
+# cost (docs/architecture.md).
 editing = []
 
 [dev-dependencies]

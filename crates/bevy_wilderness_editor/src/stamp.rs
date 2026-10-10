@@ -1,4 +1,4 @@
-//! The built-in stamp tool (D11): a grayscale heightfield PNG floats under
+//! The built-in stamp tool: a grayscale heightfield PNG floats under
 //! the cursor as a live **GPU preview** — the renderer's vertex shader
 //! composites it, so a half-map stamp moves at full framerate with zero
 //! per-frame CPU — and a click **commits** it into the f32 field with the
@@ -382,7 +382,7 @@ pub(crate) fn apply_stamp(
     }
     let (encode_min, encode_max) = terrain.field.min_max();
 
-    // Snapshot first-touch undo tiles *before* mutating (D8).
+    // Snapshot first-touch undo tiles *before* mutating.
     for rect in terrain.field.wrap_rect(min, max) {
         gesture.capture(terrain, UndoBuffer::Height, rect);
     }

@@ -1,4 +1,4 @@
-//! The f32 authoritative height field (design doc P1).
+//! The f32 authoritative height field (docs/editor.md).
 //!
 //! Sculpt and stamp mutate this field; the `R16Unorm` display heightmap the
 //! renderer samples is *derived* from it by quantizing dirty regions. Never
@@ -257,7 +257,7 @@ impl TerrainField {
 
     /// Resolve possibly-out-of-range texel coordinates to storage indices:
     /// wraps when `looping` (a brush footprint crossing the seam lands on the
-    /// far side, D2), else `None` for out-of-bounds — the write is dropped, not
+    /// far side), else `None` for out-of-bounds — the write is dropped, not
     /// clamped (clamping would pile a brush's whole overhang onto the edge row).
     pub fn wrap_texel(&self, x: i64, y: i64) -> Option<(u32, u32)> {
         if self.looping {

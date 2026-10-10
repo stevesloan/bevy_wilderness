@@ -28,7 +28,7 @@ use crate::field::TerrainField;
 #[derive(Component, Default)]
 pub struct Editable;
 
-/// The editable state of one terrain: the authoritative f32 field (design doc
+/// The editable state of one terrain: the authoritative f32 field (docs/editor.md
 /// P1) plus the dirty texel region not yet quantized into the display
 /// heightmap. Tools mutate `field` and [`mark_dirty`](Self::mark_dirty); the
 /// editor flushes the region into the clipmap's image at the end of the frame
@@ -36,7 +36,7 @@ pub struct Editable;
 #[derive(Component)]
 pub struct EditableTerrain {
     pub field: TerrainField,
-    /// The paint mask (D4): per-texel 0..1 weight, same dimensions as the
+    /// The paint mask: per-texel 0..1 weight, same dimensions as the
     /// field. Feathered by the brush falloff; sculpt and stamp weight their
     /// deltas by it when it's non-empty.
     mask: Vec<f32>,
@@ -180,7 +180,7 @@ impl EditableTerrain {
 
 /// Emitted after edits are flushed into the display heightmap: the terrain
 /// under `region` changed.
-/// Host tools subscribe to re-snap placed props (design doc §6) — e.g. reset a
+/// Host tools subscribe to re-snap placed props (docs/editor.md) — e.g. reset a
 /// prop's Y to [`TerrainHeight::sample`] when its XZ falls inside `region`.
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct TerrainRegionChanged {
@@ -193,7 +193,7 @@ pub struct TerrainRegionChanged {
 /// Once an [`Editable`] clipmap's heightmap image loads (and is a CPU-resident
 /// `R16Unorm`), decode it into the authoritative f32 field. Fully dirty, so the
 /// first sync re-derives the display map from the field — the terrain renders
-/// from f32-derived data from frame one (Phase 1 acceptance).
+/// from f32-derived data from frame one.
 #[allow(clippy::type_complexity)]
 pub(crate) fn init_editable_terrains(
     mut commands: Commands,
@@ -289,11 +289,11 @@ pub(crate) fn sync_dirty_regions(
                 region: terrain.field.texel_rect_to_world(rect),
             });
         }
-        // (Re-)arm the re-bake debounce (D5): inserting replaces the existing
+        // (Re-)arm the re-bake debounce: inserting replaces the existing
         // timer, so the bake fires ~200 ms after the *last* flush of a stroke.
         // The initial full-field sync is skipped — it derives identical data
         // and the initial bake is already on its way. With auto re-bake off
-        // (D10) edits never schedule a bake; instead the terrain goes clay
+        // edits never schedule a bake; instead the terrain goes clay
         // ("shading is stale") until the host bakes manually. Auto mode stays
         // out of clay — the ~400 ms of staleness per stroke would strobe.
         if !terrain.synced_once {
@@ -334,7 +334,7 @@ pub(crate) fn sync_dirty_masks(
 }
 
 /// Terrain height at a world XZ — the query host tools use to snap props to
-/// the surface (design doc §6). Reads the authoritative f32 field, so it's
+/// the surface (docs/editor.md). Reads the authoritative f32 field, so it's
 /// current mid-stroke, before the display map has re-quantized.
 #[derive(SystemParam)]
 pub struct TerrainHeight<'w, 's> {

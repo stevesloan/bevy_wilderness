@@ -1,4 +1,4 @@
-//! Heightmap export (D7): write the authoritative field to disk, format
+//! Heightmap export: write the authoritative field to disk, format
 //! chosen by the requested path's extension:
 //!
 //! - **`.ktx2` (default)** — R16 KTX2 with an explicit `VK_FORMAT_R16_UNORM`,
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn ktx2_round_trips_through_the_engine_loader() {
         // Field → KTX2 bytes → bevy's actual KTX2 decoder → field: the same
-        // path a restart takes, so this is the D7 acceptance in miniature.
+        // path a restart takes, so this is the export round trip in miniature.
         let field = ramp_field();
         let bytes = write_ktx2(field.dimensions(), &field.to_r16());
         let image = ktx2_buffer_to_image(&bytes, CompressedImageFormats::NONE, false)

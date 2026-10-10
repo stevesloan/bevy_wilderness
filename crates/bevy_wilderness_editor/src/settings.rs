@@ -1,9 +1,9 @@
-//! Brush state resources (design doc §6): the data a UI reads and writes.
-//! The sculpt (Phase 2) and mask (Phase 4) tools consume [`BrushSettings`].
+//! Brush state resources (docs/editor.md): the data a UI reads and writes.
+//! The sculpt and mask tools consume [`BrushSettings`].
 
 use bevy::prelude::*;
 
-/// What a sculpt stroke does to the height field (D2).
+/// What a sculpt stroke does to the height field.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SculptMode {
     /// Push terrain up under the brush.
@@ -18,7 +18,7 @@ pub enum SculptMode {
 }
 
 /// The shared brush: mode, size, and strength, with radial falloff. Sculpt
-/// (Phase 2) and mask paint (Phase 4) both consume this; a UI reads/writes it.
+/// and mask paint both consume this; a UI reads/writes it.
 #[derive(Resource, Clone, Debug)]
 pub struct BrushSettings {
     pub mode: SculptMode,

@@ -1,4 +1,4 @@
-//! The tile-boundary overlay (D6). On looping terrain there is nothing to
+//! The tile-boundary overlay. On looping terrain there is nothing to
 //! stitch — every edit wraps, so the seam is invisible *by design* (position 0
 //! and position *width* are the same terrain). Which is exactly why an author
 //! needs a visibility aid: this draws a gizmo ring around the tile the camera
@@ -18,7 +18,7 @@ const LINE_LIFT: f32 = 1.5;
 /// without pushing thousands of gizmo segments per frame.
 const SAMPLE_STEP_TEXELS: u32 = 4;
 
-/// Toggleable tile-boundary visualization (D6) for looping terrains. A UI (or
+/// Toggleable tile-boundary visualization for looping terrains. A UI (or
 /// a keybind in the example) flips `enabled`; finite terrains draw nothing.
 #[derive(Resource, Clone, Copy)]
 pub struct SeamOverlay {

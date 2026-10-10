@@ -22,7 +22,7 @@ pub use clipmap::{ClipmapStamp, RebakeRequested};
 pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
 pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
-/// that must stay in sync with the shaders (design doc §5.3).
+/// that must stay in sync with the shaders (docs/architecture.md).
 #[cfg(feature = "editing")]
 pub use heightfield::Heightfield;
 pub use mesh_fog::HeightFogExtension;
@@ -89,7 +89,7 @@ impl Plugin for ClipmapPlugin {
                 ),
             );
 
-        // Editable-terrain API (design doc §5): consume RebakeRequested before
+        // Editable-terrain API (docs/architecture.md): consume RebakeRequested before
         // init_rvt so a re-armed bake re-spawns its cameras the same frame.
         #[cfg(feature = "editing")]
         app.init_resource::<clipmap::ClayShadowState>().add_systems(

@@ -1,4 +1,4 @@
-//! The built-in sculpt tool (D2): raise / lower / smooth / flatten the f32
+//! The built-in sculpt tool: raise / lower / smooth / flatten the f32
 //! field under the brush, with radial falloff, while the left mouse button is
 //! held. Edits mark dirty regions; the sync in `EditorSet::Apply` re-quantizes
 //! them into the display heightmap the same frame, so geometry deforms live.
@@ -165,12 +165,12 @@ pub(crate) fn sculpt_at(
     let max = (center + radius_texels).ceil().as_ivec2() + IVec2::ONE;
     let (encode_min, encode_max) = terrain.field.min_max();
 
-    // Snapshot first-touch undo tiles *before* mutating (D8).
+    // Snapshot first-touch undo tiles *before* mutating.
     for rect in terrain.field.wrap_rect(min, max) {
         gesture.capture(terrain, UndoBuffer::Height, rect);
     }
 
-    // A painted mask confines the op (D4): deltas weight by the feathered mask
+    // A painted mask confines the op: deltas weight by the feathered mask
     // value, so edits blend softly into unmasked ground. No mask = no
     // confinement.
     let masked = terrain.mask_active();
@@ -525,7 +525,7 @@ mod tests {
         // A looping terrain renders repeats everywhere; the cursor's texel
         // coordinates there are a whole tile offset from the base. Sculpting
         // on a repeat must land on exactly the texels the base-tile stroke
-        // would (D6: edits are continuous across the seam wherever you stand).
+        // would (edits are continuous across the seam wherever you stand).
         let stroke = |center: Vec2| {
             let field = TerrainField::flat(32, 32, 1.0, -100.0, 100.0, true, 0.0);
             let mut terrain = EditableTerrain::new(field);

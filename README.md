@@ -26,8 +26,13 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 - **Height fog** with High/Low quality tiers (flatscreen + standalone VR).
 - **Toroidal looping** — optionally tile the heightmap for seamless infinite terrain.
 - **Editable-terrain API** (`editing` feature) — a `RebakeRequested` re-bake
-  trigger and the CPU `Heightfield` query, the hooks the terrain editor builds on
-  (see [docs/terrain-editor-design.md](docs/terrain-editor-design.md)).
+  trigger and the CPU `Heightfield` query, the hooks the terrain editor builds on.
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — how the renderer works.
+- [docs/editor.md](docs/editor.md) — how the terrain editor works.
+- [docs/roadmap.md](docs/roadmap.md) — where it's going, and why.
 
 ## Usage
 
@@ -54,8 +59,8 @@ The workspace includes an embeddable terrain editor:
 [`bevy_wilderness_editor`](crates/bevy_wilderness_editor) (the UI-agnostic
 core a game embeds with its own UI) and
 [`bevy_wilderness_editor_ui`](crates/bevy_wilderness_editor_ui) (an optional
-egui side panel driving that same public API). Design and decisions live in
-[docs/terrain-editor-design.md](docs/terrain-editor-design.md).
+egui side panel driving that same public API). See
+[docs/editor.md](docs/editor.md).
 
 Launch the editor app (uses the same textures as `basic` — fetch them once,
 see above):
@@ -104,7 +109,7 @@ See [`examples/basic.rs`](crates/bevy_wilderness/examples/basic.rs).
 
 | `bevy_wilderness` | `bevy`   |
 | :--               | :--      |
-| `0.1`             | `0.19.0` |
+| `0.1`             | `0.20.0` |
 
 ## Contributing
 

@@ -1,4 +1,4 @@
-//! Undo/history (D8): a generic, byte-capped action stack.
+//! Undo/history: a generic, byte-capped action stack.
 //!
 //! The stack knows nothing about terrain. Each entry is a label plus a boxed
 //! [`UndoAction`]; the built-in terrain tools push tile-snapshot actions
@@ -54,7 +54,7 @@ pub struct UndoApplied {
     pub redone: bool,
 }
 
-/// The edit history (D8): sealed entries in a byte-capped ring.
+/// The edit history: sealed entries in a byte-capped ring.
 /// `entries[..cursor]` are undoable, the rest redoable.
 #[derive(Resource)]
 pub struct UndoHistory {

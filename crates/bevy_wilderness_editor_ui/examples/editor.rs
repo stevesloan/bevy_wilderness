@@ -1,4 +1,4 @@
-//! The editor host app (design doc §7): adds the renderer + editor + default
+//! The editor host app (docs/editor.md): adds the renderer + editor + default
 //! UI plugins, marks the terrain [`Editable`], and registers a third-party
 //! prop-placement tool to prove the extension API — the same embedding path a
 //! game uses (its glTF-placement tool is this tool with a manifest).
@@ -20,7 +20,7 @@
 //! - **B** — toggle the tile-boundary ring (the terrain loops; edits wrap
 //!   across it)
 //!
-//! The stamp tool (T, D11) floats a heightfield PNG under the cursor as a
+//! The stamp tool (T) floats a heightfield PNG under the cursor as a
 //! live GPU preview; **click commits it**. While it's active the wheel
 //! belongs to the stamp — **wheel** = strength (negative carves),
 //! **Ctrl+wheel** = size, **Shift+wheel** = rotate — and the fly camera's
@@ -35,7 +35,7 @@
 //! whenever the ground under them changes — sculpt under one and watch it
 //! follow.
 //!
-//! The editor opens on a **new terrain** by default: a flat plain at the D1
+//! The editor opens on a **new terrain** by default: a flat plain at the default
 //! 4096² working resolution over an 8192 m world footprint. Sculpt it, stamp
 //! it, export it — the exports are the new terrain's master files. The panel's
 //! **New** button starts over (at a chosen resolution) and **Load terrain…**
@@ -85,7 +85,7 @@ use bevy_wilderness_editor::{
 };
 use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath, UiStampFolder};
 
-/// The demo third-party tool (design doc §6): places props that snap to the
+/// The demo third-party tool (docs/editor.md): places props that snap to the
 /// terrain and re-snap when it changes — proving a host-registered tool gets
 /// the shared pick, the height query, and the edit events without the editor
 /// knowing anything about it. The game's glTF-placement tool is this shape.
@@ -211,7 +211,7 @@ fn place_prop_tool(
     info!("placed prop at {:?}", hit.position);
 }
 
-/// The extension-API hook (design doc §6): when terrain changes under a placed
+/// The extension-API hook (docs/editor.md): when terrain changes under a placed
 /// prop — sculpt, stamp, undo, anything — re-snap it to the new surface via
 /// the core's height query.
 fn resnap_props(
@@ -231,8 +231,8 @@ fn resnap_props(
     }
 }
 
-/// A UI stand-in: keybinds writing the editor's state resources — the same
-/// `BrushSettings` / `ActiveTool` writes an egui panel will make in Phase 7.
+/// Keyboard shortcuts mirroring the panel: they write the same
+/// `BrushSettings` / `ActiveTool` resources the egui panel does.
 fn brush_controls(
     keys: Res<ButtonInput<KeyCode>>,
     mut brush: ResMut<BrushSettings>,
@@ -384,7 +384,7 @@ fn setup(
     commands.insert_resource(UiExportPath(
         "crates/bevy_wilderness/assets/heightmap_export.ktx2".into(),
     ));
-    // Stamp gallery folder (D11), seeded with generated starter stamps so
+    // Stamp gallery folder, seeded with generated starter stamps so
     // it isn't empty on first run. Drop your own grayscale PNGs in and hit
     // "rescan" in the panel.
     let stamps = std::path::PathBuf::from("crates/bevy_wilderness_editor_ui/assets/stamps");
@@ -493,7 +493,7 @@ fn setup(
     // plain built through the editor-core path (a TerrainField, its image, an
     // EditableTerrain inserted directly). WILDERNESS_NEW=<texels> changes the
     // starting resolution; WILDERNESS_HEIGHTMAP=<file> opens an existing
-    // heightmap instead (e.g. a previous export — the D7 round-trip). A fresh
+    // heightmap instead (e.g. a previous export — the export round-trip). A fresh
     // terrain keeps the same world footprint — resolution changes texel
     // density, not scale. The "New" and "Load terrain…" buttons do the same at
     // runtime.
@@ -515,7 +515,7 @@ fn setup(
                     size.parse()
                         .expect("WILDERNESS_NEW must be a texel count like 4096")
                 })
-                .unwrap_or(4096); // the D1 working resolution
+                .unwrap_or(4096); // the default working resolution
             let texel_size = WORLD_SIZE_M / size as f32;
             let field = TerrainField::flat(
                 size, size, texel_size, HEIGHT_MIN, HEIGHT_MAX, true, // looping
@@ -610,8 +610,8 @@ fn setup(
         wireframe: false,
         looping: true,
         // The editor creates and assigns the mask overlay texture, drives
-        // clay mode (D10) from re-bake staleness, and floats the stamp
-        // preview (D11).
+        // clay mode from re-bake staleness, and floats the stamp
+        // preview.
         edit_overlay: None,
         clay: false,
         stamp: None,

@@ -1,4 +1,4 @@
-//! The shared terrain raycast / cursor-hit (design doc §6): cursor → terrain
+//! The shared terrain raycast / cursor-hit (docs/editor.md): cursor → terrain
 //! world point, computed once per frame (`EditorSet::Pick`) and read by every
 //! tool, so a placed prop lands exactly where the brush would paint — plus
 //! the gizmo indicator that visualizes it (brush ring + pick dot).
@@ -18,7 +18,7 @@ const MAX_PICK_DISTANCE: f32 = 50_000.0;
 #[derive(Resource, Default, PartialEq, Debug)]
 pub struct TerrainCursor(pub Option<TerrainHit>);
 
-/// Whether a UI layer owns the pointer this frame (design doc §6: shared input
+/// Whether a UI layer owns the pointer this frame (docs/editor.md: shared input
 /// focus). A UI writes this before `EditorSet::Pick` — the default egui UI does
 /// it from `wants_pointer_input` — and while `true` the shared pick reports no
 /// hit, so no tool paints or places through a panel.
@@ -38,7 +38,7 @@ pub struct TerrainHit {
 }
 
 /// Compute [`TerrainCursor`] from the primary window's cursor through each
-/// editable terrain's target camera (the shared editor camera, design doc §6).
+/// editable terrain's target camera (the shared editor camera, docs/editor.md).
 /// `set_if_neq` so an unmoved cursor doesn't dirty change detection.
 pub(crate) fn update_terrain_cursor(
     windows: Query<&Window, With<PrimaryWindow>>,

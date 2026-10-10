@@ -14,7 +14,7 @@
 //! After either swap the whole field is marked dirty, so the standard
 //! `EditorSet::Apply` path re-quantizes the display map, emits
 //! [`TerrainRegionChanged`](crate::TerrainRegionChanged) over the full map
-//! (host props re-snap to the new surface), and arms the D5 re-bake (fresh
+//! (host props re-snap to the new surface), and arms the debounced re-bake (fresh
 //! shading for the swapped-in heightmap). The mask overlay is reset so
 //! `init_edit_overlays` rebuilds it at the new resolution, and the undo history
 //! is cleared (its tile snapshots belong to the replaced field).
@@ -290,7 +290,7 @@ mod tests {
     }
 
     /// A different-resolution file re-derives texel_size so the world footprint
-    /// is preserved (D9: resolution is texel density, not scale).
+    /// is preserved (resolution is texel density, not scale).
     #[test]
     fn load_field_keeps_the_world_footprint() {
         let field = TerrainField::flat(16, 16, 1.0, 0.0, 100.0, true, 5.0);

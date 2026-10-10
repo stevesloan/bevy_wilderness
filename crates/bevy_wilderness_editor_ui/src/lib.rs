@@ -1,4 +1,4 @@
-//! The default egui UI for `bevy_wilderness_editor` (design doc P2): a side
+//! The default egui UI for `bevy_wilderness_editor` (docs/editor.md): a side
 //! panel driving the editor core purely through its public API — resources,
 //! messages, and components, nothing crate-private. That's deliberate
 //! dogfooding: anything this panel can do, a host app's own UI can do against
@@ -56,7 +56,7 @@ impl Default for UiExportPath {
     }
 }
 
-/// Folder the stamp gallery scans for heightfield PNGs (D11). The host app
+/// Folder the stamp gallery scans for heightfield PNGs. The host app
 /// points this somewhere real (the example ships starter stamps into its
 /// own folder); the panel's Rescan button picks up files added while
 /// running.
@@ -186,7 +186,7 @@ fn scan_stamps(
 }
 
 /// Mirror egui's pointer claim into the core's [`PointerBlocked`] — the only
-/// input-focus handshake the core needs from a UI (design doc §6).
+/// input-focus handshake the core needs from a UI (docs/editor.md).
 fn block_pointer_over_ui(mut contexts: EguiContexts, mut blocked: ResMut<PointerBlocked>) {
     let over_ui = contexts
         .ctx_mut()
@@ -670,7 +670,7 @@ impl TerrainUi<'_, '_> {
         ui.separator();
         ui.label("Bake");
         ui.horizontal(|ui| {
-            // D10: with auto off, edits never schedule the D5 re-bake —
+            // With auto off, edits never schedule the debounced re-bake —
             // model freely, then bake once. ClipmapReady is absent while a
             // bake is in flight, so the button doubles as its indicator.
             ui.checkbox(&mut self.rebake.auto, "auto re-bake")

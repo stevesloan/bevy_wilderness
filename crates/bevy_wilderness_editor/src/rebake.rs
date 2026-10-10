@@ -1,4 +1,4 @@
-//! Debounced re-bake on release (D5). Geometry deforms live as the display
+//! Debounced re-bake on release. Geometry deforms live as the display
 //! heightmap updates, but the baked shading (sun self-shadow, AO, slope-placed
 //! material splat) only re-runs once edits settle: each dirty flush re-arms a
 //! ~200 ms timer, and when it expires the terrain gets a `RebakeRequested` —
@@ -8,11 +8,11 @@
 use bevy::prelude::*;
 use bevy_wilderness::{Clipmap, ClipmapReady, RebakeRequested};
 
-/// Seconds of edit-silence before the re-bake fires (D5).
+/// Seconds of edit-silence before the re-bake fires.
 const REBAKE_DEBOUNCE_SECS: f32 = 0.2;
 
-/// Whether edits re-bake automatically (D10). `auto` on (the default) is the
-/// D5 behavior: every dirty flush re-arms the debounce. Off, edits never
+/// Whether edits re-bake automatically. `auto` on (the default) is the
+/// debounced behavior: every dirty flush re-arms the debounce. Off, edits never
 /// schedule a bake — a modeling session batches freely and the host bakes
 /// manually by inserting [`RebakeRequested`](bevy_wilderness::RebakeRequested)
 /// (re-exported from this crate) on the terrain, e.g. the default UI's Bake
@@ -66,7 +66,7 @@ pub(crate) fn debounce_on_auto_toggle(
     }
 }
 
-/// A landed bake means shading matches the field again: leave clay (D10). The
+/// A landed bake means shading matches the field again: leave clay. The
 /// renderer re-inserts [`ClipmapReady`] exactly when a bake completes.
 pub(crate) fn clear_clay_on_bake(mut baked: Query<&mut Clipmap, Added<ClipmapReady>>) {
     for mut clipmap in &mut baked {

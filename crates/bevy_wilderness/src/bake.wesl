@@ -294,7 +294,7 @@ fn hex_sample(
 
 // Blends the terrain layers at one world position and returns the packed RVT
 // channels. This is the *only* place the splat runs — the main pass samples the
-// baked result. Procedural placement (§3.2) + hex de-tiling.
+// baked result. Procedural placement + hex de-tiling.
 fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     // Procedural placement: each layer's weight is the overlap of its slope band
     // (grass→dirt→rock) and its world-height band (e.g. snow above a snowline).

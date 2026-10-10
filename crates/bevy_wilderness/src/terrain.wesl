@@ -4,7 +4,7 @@ import bevy_pbr::render::view_transformations::position_world_to_clip;
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
 // shadow pass rendering the terrain's displaced silhouette for clay mode's
-// dynamic shadows (D10), or a depth/normal prepass — compile this module too
+// dynamic shadows, or a depth/normal prepass — compile this module too
 // for `fn vertex`, but `pbr_fragment` doesn't build against `prepass::io`'s
 // trimmed VertexOutput and their layouts lack the light/cluster bindings.
 // `WILDERNESS_SHADE` is pushed in `GridMaterial::specialize`.
@@ -61,7 +61,7 @@ import bevy_pbr::deferred::functions::deferred_output;
 // freed for ceiling headroom). ao/bent strength: 0 = off, 1 = full, each
 // A/B'd on its own. debug_view: 0 = lit terrain, 1 = macro AO, 2 = bent
 // normal, 3 = cavity — nonzero outputs the raw baked channel unlit. The
-// stamp_* fields are the D11 stamp preview transform, read in `fn vertex`
+// stamp_* fields are the stamp preview transform, read in `fn vertex`
 // while flags bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
     ao_strength: f32,
@@ -112,7 +112,7 @@ struct DetailParams {
 @if(WILDERNESS_EDIT_OVERLAY)
 @group(constants::MATERIAL_BIND_GROUP) @binding(115) var edit_overlay_texture: texture_2d<f32>;
 
-// Stamp preview heightfield (`editing`, D11): composited in `fn vertex` while
+// Stamp preview heightfield (`editing`): composited in `fn vertex` while
 // flags bit5 is set — the GPU floating preview that makes half-map stamps
 // per-frame free. Shares the heightmap sampler like the overlay.
 @if(WILDERNESS_STAMP)
@@ -177,7 +177,7 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let height = height_bilinear(sample_uv, 0);
     var world_y = height * (minmax.y - minmax.x) + minmax.x;
 
-    // Stamp floating preview (D11, flags bit5): add the stamp heightfield
+    // Stamp floating preview (flags bit5): add the stamp heightfield
     // through its world transform, exactly what a commit will write into the
     // f32 field — same bilinear (texel centers at half-integers, clamped),
     // same mask weighting, same encode-range clamp. Keep this in lockstep
@@ -438,7 +438,7 @@ fn fragment(
     let world_size = texture_size * texel_size;
     let uv = in.world_position.xz / world_size + 0.5;
 
-    // Clay display mode (flags bit4, D10): shading is stale — unbaked edits,
+    // Clay display mode (flags bit4): shading is stale — unbaked edits,
     // or no bake has landed yet — so ignore the baked RVT entirely and render
     // neutral grey clay lit by the real lights, with normals from position
     // derivatives (faceted, deliberately: it reads as sculpting clay and
