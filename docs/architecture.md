@@ -295,8 +295,11 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    bake's macro variation (the RVT alone is a ~1 m bilinear smear across
    boundaries). Additive on purpose: a per-channel ratio divided by grass's
    near-zero blue and turned grass/rock boundaries purple. Detail albedo
-   contributes a **unit-mean ratio** (`da / da_mean`, the mean read from the
-   coarsest mip) so it adds variation without double-darkening the RVT albedo.
+   contributes a **unit-mean brightness ratio** (luminance of `da / da_mean`,
+   the mean read from the coarsest mip, capped at 3×) so it adds variation
+   without double-darkening the RVT albedo. Luminance only: a per-channel
+   ratio amplified grass's near-zero blue ~6× and tinted rock fluorescent
+   purple wherever a grass id met rock colour.
 3. **Lighting** — `terrain_apply_lighting`, a trimmed fork of Bevy's
    `apply_pbr_lighting` (base layer only):
    - directional lights × CSM shadow (if any) × **baked sun-vis**, with grazing

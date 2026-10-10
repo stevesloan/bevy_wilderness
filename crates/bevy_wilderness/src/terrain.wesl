@@ -651,12 +651,18 @@ fn fragment(
         //   the colour is filtered, so they can disagree, and dividing by a
         //   near-zero channel (grass has almost no blue) amplified the
         //   mismatch into purple at grass/rock boundaries.
-        // - Grain: the detail texture's variation around its own mean (unit
-        //   mean, so it never re-darkens the albedo the RVT already holds).
+        // - Grain: the detail texture's *brightness* variation around its own
+        //   mean (unit mean, so it never re-darkens the albedo the RVT
+        //   already holds). Luminance only, capped: a per-channel ratio
+        //   amplified grass's near-zero blue up to ~6×, and wherever the
+        //   jittered id and the filtered colour disagree (a grass id over rock
+        //   colour) that tinted rock fluorescent purple. Brightness can't
+        //   change hue, whatever colour it lands on.
         let per_pixel = max(rvt_a.rgb + (da_avg - texel_mean), vec3<f32>(0.0));
         let identity = mix(rvt_a.rgb, per_pixel, detail_fade);
-        let grain = da / max(da_avg, vec3<f32>(1e-4));
-        albedo = identity * mix(vec3<f32>(1.0), grain, detail.albedo_strength * detail_fade);
+        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+        let grain = min(dot(da, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
+        albedo = identity * mix(1.0, grain, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
     }

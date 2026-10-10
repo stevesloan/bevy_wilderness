@@ -376,11 +376,11 @@ fn setup(
             albedo_array: detail_albedo_array,
             normal_array: detail_normal_array,
             orm_array: detail_orm_array,
-            // ~6 m per repeat: ~340 px/m from 2K textures. The overlay only
+            // ~9 m per repeat: ~230 px/m from 2K textures. The overlay only
             // adds variation on top of the unique RVT albedo, so repetition
             // stays muted; fading out by ~250 m keeps the repeat from
             // showing as a pattern across the mid-ground.
-            tiling: 6.0,
+            tiling: 9.0,
             normal_strength: 0.8,
             albedo_strength: 0.8,
             near: 40.0,
