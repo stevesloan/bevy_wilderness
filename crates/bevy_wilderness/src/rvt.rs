@@ -47,6 +47,11 @@ struct TerrainParams {
     cavity_min: Vec4,
     cavity_max: Vec4,
     cavity_blend: Vec4,
+    /// Mid-scale relief per layer: depth (m, 0 = none), feature scale (m),
+    /// ledge terracing (0..1).
+    relief_depth: Vec4,
+    relief_scale: Vec4,
+    relief_ledges: Vec4,
     layer_count: u32,
 }
 
@@ -66,6 +71,9 @@ impl TerrainParams {
         let mut cavity_min = [-10.0f32; MAX_TERRAIN_LAYERS];
         let mut cavity_max = [10.0f32; MAX_TERRAIN_LAYERS];
         let mut cavity_blend = [0.01f32; MAX_TERRAIN_LAYERS];
+        let mut relief_depth = [0.0f32; MAX_TERRAIN_LAYERS];
+        let mut relief_scale = [1.0f32; MAX_TERRAIN_LAYERS];
+        let mut relief_ledges = [0.0f32; MAX_TERRAIN_LAYERS];
         for (i, layer) in clipmap.layers.iter().take(MAX_TERRAIN_LAYERS).enumerate() {
             tiling_scale[i] = layer.tiling_scale.max(1e-3);
             height_blend[i] = layer.height_blend;
@@ -86,6 +94,11 @@ impl TerrainParams {
                 cavity_max[i] = c.max;
                 cavity_blend[i] = c.blend.max(1e-3);
             }
+            if let Some(r) = &layer.relief {
+                relief_depth[i] = r.depth.max(0.0);
+                relief_scale[i] = r.scale.max(1.0);
+                relief_ledges[i] = r.ledges.clamp(0.0, 1.0);
+            }
         }
         Self {
             tiling_scale: Vec4::from_array(tiling_scale),
@@ -101,6 +114,9 @@ impl TerrainParams {
             cavity_min: Vec4::from_array(cavity_min),
             cavity_max: Vec4::from_array(cavity_max),
             cavity_blend: Vec4::from_array(cavity_blend),
+            relief_depth: Vec4::from_array(relief_depth),
+            relief_scale: Vec4::from_array(relief_scale),
+            relief_ledges: Vec4::from_array(relief_ledges),
             layer_count: clipmap.layers.len().min(MAX_TERRAIN_LAYERS) as u32,
         }
     }

@@ -40,6 +40,11 @@ struct TerrainParams {
     cavity_min: vec4<f32>,
     cavity_max: vec4<f32>,
     cavity_blend: vec4<f32>,
+    // Mid-scale relief per layer: depth (m, 0 = none), feature scale (m) and
+    // ledge terracing (0..1). See `relief_at`.
+    relief_depth: vec4<f32>,
+    relief_scale: vec4<f32>,
+    relief_ledges: vec4<f32>,
     layer_count: u32,
 }
 
@@ -56,7 +61,11 @@ const MAX_LAYERS: u32 = 4u;
 
 struct SplatResult {
     color: vec3<f32>,
-    normal: vec3<f32>,
+    // Blended layer normal in tangent space; reoriented onto the shading
+    // normal (heightmap + relief) by the caller.
+    tangent_normal: vec3<f32>,
+    // Each layer's final share (after height blending), for the relief blend.
+    weights: vec4<f32>,
     roughness: f32,
     // Top-2 layer ids + blend, packed into 8 bits (2+2+4) — see `splat_terrain`.
     // Stored in the RVT normal target's alpha (the metallic slot, unused by
@@ -321,6 +330,7 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     var bsum = 0.0;
     // Track the top two contributing layers (b0 >= b1) so the detail overlay can
     // lerp their detail normals instead of snapping at material boundaries.
+    var bw = vec4<f32>(0.0);
     var b0 = -1.0;
     var i0 = 0u;
     var b1 = -1.0;
@@ -332,6 +342,7 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
         orm += orms[i] * b;
         rough += params.roughness[i] * b;
         bsum += b;
+        bw[i] = b;
         if b > b0 {
             b1 = b0; i1 = i0;
             b0 = b; i0 = i;
@@ -342,15 +353,11 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     let inv = 1.0 / max(bsum, 1e-4);
     rgb *= inv;
     orm *= inv;
-    tn = normalize(tn);
-
-    let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(normal.z) > 0.99);
-    let tangent = normalize(cross(ref_axis, normal));
-    let bitangent = cross(normal, tangent);
 
     var out: SplatResult;
     out.color = rgb;
-    out.normal = normalize(tangent * tn.x + bitangent * tn.y + normal * tn.z);
+    out.tangent_normal = normalize(tn);
+    out.weights = bw * inv;
     out.roughness = (rough * inv) * orm.g;
     // Pack the two dominant layer indices + their blend into 8 bits (2+2+4). The
     // blend `t2` (0..1) maps to a detail-normal lerp of 0..0.5 in the main pass.
@@ -358,6 +365,131 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     let q = floor(t2 * 15.0 + 0.5);
     out.material_id = (f32(i0) + f32(i1) * 4.0 + q * 16.0) / 255.0;
     return out;
+}
+
+// Reorients a tangent-space normal onto the surface normal `n`.
+fn reorient(tn: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.z) > 0.99);
+    let tangent = normalize(cross(ref_axis, n));
+    let bitangent = cross(n, tangent);
+    return normalize(tangent * tn.x + bitangent * tn.y + n * tn.z);
+}
+
+// --- Mid-scale relief ---
+// The heightmap is typically metres per texel, so between its samples the
+// ground is a smooth sheet; layer textures carry only cm-scale detail, which
+// averages flat in the ~1 m RVT. Nothing supplies 1–10 m shape — ledges,
+// strata, hummocks — which is what reads as "shape" across the mid-ground.
+// Relief adds it procedurally per layer, weighted by the splat, into the
+// *baked* normal and near-field sun shadow: zero per-frame cost. Geometry is
+// unchanged (shading only).
+//
+// Gradient (Perlin) noise, not value noise: thresholded or terraced value
+// noise follows its square lattice. Periodic over the world, so looping
+// terrain stays seamless (each octave's period is a whole number of cells).
+
+fn relief_hash(c: vec2<i32>, period: vec2<i32>, seed: u32) -> vec2<f32> {
+    let w = ((c % period) + period) % period;
+    var n = (u32(w.x) * 73856093u) ^ (u32(w.y) * 19349663u) ^ (seed * 83492791u);
+    n = (n ^ (n >> 16u)) * 0x7feb352du;
+    n = (n ^ (n >> 15u)) * 0x846ca68bu;
+    n = n ^ (n >> 16u);
+    let a = f32(n & 0xffffu) * (6.2831853 / 65536.0);
+    return vec2<f32>(cos(a), sin(a));
+}
+
+// Periodic gradient noise, roughly -0.7..0.7.
+fn relief_perlin(x: vec2<f32>, period: vec2<i32>, seed: u32) -> f32 {
+    let c = vec2<i32>(floor(x));
+    let f = fract(x);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let g00 = dot(relief_hash(c, period, seed), f);
+    let g10 = dot(relief_hash(c + vec2<i32>(1, 0), period, seed), f - vec2<f32>(1.0, 0.0));
+    let g01 = dot(relief_hash(c + vec2<i32>(0, 1), period, seed), f - vec2<f32>(0.0, 1.0));
+    let g11 = dot(relief_hash(c + vec2<i32>(1, 1), period, seed), f - vec2<f32>(1.0, 1.0));
+    return mix(mix(g00, g10, u.x), mix(g01, g11, u.x), u.y);
+}
+
+// One layer's relief shape in about -1..1: three octaves of noise with
+// features of `scale` meters, optionally terraced into ledges (rock strata:
+// flat treads, steep risers).
+fn relief_shape(xz: vec2<f32>, scale: f32, ledges: f32, seed: u32) -> f32 {
+    const OCTAVES = 3;
+    let world = vec2<f32>(textureDimensions(heightmap_texture)) * texel_size;
+    let uv = xz / world + 0.5;
+    var period = max(vec2<i32>(round(world / scale)), vec2<i32>(1));
+    var n = 0.0;
+    var amp = 1.0;
+    var norm = 0.0;
+    for (var o = 0; o < OCTAVES; o++) {
+        n += amp * relief_perlin(uv * vec2<f32>(period), period, seed + u32(o) * 101u);
+        norm += amp;
+        amp *= 0.5;
+        period *= 2;
+    }
+    n = clamp(n / norm * 1.4, -1.0, 1.0);
+    if ledges > 0.0 {
+        const STEPS = 4.0;
+        const RISER = 0.3;  // fraction of each step that is the steep face
+        let t = (n * 0.5 + 0.5) * STEPS;
+        let terraced = (floor(t) + smoothstep(1.0 - RISER, 1.0, fract(t))) / STEPS * 2.0 - 1.0;
+        n = mix(n, terraced, ledges);
+    }
+    return n;
+}
+
+// Relief height (m, around 0) at `xz` for fixed layer `weights`.
+fn relief_at(xz: vec2<f32>, weights: vec4<f32>) -> f32 {
+    var r = 0.0;
+    for (var i = 0u; i < MAX_LAYERS; i++) {
+        let depth = params.relief_depth[i];
+        if weights[i] < 1e-3 || depth <= 0.0 {
+            continue;
+        }
+        let shape = relief_shape(xz, params.relief_scale[i], params.relief_ledges[i], i * 7919u + 1u);
+        r += weights[i] * depth * 0.5 * shape;
+    }
+    return r;
+}
+
+// Shading normal of heightmap + relief: the heightmap normal `n0` tilted by the
+// relief gradient (central differences one RVT texel apart).
+fn relief_normal(xz: vec2<f32>, n0: vec3<f32>, weights: vec4<f32>, e: f32) -> vec3<f32> {
+    let rx = (relief_at(xz + vec2<f32>(e, 0.0), weights) - relief_at(xz - vec2<f32>(e, 0.0), weights)) / (2.0 * e);
+    let rz = (relief_at(xz + vec2<f32>(0.0, e), weights) - relief_at(xz - vec2<f32>(0.0, e), weights)) / (2.0 * e);
+    let hx = -n0.x / n0.y;
+    let hz = -n0.z / n0.y;
+    return normalize(vec3<f32>(-(hx + rx), 1.0, -(hz + rz)));
+}
+
+// Near-field sun shadow cast by the relief itself (ledges shadowing the ground
+// behind them): a short soft march over heightmap + relief. The long
+// `sun_visibility` march starts a heightmap texel out, too coarse for 1–10 m
+// relief, and only knows the heightmap — so the two combine with `min`.
+fn relief_shadow(xz: vec2<f32>, n: vec3<f32>, weights: vec4<f32>, e: f32) -> f32 {
+    const STEPS = 16;
+    const MAX_DIST = 80.0;
+    const SOFTNESS = 12.0;
+    const GROWTH = 1.25;
+    let origin = vec3<f32>(xz.x, terrain_height(xz) + relief_at(xz, weights), xz.y)
+        + n * (0.5 * e);
+    var vis = 1.0;
+    var step = e;
+    var t = e;
+    for (var s = 0; s < STEPS; s++) {
+        if t > MAX_DIST {
+            break;
+        }
+        let p = origin + sun_direction * t;
+        let ground = terrain_height(p.xz) + relief_at(p.xz, weights);
+        vis = min(vis, clamp(SOFTNESS * (p.y - ground) / t, 0.0, 1.0));
+        if vis <= 0.001 {
+            break;
+        }
+        step *= GROWTH;
+        t += step;
+    }
+    return vis;
 }
 
 // The sun shadow ceiling: the world height at which the sun ray grazing this
@@ -446,9 +578,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         // a legitimately zero height would read as a stall forever.
         return vec4<f32>(shadow.x - (minmax.x - 1.0), shadow.y, 0.0, 1.0);
     }
-    let splat = splat_terrain(world_xz, geo_normal(world_xz));
+    // One RVT texel in world units — the relief normal's difference step.
+    let e = max(length(dpdx(world_xz)), 1e-3);
+    let n0 = geo_normal(world_xz);
+    // Placement uses the heightmap alone (relief depends on placement).
+    let splat = splat_terrain(world_xz, n0);
+    let n = relief_normal(world_xz, n0, splat.weights, e);
     if output_mode == 0u {
-        return vec4<f32>(splat.color, sun_visibility(world_xz));
+        let vis = min(sun_visibility(world_xz), relief_shadow(world_xz, n, splat.weights, e));
+        return vec4<f32>(splat.color, vis);
     }
-    return vec4<f32>(oct_encode(splat.normal), splat.roughness, splat.material_id);
+    return vec4<f32>(oct_encode(reorient(splat.tangent_normal, n)), splat.roughness, splat.material_id);
 }

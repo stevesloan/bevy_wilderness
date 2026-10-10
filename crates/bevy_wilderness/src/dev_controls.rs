@@ -4,12 +4,13 @@
 
 use bevy::{core_pipeline::tonemapping::Tonemapping, pbr::ExtendedMaterial, prelude::*};
 
-use crate::{Clipmap, TerrainQuality};
 use crate::material::GridMaterial;
+use crate::{Clipmap, TerrainQuality};
 
 /// Press V to cycle the terrain debug view: lit → macro AO → bent normal →
-/// cavity → lit. Renders the raw baked RVT-AO channel unlit so it reads as a
-/// literal value. Experiment-only inspection aid for the AO/bent-normal bake.
+/// cavity → shape → lit. AO / bent normal / cavity render the raw baked
+/// channel unlit so it reads as a literal value; shape is neutral grey lit by
+/// the baked normals and shadows only, to judge terrain form (relief).
 pub(crate) fn debug_cycle_view(
     keys: Res<ButtonInput<KeyCode>>,
     mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
@@ -23,7 +24,7 @@ pub(crate) fn debug_cycle_view(
     let mut computed = false;
     for (_, material) in materials.iter_mut() {
         if !computed {
-            next = (material.extension.dev.debug_view + 1) % 4;
+            next = (material.extension.dev.debug_view + 1) % 5;
             computed = true;
         }
         material.extension.dev.debug_view = next;
@@ -31,7 +32,7 @@ pub(crate) fn debug_cycle_view(
     // The debug channels output raw 0..1 values; bypass the filmic tonemapper
     // while one is active so they read faithfully (AO ~0.9 shows near-white, not
     // gray-compressed). Restore the default tonemapper for the lit view.
-    let tonemapping = if next == 0 {
+    let tonemapping = if next == 0 || next == 4 {
         Tonemapping::default()
     } else {
         Tonemapping::None
@@ -43,6 +44,7 @@ pub(crate) fn debug_cycle_view(
         1 => "macro AO",
         2 => "bent normal",
         3 => "cavity",
+        4 => "shape (grey, baked normals + shadows)",
         _ => "off (lit terrain)",
     };
     info!("terrain debug view: {name}");
@@ -116,6 +118,10 @@ pub(crate) fn toggle_detail_hex(
     quality.detail_hex_tiling = !quality.detail_hex_tiling;
     info!(
         "terrain hex-tiled detail: {}",
-        if quality.detail_hex_tiling { "on" } else { "off" }
+        if quality.detail_hex_tiling {
+            "on"
+        } else {
+            "off"
+        }
     );
 }

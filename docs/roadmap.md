@@ -60,6 +60,7 @@ of rules.
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake; distance-faded detail overlay with per-pixel height blend, hex-tiled on desktop | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
 | Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
+| Mid-scale relief (1–10 m) | Per-material macro detail height / normals | Procedural `Relief` per layer (noise + ledges), baked into normals + near-field shadow | ok |
 | Close-up relief | Tessellation / Nanite displacement / displacement decals | none | P2 (desktop) |
 | Terrain shadow | Heightfield/baked for terrain + CSM for dynamic | baked sun-vis + height-correct shadow-ceiling field for meshes | ok |
 | Static objects → terrain shadow | Baked into lighting | not yet | P2 |
@@ -185,7 +186,8 @@ of rules.
   meshes for hero rock (Far Cry 5's procedural cliff pipeline uses slope as
   its input).
 - **Close-up relief (desktop).** wgpu has no tessellation shaders, so: a finer
-  level-0 grid near the camera displaced by the detail height of the dominant
+  level-0 grid near the camera displaced by the baked `Relief` function (so
+  geometry matches the relief shading) plus the detail height of the dominant
   material, plus POM for the remaining near rock. Far Cry 5 shipped
   displacement *decals* instead of tessellation for cost — a good fit for
   rocks, roots and paths.

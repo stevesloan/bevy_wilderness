@@ -57,6 +57,29 @@ pub struct CavityRule {
     pub blend: f32,
 }
 
+/// Mid-scale surface relief for a layer: procedural (gradient-noise) shape of
+/// up to `depth` meters, with features about `scale` meters across, added to
+/// the *baked* shading — normals and near-field sun shadow — wherever the
+/// layer lies.
+///
+/// Fills the 1–10 m band between the heightmap (meters per texel, smooth
+/// between samples) and the near detail overlay (texture-scale detail): rock
+/// ledges and strata, grassy hummocks — the shape that reads across the
+/// mid-ground. Baked, so zero per-frame cost. Shading only: geometry,
+/// collisions and `Heightfield` queries don't include it. Periodic over the
+/// world, so looping terrain stays seamless.
+#[derive(Clone, Debug)]
+pub struct Relief {
+    /// Peak-to-peak relief height, meters.
+    pub depth: f32,
+    /// Typical feature size, meters (the largest of three octaves). Features
+    /// below ~2 RVT texels (~2 m at the default size) can't show.
+    pub scale: f32,
+    /// 0 = smooth rolling relief; 1 = terraced into ledges (flat treads,
+    /// steep risers), e.g. rock strata.
+    pub ledges: f32,
+}
+
 /// A single tiling material layer in a [`Clipmap`]'s splat set. Placement is
 /// procedural: a layer appears where its optional [`SlopeRule`], [`HeightRule`]
 /// and [`CavityRule`] bands overlap (a layer with none is present everywhere).
@@ -79,6 +102,8 @@ pub struct TerrainLayer {
     pub height: Option<HeightRule>,
     /// Curvature band this layer occupies (none = any shape).
     pub cavity: Option<CavityRule>,
+    /// Mid-scale relief this layer adds to the baked shading (none = flat).
+    pub relief: Option<Relief>,
 }
 
 /// The near-range detail overlay: per-material high-frequency textures blended

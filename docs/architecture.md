@@ -74,7 +74,7 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 **Resources.** `TerrainQuality` (performance profile, §8), `TerrainFog` (the
 fog *look*), `InlineFog` (active inline-fog params for your own shaders).
 
-**Other.** `TerrainLayer`, `SlopeRule`, `HeightRule`, `CavityRule`, `DetailConfig`,
+**Other.** `TerrainLayer`, `SlopeRule`, `HeightRule`, `CavityRule`, `Relief`, `DetailConfig`,
 `HoleShape`, `MAX_HOLES` (24), `HeightFog`/`HeightFogParams`,
 `HeightFogExtension`, `FogTier`, `SunShadowParams`, `load_terrain_array`,
 `build_terrain_array`.
@@ -83,7 +83,8 @@ fog *look*), `InlineFog` (active inline-fog params for your own shaders).
 - `editing` — the editable-terrain API: `RebakeRequested`, `Heightfield`,
   `ClipmapStamp`, the overlay/stamp bindings, clay mode. Default consumers pay
   nothing for it.
-- `dev-controls` — V cycles debug views (AO / bent normal / cavity),
+- `dev-controls` — V cycles debug views (AO / bent normal / cavity / shape —
+  grey, lit by the baked normals and shadows only, for judging relief),
   B / N toggle AO / bent-normal strength, H toggles hex-tiled detail.
 
 ## 4. Geometry — clipmap rings
@@ -200,6 +201,21 @@ on looping terrain so marches cross the seam.
   Normals are reoriented onto the geometric normal (central differences).
   The **top two layers** and their blend are packed into the normal target's
   alpha byte (`i0 + 4·i1 + 16·q`) for the detail overlay.
+- **Mid-scale relief** (`relief_at`, `relief_normal`, `relief_shadow`).
+  A layer's optional `Relief { depth, scale, ledges }` adds procedural shape:
+  three octaves of periodic gradient noise with features ~`scale` m across,
+  optionally terraced into ledges (rock strata), blended by the final splat
+  weights. Procedural because layer textures only carry cm-scale detail —
+  their height maps, filtered to the RVT's 1 m texels, gave grass and dirt
+  just 2–4° of tilt. Periodic over the world (whole-cell periods per octave),
+  so looping terrain stays seamless; gradient, not value, noise so terraces
+  don't follow a square lattice. The baked normal is the heightmap normal tilted by the
+  relief gradient, and a short near-field march (16 steps, ≤ 80 m) over
+  heightmap + relief adds the relief's own sun shadows (`min` with the long
+  march). It fills the 1–10 m band the heightmap (smooth between texels) and
+  the detail overlay (near only) both miss — ledges and strata that give the
+  mid-ground shape. Shading only: geometry and CPU height queries ignore it.
+  Placement uses the plain heightmap (relief depends on placement).
 - **Sun visibility** (`sun_visibility`, albedo alpha). Soft heightfield
   ray-march toward the sun: 96 geometrically growing steps out to 6 km, origin
   pushed off the surface, penumbra from clearance / distance.
@@ -291,7 +307,8 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    ranges; terrain does not receive rect lights).
 4. Deferred builds write `deferred_output` instead of lighting.
 
-Debug views (`dev-controls`): 1 macro AO, 2 bent normal, 3 cavity — raw,
+Debug views (`dev-controls`): 4 shape (grey, baked normals + shadows, lit);
+1 macro AO, 2 bent normal, 3 cavity — raw,
 unlit.
 
 **Clay mode** (`editing`). While shading is stale (`clipmap.clay`, or never
@@ -352,7 +369,7 @@ Requires a CPU-resident R16Unorm image; does not wrap for looping terrain.
 | Every frame, GPU fragment, far | 2–3 RVT samples + lighting |
 | Every frame, GPU fragment, near | + 1 id load + 4 detail samples (8 when blending two materials); ×3 for the hex-tiled taps when `detail_hex_tiling` is on |
 | Every frame, High fog | one fullscreen pass |
-| Once per bake | 4 full-terrain render passes (hex-tiled splat ×2, gather, shadow ceiling), ~2 frames each |
+| Once per bake | 4 full-terrain render passes (hex-tiled splat + relief ×2, gather, shadow ceiling), ~2 frames each |
 
 ## 11. Invariants and gotchas
 

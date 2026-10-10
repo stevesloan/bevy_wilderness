@@ -61,7 +61,8 @@ import bevy_pbr::deferred::functions::deferred_output;
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
 // freed for ceiling headroom). ao/bent strength: 0 = off, 1 = full, each
 // A/B'd on its own. debug_view: 0 = lit terrain, 1 = macro AO, 2 = bent
-// normal, 3 = cavity — nonzero outputs the raw baked channel unlit. The
+// normal, 3 = cavity — output the raw baked channel unlit; 4 = shape (grey,
+// lit by baked normals + shadows only). The
 // stamp_* fields are the stamp preview transform, read in `fn vertex`
 // while flags bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
@@ -654,6 +655,14 @@ fn fragment(
         albedo = identity * mix(vec3<f32>(1.0), grain, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
+    }
+    // Debug view 4 ("shape"): neutral grey lit by the baked normal and shadows
+    // alone — the terrain's form with its textures out of the way.
+    if dev.debug_view == 4u {
+        albedo = vec3<f32>(0.5);
+        world_normal = base_normal;
+        rough = 0.9;
+        ao = 1.0;
     }
     in_modified.world_normal = world_normal;
 

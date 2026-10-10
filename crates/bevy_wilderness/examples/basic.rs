@@ -14,7 +14,7 @@ use bevy::{
 use bevy::pbr::ExtendedMaterial;
 use bevy_wilderness::{
     load_terrain_array, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog,
-    CavityRule, HeightFogExtension, HeightFogPlugin, SlopeRule, TerrainFog, TerrainLayer,
+    CavityRule, HeightFogExtension, HeightFogPlugin, Relief, SlopeRule, TerrainFog, TerrainLayer,
     TerrainQuality,
 };
 
@@ -299,6 +299,11 @@ fn setup(
                 slope: None,
                 height: None,
                 cavity: None,
+                relief: Some(Relief {
+                    depth: 6.0,
+                    scale: 24.0,
+                    ledges: 0.0,
+                }),
             },
             // dirt — mid slopes
             TerrainLayer {
@@ -313,6 +318,11 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                relief: Some(Relief {
+                    depth: 6.0,
+                    scale: 18.0,
+                    ledges: 0.2,
+                }),
             },
             // rock — steep terrain at any height
             TerrainLayer {
@@ -327,6 +337,11 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                relief: Some(Relief {
+                    depth: 12.0,
+                    scale: 40.0,
+                    ledges: 0.7,
+                }),
             },
             // sediment — pebbles washed into gullies and hollows (cavity below
             // ~0.3: ground the surrounding terrain rises above), on gentle slopes
@@ -348,6 +363,7 @@ fn setup(
                     max: 0.3,
                     blend: 0.1,
                 }),
+                relief: None,
             },
         ],
         detail: DetailConfig {
