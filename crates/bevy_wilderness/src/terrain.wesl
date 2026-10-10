@@ -1,5 +1,6 @@
 import bevy_pbr::render::mesh_functions;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
+import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_wilderness::hex_tiling::{HexTaps, hex_taps, hex_sample_taps, triplanar_weights, side_normal_world};
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
@@ -12,7 +13,7 @@ import bevy_wilderness::hex_tiling::{HexTaps, hex_taps, hex_sample_taps, triplan
 @if(WILDERNESS_SHADE)
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
-    mesh_view_bindings::{view, lights, clustered_lights},
+    mesh_view_bindings::{lights, clustered_lights},
     pbr_types,
     mesh_view_types,
     pbr_lighting as lighting,
@@ -75,6 +76,9 @@ struct DevParams {
     stamp_strength: f32,
     holes: HoleBuffer,
     hole_count: u32,
+    // Clipmap half-width in cells: each ring spans half_width × its cell size
+    // from its center. Drives the geomorph band.
+    ring_half_cells: f32,
 }
 // Terrain holes, two vec4 per shape (packed by Rust `HoleBuffer::pack`):
 //   [0] = center.xy, basis.xy      (basis = rect local +X; unused for circles)
@@ -183,6 +187,53 @@ fn height_bilinear(uv: vec2<f32>, lod: i32) -> f32 {
     return mix(hx0, hx1, f.y);
 }
 
+// Terrain height (world Y) at world `xz` from the heightmap: wrapped when
+// looping, clamped to the coverage otherwise.
+fn base_height_at(xz: vec2<f32>) -> f32 {
+    let world_size = texel_size * vec2<f32>(textureDimensions(heightmap_texture));
+    let uv = xz / world_size + 0.5;
+    let looping = (flags & 8u) != 0u;
+    let sample_uv = select(clamp(uv, vec2(0.0), vec2(1.0)), uv, looping);
+    return height_bilinear(sample_uv, 0) * (minmax.y - minmax.x) + minmax.x;
+}
+
+// --- Geomorphing ---
+// Each ring has half the resolution of the one inside it, so where a ring
+// meets the next coarser one the surface changes detail abruptly — and since
+// rings snap with the camera, that seam jumps as you move: LOD popping, worst
+// in VR where the head never stops. Across the outer band of each ring every
+// vertex blends toward the height the *coarser* ring renders at that spot, so
+// at the seam the two match exactly and resolution changes continuously
+// (Losasso & Hoppe, GPU Gems 2 clipmaps; CDLOD morphing). The band is placed
+// by distance from the camera, assumed to be the clipmap target (a third-
+// person target far from the camera would morph in the wrong place). In
+// stereo each eye's position differs by ~3 cm, so the eyes' morphs differ by
+// well under a millimetre; measuring from the head (the target) would make
+// them identical — see the roadmap's VR rendering path.
+const MORPH_BAND: f32 = 0.3; // fraction of the ring's half-width
+
+// The coarser ring's surface at fine vertex `xz` (a multiple of `cell`), whose
+// own height is `fine`: coarse vertices lie every 2 cells, so a fine vertex is
+// either one of them (same height — no extra reads), the middle of a coarse
+// edge (average of its ends), or a coarse quad's center — on the quad's
+// (+x, +z) diagonal, the ring meshes' triangulation.
+fn coarse_height_at(xz: vec2<f32>, cell: f32, fine: f32) -> f32 {
+    let k = vec2<i32>(round(xz / cell));
+    let odd = vec2<bool>((k.x & 1) != 0, (k.y & 1) != 0);
+    if odd.x && odd.y {
+        return 0.5 * (base_height_at(xz - vec2<f32>(cell)) + base_height_at(xz + vec2<f32>(cell)));
+    }
+    if odd.x {
+        let dx = vec2<f32>(cell, 0.0);
+        return 0.5 * (base_height_at(xz - dx) + base_height_at(xz + dx));
+    }
+    if odd.y {
+        let dz = vec2<f32>(0.0, cell);
+        return 0.5 * (base_height_at(xz - dz) + base_height_at(xz + dz));
+    }
+    return fine;
+}
+
 @vertex
 fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     var out: VertexOutput;
@@ -196,9 +247,20 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let height_uv = out.world_position.xz / world_size + 0.5;
     // Looping wraps the read toroidally (height_bilinear handles the indices), so
     // the uv isn't clamped; finite terrain clamps to keep the far edge in bounds.
-    let sample_uv = select(clamp(height_uv, vec2(0.0), vec2(1.0)), height_uv, looping);
-    let height = height_bilinear(sample_uv, 0);
-    var world_y = height * (minmax.y - minmax.x) + minmax.x;
+    var world_y = base_height_at(out.world_position.xz);
+
+    // Geomorph toward the coarser ring across this ring's outer band.
+    let level_cell = length(model[0].xyz);
+    let ring = dev.ring_half_cells * level_cell;
+    // The seam sits `ring` from the snapped ring center, which trails the
+    // camera by up to a snap step (≤ 2 cells): finish morphing before it.
+    let morph_end = ring - 4.0 * level_cell;
+    let morph_start = morph_end - MORPH_BAND * ring;
+    let to_camera = abs(out.world_position.xz - view.world_position.xz);
+    let morph = saturate((max(to_camera.x, to_camera.y) - morph_start) / (morph_end - morph_start));
+    if morph > 0.0 {
+        world_y = mix(world_y, coarse_height_at(out.world_position.xz, level_cell, world_y), morph);
+    }
 
     // Stamp floating preview (flags bit5): add the stamp heightfield
     // through its world transform, exactly what a commit will write into the

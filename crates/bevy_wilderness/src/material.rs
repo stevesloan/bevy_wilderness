@@ -62,6 +62,9 @@ pub(crate) struct DevParams {
     #[reflect(ignore)]
     pub(crate) holes: HoleBuffer,
     pub(crate) hole_count: u32,
+    /// `Clipmap::half_width` in cells — each ring's extent in its own cells,
+    /// for the vertex shader's geomorph band.
+    pub(crate) ring_half_cells: f32,
 }
 
 impl Default for DevParams {
@@ -76,6 +79,7 @@ impl Default for DevParams {
             stamp_strength: 0.0,
             holes: HoleBuffer::default(),
             hole_count: 0,
+            ring_half_cells: 128.0,
         }
     }
 }
