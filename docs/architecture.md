@@ -290,9 +290,11 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    from albedo alpha × each layer's `height_blend`), so the second material
    shows in the low spots of the first — grass in the cracks between stones —
    instead of as a cross-fade. The blend drives **colour** too: the RVT colour
-   divided by its texel's mean material mix gives the macro tint, which times
-   the per-pixel mix gives each pixel its own material's colour (the RVT alone
-   is a ~1 m bilinear smear across boundaries). Detail albedo
+   is shifted by the difference between the pixel's material mix and its
+   texel's, giving each pixel its own material's colour while keeping the
+   bake's macro variation (the RVT alone is a ~1 m bilinear smear across
+   boundaries). Additive on purpose: a per-channel ratio divided by grass's
+   near-zero blue and turned grass/rock boundaries purple. Detail albedo
    contributes a **unit-mean ratio** (`da / da_mean`, the mean read from the
    coarsest mip) so it adds variation without double-darkening the RVT albedo.
 3. **Lighting** — `terrain_apply_lighting`, a trimmed fork of Bevy's

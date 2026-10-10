@@ -643,14 +643,18 @@ fn fragment(
         //
         // - Identity: which material this *pixel* is. The RVT colour is a ~1 m
         //   bilinear smear across material boundaries, so near the camera
-        //   rebuild it per pixel: dividing the RVT colour by its texel's mean
-        //   material mix leaves the macro tint the bake captured; multiplying
-        //   back by the per-pixel (height-blended) mix gives each pixel its own
-        //   material's colour. For a single material this is exactly the RVT.
+        //   rebuild it per pixel: shift the RVT colour by the difference
+        //   between the pixel's (height-blended) material mix and its texel's,
+        //   keeping the macro variation the bake captured. For a single
+        //   material this is exactly the RVT. Additive, not a per-channel
+        //   ratio: the texel mix comes from a jittered NEAREST id read while
+        //   the colour is filtered, so they can disagree, and dividing by a
+        //   near-zero channel (grass has almost no blue) amplified the
+        //   mismatch into purple at grass/rock boundaries.
         // - Grain: the detail texture's variation around its own mean (unit
         //   mean, so it never re-darkens the albedo the RVT already holds).
-        let macro_tint = rvt_a.rgb / max(texel_mean, vec3<f32>(1e-4));
-        let identity = mix(rvt_a.rgb, macro_tint * da_avg, detail_fade);
+        let per_pixel = max(rvt_a.rgb + (da_avg - texel_mean), vec3<f32>(0.0));
+        let identity = mix(rvt_a.rgb, per_pixel, detail_fade);
         let grain = da / max(da_avg, vec3<f32>(1e-4));
         albedo = identity * mix(vec3<f32>(1.0), grain, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
