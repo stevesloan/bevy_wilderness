@@ -289,14 +289,18 @@ fn setup(
         // Fully procedural placement (no control map): grass/dirt/rock partition
         // by slope, sediment by terrain shape (gullies and hollows).
         layers: vec![
-            // grass — base layer, everywhere. No slope band, so
-            // it competes on cliffs and pokes through the rock (natural look).
+            // grass — base layer on all but steep rock: it can't root on cliffs,
+            // so it thins from ~40° and is gone by ~55°.
             TerrainLayer {
                 tiling_scale: 150.0,
                 height_blend: 0.3,
                 normal_strength: 1.0,
                 roughness: 0.99,
-                slope: None,
+                slope: Some(SlopeRule {
+                    min_deg: 0.0,
+                    max_deg: 40.0,
+                    blend_deg: 15.0,
+                }),
                 height: None,
                 // Yields in deep hollows so gullies are clearly sediment, not a
                 // grass/gravel mix (grass is the base layer and competes everywhere).

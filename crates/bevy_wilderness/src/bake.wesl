@@ -338,6 +338,15 @@ const BREAKUP_TILING: f32 = 30.0;
 const BREAKUP_BLUR: f32 = 4.0;
 const BREAKUP_CONTRAST: f32 = 2.0;
 
+// Crevice darkening: a layer's low areas in that same breakup height read
+// darker — dirt, moisture, lichen and shadow collecting in cracks and hollows
+// — scaled by its `height_blend` (rock, whose height defines its look, gets
+// the full effect; grass and dirt only a hint). Darkest at `CREVICE_DEPTH`
+// below the layer's mean height. Gives rock faces the broken, dark patchiness
+// stray grass used to, without grass growing on cliffs.
+const CREVICE_DARKEN: f32 = 0.45;
+const CREVICE_DEPTH: f32 = 0.15;
+
 // `n0` is the heightmap normal; `e` one RVT texel (m).
 fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
     let height = terrain_height(world_xz);
@@ -373,6 +382,8 @@ fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
         let fine_h = hex_sample(albedo_array, albedo_sampler, i, blend_uv, vec2<f32>(blur, 0.0), vec2<f32>(0.0, blur)).a;
         let mean_h = textureSampleLevel(albedo_array, albedo_sampler, vec2<f32>(0.5), i, f32(textureNumLevels(albedo_array) - 1u)).a;
         var blend_h = a.a + BREAKUP_CONTRAST * (fine_h - mean_h);
+        let crevice = saturate((mean_h - fine_h) / CREVICE_DEPTH) * params.height_blend[i];
+        colors[i] *= 1.0 - CREVICE_DARKEN * crevice;
         if params.relief_depth[i] > 0.0 {
             blend_h += RELIEF_IN_BLEND * layer_relief_shape(world_xz, i);
         }
