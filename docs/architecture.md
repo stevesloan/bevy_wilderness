@@ -216,8 +216,9 @@ on looping terrain so marches cross the seam.
   the detail overlay (near only) both miss — ledges and strata that give the
   mid-ground shape. Shading only: geometry and CPU height queries ignore it.
   Relief also drives **material transitions**: a layer with relief evaluates
-  its slope band on the surface tilted by *its own* relief, so ledge risers
-  turn to rock while treads stay grass (other layers' relief is ignored —
+  its slope band on the surface tilted by *its own* relief, scaled by its
+  presence on the smooth surface, so ledge risers turn to rock near rock
+  without drawing rock lines through grass (other layers' relief is ignored —
   grass hummocks would otherwise speckle dirt across grassy slopes); height
   and curvature bands use the heightmap alone, so placement matches the
   cavity debug view; and a relief layer's blend height swings ±0.35 with its
