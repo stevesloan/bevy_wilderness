@@ -59,7 +59,7 @@ of rules.
 | Material placement | Procedural rules (slope, height, curvature/flow masks) + height blending | Slope / height / cavity bands + height blending (4 layers) | ok |
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake; distance-faded detail overlay with per-pixel height blend, hex-tiled on desktop | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
-| Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
+| Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | triplanar in bake + near detail; no cliff/rock meshes | P2 (meshes) |
 | Mid-scale relief (1–10 m) | Per-material macro detail height / normals | Procedural `Relief` per layer (noise + ledges), baked into normals + near-field shadow | ok |
 | Close-up relief | Tessellation / Nanite displacement / displacement decals | none | P2 (desktop) |
 | Terrain shadow | Heightfield/baked for terrain + CSM for dynamic | baked sun-vis + height-correct shadow-ceiling field for meshes | ok |
@@ -133,6 +133,7 @@ of rules.
   | fog | `Low` (inline) | `High` (fullscreen) |
   | AA | MSAA 4×, forward | TAA or MSAA, deferred ok |
   | `detail_hex_tiling` | off | on |
+  | `detail_triplanar` | off (bake stays triplanar) | on |
   | biplanar cliffs / POM / dense near grid | off | on |
   | ground cover density & distance | low | high |
   | dynamic-object shadows | blob / one cascade | CSM |

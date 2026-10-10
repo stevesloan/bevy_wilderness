@@ -43,7 +43,7 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 | `rvt.rs` / `bake.wesl` | Bake material, sentinel-gated bake lifecycle, re-bake |
 | `quality.rs` | `TerrainQuality`, `FogTier`, `TerrainFog`, `InlineFog` |
 | `height_fog.rs` / `.wesl`, `fog_functions.wesl`, `mesh_fog.rs` / `.wesl` | Height fog: shared math, fullscreen pass, inline mesh fog |
-| `hex_tiling.wesl` | Stochastic hex tiling, shared by the bake and the detail overlay |
+| `hex_tiling.wesl` | Stochastic hex tiling and triplanar helpers, shared by the bake and the detail overlay |
 | `sun_shadow.rs` / `.wesl` | Baked sun shadow-ceiling field for *your* meshes |
 | `holes.rs` | Terrain holes (tunnels, caves, basements) |
 | `heightfield.rs` | CPU height queries |
@@ -145,7 +145,7 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 
 `flags`: bit 0 wireframe · 1 ambient gather on · 2 single-layer detail ·
 3 looping · 4 clay · 5 stamp preview · 6 stamp mask-weighted · 7 hex-tiled
-detail (pipeline key only).
+detail · 8 triplanar detail (7 and 8 are pipeline key only).
 
 > ⚠️ **Binding ceiling.** The material sits at the per-stage limit for uniform
 > buffers and near the ~16 sampled-texture limit of mobile GPUs. Adding uniform
@@ -162,6 +162,8 @@ detail (pipeline key only).
 - `WILDERNESS_HOLES` — `GridMaterialKey.holes` (any holes present).
 - `WILDERNESS_DETAIL_HEX` — fragment; `TerrainQuality::detail_hex_tiling`
   (flags bit 7). Compiles the hex path in; cheaper tiers carry none of it.
+- `WILDERNESS_DETAIL_TRIPLANAR` — fragment; `TerrainQuality::detail_triplanar`
+  (flags bit 8). Side projections for the near detail on steep ground.
 - `WILDERNESS_EDIT_OVERLAY` / `WILDERNESS_STAMP` — `editing` builds.
 
 ## 6. The bake — RVT and friends
@@ -199,11 +201,17 @@ on looping terrain so marches cross the seam.
   is sampled with **hex (stochastic) tiling** (Mikkelsen, 3 taps) to kill
   repetition — affordable because it runs in the bake, not per frame.
   Normals are reoriented onto the geometric normal (central differences).
+  **Triplanar on steep ground:** a top-down projection smears textures along a
+  slope by 1/cos(slope) (2× at 60°, ~4× at 75°), and rock lives there, so
+  steep texels also project from the two sides, blended by surface angle
+  (whiteout normal blend, Golus); projections under 2 % weight aren't
+  sampled, so flat ground pays nothing.
   The **top two layers** and their blend are packed into the normal target's
   alpha byte (`i0 + 4·i1 + 16·q`) for the detail overlay.
 - **Mid-scale relief** (`relief_at`, `relief_normal`, `relief_shadow`).
   A layer's optional `Relief { depth, scale, ledges }` adds procedural shape:
-  three octaves of periodic gradient noise with features ~`scale` m across,
+  four octaves of periodic gradient noise from ~`scale` m down to 1/8 of it
+  (persistence 0.65, so small bumps read alongside large forms),
   optionally terraced into ledges (rock strata), blended by the final splat
   weights. Procedural because layer textures only carry cm-scale detail —
   their height maps, filtered to the RVT's 1 m texels, gave grass and dirt
@@ -347,6 +355,7 @@ standalone VR.
 | `ambient_gather` | true | bake + sample AO / bent normal | spawn or re-bake |
 | `detail_layers` | 2 | 1 = skip the second material's detail samples (and the per-pixel height blend) | spawn or re-bake |
 | `detail_hex_tiling` | true | hex-tile the detail overlay (3× near detail samples) | live |
+| `detail_triplanar` | true | side projections for near detail on steep ground (2× samples on steep pixels) | live |
 | `sun_shadow_size` | 2048 | shadow-ceiling field size | spawn or re-bake |
 
 Bake-time fields are snapshotted when the clipmap spawns; changing them later

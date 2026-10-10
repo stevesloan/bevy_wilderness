@@ -72,8 +72,9 @@ pub struct CavityRule {
 pub struct Relief {
     /// Peak-to-peak relief height, meters.
     pub depth: f32,
-    /// Typical feature size, meters (the largest of three octaves). Features
-    /// below ~2 RVT texels (~2 m at the default size) can't show.
+    /// Typical feature size, meters: the largest of four octaves, down to
+    /// 1/8 of it. Features below ~2 RVT texels (~2 m at the default size)
+    /// can't show.
     pub scale: f32,
     /// 0 = smooth rolling relief; 1 = terraced into ledges (flat treads,
     /// steep risers), e.g. rock strata.
@@ -376,8 +377,9 @@ pub(crate) fn init_clipmaps(
 
         // Quality bits packed into `flags` alongside the per-material wireframe bit
         // (bit1 = ambient gather, bit2 = single-layer detail, bit3 = looping,
-        // bit7 = hex-tiled detail).
+        // bit7 = hex-tiled detail, bit8 = triplanar detail).
         let quality_bits = ((quality.detail_hex_tiling as u32) << 7)
+            | ((quality.detail_triplanar as u32) << 8)
             | ((quality.ambient_gather as u32) << 1)
             | ((quality.detail_layers <= 1) as u32) << 2
             | (clipmap.looping as u32) << 3;

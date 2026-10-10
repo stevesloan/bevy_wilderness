@@ -32,8 +32,8 @@ pub enum FogTier {
 
 /// Terrain performance profile — set **once at startup** from device detection
 /// (dial the knobs down for a standalone headset, up for desktop). Only
-/// [`fog`](Self::fog) and [`detail_hex_tiling`](Self::detail_hex_tiling) apply
-/// live; the bake-time fields
+/// [`fog`](Self::fog), [`detail_hex_tiling`](Self::detail_hex_tiling) and
+/// [`detail_triplanar`](Self::detail_triplanar) apply live; the bake-time fields
 /// (`rvt_size`, `ambient_gather`, `detail_layers`, `sun_shadow_size`) are read
 /// when a clipmap bakes —
 /// changing them after has no effect (it would need a rebake). [`default`]
@@ -57,6 +57,13 @@ pub struct TerrainQuality {
     /// samples near the camera — a desktop feature; standalone VR leaves it
     /// off. Live-switchable (re-specializes the terrain pipeline).
     pub detail_hex_tiling: bool,
+    /// Triplanar near detail on steep ground: side projections stop textures
+    /// stretching along cliffs (2× at 60°, ~4× at 75° with a top-down
+    /// projection — rock is the material that lives there). Doubles the
+    /// detail samples on steep pixels near the camera; flat ground pays
+    /// nothing. A desktop feature; standalone VR can leave it off (the baked
+    /// RVT is always triplanar). Live-switchable (re-specializes).
+    pub detail_triplanar: bool,
     /// Resolution (square) of the sun shadow-ceiling field that shadows *meshes*
     /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Sized
     /// separately from [`rvt_size`](Self::rvt_size) and much smaller: it holds a
@@ -76,6 +83,7 @@ impl Default for TerrainQuality {
             ambient_gather: true,
             detail_layers: 2,
             detail_hex_tiling: true,
+            detail_triplanar: true,
             sun_shadow_size: 2048,
         }
     }
@@ -131,9 +139,17 @@ pub(crate) fn apply_terrain_quality(
     } else {
         0
     };
+    let triplanar = if quality.detail_triplanar {
+        GridMaterial::FLAG_DETAIL_TRIPLANAR
+    } else {
+        0
+    };
     for (_, material) in materials.iter_mut() {
         material.extension.fog = inline.clone();
-        material.extension.flags = (material.extension.flags & !GridMaterial::FLAG_DETAIL_HEX) | hex;
+        material.extension.flags = (material.extension.flags
+            & !(GridMaterial::FLAG_DETAIL_HEX | GridMaterial::FLAG_DETAIL_TRIPLANAR))
+            | hex
+            | triplanar;
     }
     // Meshes (characters/props) using HeightFogExtension get the same inline fog,
     // so they don't render as unfogged cutouts on the Low tier.

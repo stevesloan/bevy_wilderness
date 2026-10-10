@@ -159,6 +159,7 @@ fn setup(
         ambient_gather: true,
         detail_layers: 2,
         detail_hex_tiling: true,
+        detail_triplanar: true,
         sun_shadow_size: 2048,
     });
 
@@ -310,8 +311,8 @@ fn setup(
                     blend: 0.15,
                 }),
                 relief: Some(Relief {
-                    depth: 6.0,
-                    scale: 24.0,
+                    depth: 4.5,
+                    scale: 20.0,
                     ledges: 0.0,
                 }),
             },
@@ -329,8 +330,8 @@ fn setup(
                 height: None,
                 cavity: None,
                 relief: Some(Relief {
-                    depth: 6.0,
-                    scale: 18.0,
+                    depth: 3.5,
+                    scale: 16.0,
                     ledges: 0.2,
                 }),
             },
@@ -339,7 +340,9 @@ fn setup(
                 tiling_scale: 150.0,
                 height_blend: 0.95,
                 normal_strength: 1.3,
-                roughness: 0.94,
+                // Weathered rock isn't fully rough (~0.7–0.85): a faint sheen that
+                // catches low sun. Multiplies the texture's roughness (~1.0 here).
+                roughness: 0.8,
                 slope: Some(SlopeRule {
                     min_deg: 45.0,
                     max_deg: 90.0,
@@ -348,8 +351,8 @@ fn setup(
                 height: None,
                 cavity: None,
                 relief: Some(Relief {
-                    depth: 12.0,
-                    scale: 40.0,
+                    depth: 7.0,
+                    scale: 32.0,
                     ledges: 0.7,
                 }),
             },

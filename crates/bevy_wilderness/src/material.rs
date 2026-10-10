@@ -18,6 +18,7 @@ pub(crate) struct GridMaterialKey {
     wireframe: bool,
     holes: bool,
     detail_hex: bool,
+    detail_triplanar: bool,
 }
 
 impl From<&GridMaterial> for GridMaterialKey {
@@ -26,6 +27,7 @@ impl From<&GridMaterial> for GridMaterialKey {
             wireframe: material.flags & 1 != 0,
             holes: material.dev.hole_count > 0,
             detail_hex: material.flags & GridMaterial::FLAG_DETAIL_HEX != 0,
+            detail_triplanar: material.flags & GridMaterial::FLAG_DETAIL_TRIPLANAR != 0,
         }
     }
 }
@@ -175,7 +177,8 @@ pub(crate) struct GridMaterial {
     pub(crate) minmax: Vec2,
     /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail,
     /// bit3 looping, bit4 clay display mode, bit5/6 stamp preview (`editing`),
-    /// bit7 hex-tiled detail (pipeline key, not read by the shader). Quality knobs ride
+    /// bit7 hex-tiled / bit8 triplanar detail (pipeline key, not read by the
+    /// shader). Quality knobs ride
     /// here rather than adding uniforms (this material is at the bind-group binding
     /// limit — extra uniforms silently break its pipeline).
     #[uniform(111)]
@@ -189,6 +192,10 @@ impl GridMaterial {
     /// [`TerrainQuality::detail_hex_tiling`](crate::TerrainQuality) by
     /// `apply_terrain_quality`.
     pub(crate) const FLAG_DETAIL_HEX: u32 = 1 << 7;
+    /// `flags` bit8: triplanar near detail on steep ground. Pipeline key
+    /// (`WILDERNESS_DETAIL_TRIPLANAR`), like [`Self::FLAG_DETAIL_HEX`]; kept in
+    /// sync with [`TerrainQuality::detail_triplanar`](crate::TerrainQuality).
+    pub(crate) const FLAG_DETAIL_TRIPLANAR: u32 = 1 << 8;
     /// `flags` bit4: clay display mode — grey + screen-derivative
     /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
     #[cfg(feature = "editing")]
@@ -265,6 +272,11 @@ impl MaterialExtension for GridMaterial {
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
             fragment.shader_defs.push("WILDERNESS_DETAIL_HEX".into());
+        }
+        if key.bind_group_data.detail_triplanar
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("WILDERNESS_DETAIL_TRIPLANAR".into());
         }
         // terrain.wesl's fragment machinery only compiles in pipelines that
         // shade: the forward pass and the deferred g-buffer pass. Depth-only

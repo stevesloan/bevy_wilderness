@@ -3,7 +3,7 @@
 // pass can sample the result instead of blending per-fragment. Rendered by a
 // top-down orthographic camera over a flat quad covering the terrain.
 import bevy_pbr::render::forward_io::VertexOutput;
-import bevy_wilderness::hex_tiling::hex_sample;
+import bevy_wilderness::hex_tiling::{hex_sample, triplanar_weights, side_normal_world};
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var heightmap_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var heightmap_sampler: sampler;
@@ -359,19 +359,59 @@ fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
     var orms = array<vec3<f32>, 4>();
     var scores = array<f32, 4>();
     var maxs = 0.0;
+    let tri = triplanar_weights(n0);
+    let wpos = vec3<f32>(world_xz.x, height, world_xz.y);
+    // The tangent frame `reorient` uses, for converting side-projected world
+    // normals into the same tangent space as the top projection's.
+    let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n0.z) > 0.99);
+    let frame_t = normalize(cross(ref_axis, n0));
+    let frame_b = cross(n0, frame_t);
     for (var i = 0u; i < MAX_LAYERS; i++) {
-        let tile_uv = world_xz / params.tiling_scale[i];
+        let tiling = params.tiling_scale[i];
+        let strength = params.normal_strength[i];
+        let tile_uv = world_xz / tiling;
         let ddx = dpdx(tile_uv);
         let ddy = dpdy(tile_uv);
-        let a = hex_sample(albedo_array, albedo_sampler, i, tile_uv, ddx, ddy);
-        // Flip X: the reorientation tangent runs -X vs the +X tiling UV, so the
-        // normal's red axis is mirrored — concave features (cracks) light up as
-        // convex (bumps/veins) without this.
-        let n = (hex_sample(normal_array, normal_sampler, i, tile_uv, ddx, ddy).xyz * 2.0 - 1.0)
-            * vec3<f32>(-1.0, 1.0, 1.0);
+        // Side projections' UVs and gradients, taken in uniform control flow.
+        let x_uv = vec2<f32>(wpos.z, -wpos.y) / tiling;
+        let z_uv = vec2<f32>(wpos.x, -wpos.y) / tiling;
+        let x_ddx = dpdx(x_uv);
+        let x_ddy = dpdy(x_uv);
+        let z_ddx = dpdx(z_uv);
+        let z_ddy = dpdy(z_uv);
+
+        var a = vec4<f32>(0.0);
+        var n = vec3<f32>(0.0);
+        var orm = vec3<f32>(0.0);
+        if tri.x > 0.0 {
+            a += tri.x * hex_sample(albedo_array, albedo_sampler, i, tile_uv, ddx, ddy);
+            // Flip X: the reorientation tangent runs -X vs the +X tiling UV, so
+            // the normal's red axis is mirrored — concave features (cracks)
+            // light up as convex (bumps/veins) without this.
+            let t = (hex_sample(normal_array, normal_sampler, i, tile_uv, ddx, ddy).xyz * 2.0 - 1.0)
+                * vec3<f32>(-1.0, 1.0, 1.0);
+            n += tri.x * vec3<f32>(t.xy * strength, t.z);
+            orm += tri.x * hex_sample(orm_array, orm_sampler, i, tile_uv, ddx, ddy).rgb;
+        }
+        if tri.y > 0.0 {
+            a += tri.y * hex_sample(albedo_array, albedo_sampler, i, x_uv, x_ddx, x_ddy);
+            var s = hex_sample(normal_array, normal_sampler, i, x_uv, x_ddx, x_ddy).xyz * 2.0 - 1.0;
+            s = vec3<f32>(s.xy * strength, s.z);
+            let w = side_normal_world(s, n0, 1u);
+            n += tri.y * vec3<f32>(dot(w, frame_t), dot(w, frame_b), dot(w, n0));
+            orm += tri.y * hex_sample(orm_array, orm_sampler, i, x_uv, x_ddx, x_ddy).rgb;
+        }
+        if tri.z > 0.0 {
+            a += tri.z * hex_sample(albedo_array, albedo_sampler, i, z_uv, z_ddx, z_ddy);
+            var s = hex_sample(normal_array, normal_sampler, i, z_uv, z_ddx, z_ddy).xyz * 2.0 - 1.0;
+            s = vec3<f32>(s.xy * strength, s.z);
+            let w = side_normal_world(s, n0, 2u);
+            n += tri.z * vec3<f32>(dot(w, frame_t), dot(w, frame_b), dot(w, n0));
+            orm += tri.z * hex_sample(orm_array, orm_sampler, i, z_uv, z_ddx, z_ddy).rgb;
+        }
         colors[i] = a.rgb;
-        normals[i] = vec3<f32>(n.xy * params.normal_strength[i], n.z);
-        orms[i] = hex_sample(orm_array, orm_sampler, i, tile_uv, ddx, ddy).rgb;
+        normals[i] = n;
+        orms[i] = orm;
         // Height modulates the band weight (±height_blend), rather than adding
         // to it: a layer's score then goes to zero with its weight, so it
         // thins out continuously at its band edge. An additive height term
@@ -482,11 +522,15 @@ fn relief_perlin(x: vec2<f32>, period: vec2<i32>, seed: u32) -> f32 {
     return mix(mix(g00, g10, u.x), mix(g01, g11, u.x), u.y);
 }
 
-// One layer's relief shape in about -1..1: three octaves of noise with
-// features of `scale` meters, optionally terraced into ledges (rock strata:
-// flat treads, steep risers).
+// One layer's relief shape in about -1..1: four octaves of noise from
+// features of `scale` meters down to 1/8 of that, optionally terraced into
+// ledges (rock strata: flat treads, steep risers). Each finer octave keeps
+// `RELIEF_PERSISTENCE` of the previous one's strength, so large forms and
+// small bumps both read — at 0.5 the fine octaves were too faint (one size
+// looked too macro, a smaller one too micro).
+const RELIEF_PERSISTENCE: f32 = 0.65;
 fn relief_shape(xz: vec2<f32>, scale: f32, ledges: f32, seed: u32) -> f32 {
-    const OCTAVES = 3;
+    const OCTAVES = 4;
     let world = vec2<f32>(textureDimensions(heightmap_texture)) * texel_size;
     let uv = xz / world + 0.5;
     var period = max(vec2<i32>(round(world / scale)), vec2<i32>(1));
@@ -496,7 +540,7 @@ fn relief_shape(xz: vec2<f32>, scale: f32, ledges: f32, seed: u32) -> f32 {
     for (var o = 0; o < OCTAVES; o++) {
         n += amp * relief_perlin(uv * vec2<f32>(period), period, seed + u32(o) * 101u);
         norm += amp;
-        amp *= 0.5;
+        amp *= RELIEF_PERSISTENCE;
         period *= 2;
     }
     n = clamp(n / norm * 1.4, -1.0, 1.0);

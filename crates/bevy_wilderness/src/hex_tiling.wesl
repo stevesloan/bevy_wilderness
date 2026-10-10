@@ -1,3 +1,6 @@
+// Texture-projection helpers shared by the RVT bake and the main pass's detail
+// overlay: stochastic hex tiling and triplanar mapping.
+//
 // Stochastic hex tiling (Mikkelsen, "Practical Real-Time Hex-Tiling"): samples
 // a tiled texture 3× on a randomized hex lattice and blends, hiding the
 // repetition. Used by the RVT bake (every layer, once) and by the main pass's
@@ -64,4 +67,32 @@ fn hex_sample(
     ddy: vec2<f32>,
 ) -> vec4<f32> {
     return hex_sample_taps(tex, samp, layer, uv, hex_taps(uv), ddx, ddy);
+}
+
+// --- Triplanar on steep ground ---
+// Projecting textures straight down (`world_xz / tiling`) smears them along a
+// slope by 1/cos(slope): 2× at 60°, ~4× at 75°. Rock lives on steep ground, so
+// it was always the most stretched material. Steep surfaces also project from
+// the two sides (X and Z), blended by surface angle; a projection whose weight
+// is below `TRIPLANAR_MIN` isn't sampled, so flat ground pays nothing.
+const TRIPLANAR_SHARPNESS: f32 = 4.0;
+const TRIPLANAR_MIN: f32 = 0.02;
+
+// Projection weights (top, side X, side Z) for surface normal `n`.
+fn triplanar_weights(n: vec3<f32>) -> vec3<f32> {
+    let w = pow(abs(n), vec3<f32>(TRIPLANAR_SHARPNESS));
+    let top_x_z = vec3<f32>(w.y, w.x, w.z) / (w.x + w.y + w.z);
+    // Drop negligible projections, renormalizing the rest.
+    let kept = select(vec3<f32>(0.0), top_x_z, top_x_z >= vec3<f32>(TRIPLANAR_MIN));
+    return kept / (kept.x + kept.y + kept.z);
+}
+
+// A side projection's normal-map sample `s` (unpacked, -1..1) as a world
+// normal, by the whiteout blend (Golus, "Normal Mapping for a Triplanar
+// Shader"); `axis` 1 = the X-facing plane (uv = z, -y), 2 = Z-facing (x, -y).
+fn side_normal_world(s: vec3<f32>, n: vec3<f32>, axis: u32) -> vec3<f32> {
+    if axis == 1u {
+        return vec3<f32>(s.xy + n.zy, abs(s.z) * n.x).zyx;
+    }
+    return vec3<f32>(s.xy + n.xy, abs(s.z) * n.z);
 }

@@ -1,6 +1,6 @@
 import bevy_pbr::render::mesh_functions;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
-import bevy_wilderness::hex_tiling::{HexTaps, hex_taps, hex_sample_taps};
+import bevy_wilderness::hex_tiling::{HexTaps, hex_taps, hex_sample_taps, triplanar_weights, side_normal_world};
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
@@ -299,6 +299,79 @@ fn detail_tap(
     return c;
 }
 
+// Where a pixel's detail maps are read from: the top (XZ) projection and, on
+// steep ground with `WILDERNESS_DETAIL_TRIPLANAR`, the two side projections —
+// with their gradients (taken in uniform control flow) and weights — plus the
+// base normal and its tangent frame for converting side normals.
+struct DetailProj {
+    top_uv: vec2<f32>,
+    top_ddx: vec2<f32>,
+    top_ddy: vec2<f32>,
+    x_uv: vec2<f32>,
+    x_ddx: vec2<f32>,
+    x_ddy: vec2<f32>,
+    z_uv: vec2<f32>,
+    z_ddx: vec2<f32>,
+    z_ddy: vec2<f32>,
+    // Projection weights: top, side X, side Z.
+    w: vec3<f32>,
+    n: vec3<f32>,
+    t: vec3<f32>,
+    b: vec3<f32>,
+}
+
+// One layer's detail albedo, normal (unpacked, in the top projection's
+// pre-flip tangent space) and ORM.
+struct DetailMaps {
+    albedo: vec4<f32>,
+    normal: vec3<f32>,
+    orm: vec4<f32>,
+}
+
+fn detail_projection(layer: u32, uv: vec2<f32>, ddx: vec2<f32>, ddy: vec2<f32>) -> DetailMaps {
+    var taps: HexTaps;
+    @if(WILDERNESS_DETAIL_HEX) {
+        taps = hex_taps(uv);
+    }
+    var m: DetailMaps;
+    m.albedo = detail_tap(detail_albedo_array, layer, uv, taps, ddx, ddy);
+    m.normal = detail_tap(detail_normal_array, layer, uv, taps, ddx, ddy).xyz * 2.0 - 1.0;
+    m.orm = detail_tap(detail_orm_array, layer, uv, taps, ddx, ddy);
+    return m;
+}
+
+// A side projection's normal, as a pre-flip tangent-space normal in the top
+// projection's frame (the main pass flips X, then reorients onto `p.n`).
+fn side_to_tangent(s: vec3<f32>, p: DetailProj, axis: u32) -> vec3<f32> {
+    let w = side_normal_world(s, p.n, axis);
+    return vec3<f32>(-dot(w, p.t), dot(w, p.b), dot(w, p.n));
+}
+
+// One layer's detail maps, blended across the projections in use. Without
+// `WILDERNESS_DETAIL_TRIPLANAR` only the top projection is read.
+fn detail_maps(layer: u32, p: DetailProj) -> DetailMaps {
+    let top = detail_projection(layer, p.top_uv, p.top_ddx, p.top_ddy);
+    var m: DetailMaps;
+    m.albedo = top.albedo * p.w.x;
+    m.normal = top.normal * p.w.x;
+    m.orm = top.orm * p.w.x;
+    @if(WILDERNESS_DETAIL_TRIPLANAR) {
+        if p.w.y > 0.0 {
+            let side = detail_projection(layer, p.x_uv, p.x_ddx, p.x_ddy);
+            m.albedo += side.albedo * p.w.y;
+            m.normal += side_to_tangent(side.normal, p, 1u) * p.w.y;
+            m.orm += side.orm * p.w.y;
+        }
+        if p.w.z > 0.0 {
+            let side = detail_projection(layer, p.z_uv, p.z_ddx, p.z_ddy);
+            m.albedo += side.albedo * p.w.z;
+            m.normal += side_to_tangent(side.normal, p, 2u) * p.w.z;
+            m.orm += side.orm * p.w.z;
+        }
+    }
+    return m;
+}
+
 // Octahedral decode of a 0..1 encoded unit vector (2 channels).
 fn oct_decode(f: vec2<f32>) -> vec3<f32> {
     let e = f * 2.0 - 1.0;
@@ -556,8 +629,27 @@ fn fragment(
     // taken outside the branch so the guarded samples keep correct mip selection.
     let detail_fade = 1.0 - smoothstep(detail.near, detail.far, cam_dist);
     let dtile = in.world_position.xz / detail.tiling;
-    let ddx = dpdx(dtile);
-    let ddy = dpdy(dtile);
+    // Detail projections; gradients taken here, in uniform control flow, so
+    // the guarded samples below keep correct mip selection.
+    var proj: DetailProj;
+    proj.top_uv = dtile;
+    proj.top_ddx = dpdx(dtile);
+    proj.top_ddy = dpdy(dtile);
+    let wp = in.world_position.xyz;
+    proj.x_uv = vec2<f32>(wp.z, -wp.y) / detail.tiling;
+    proj.x_ddx = dpdx(proj.x_uv);
+    proj.x_ddy = dpdy(proj.x_uv);
+    proj.z_uv = vec2<f32>(wp.x, -wp.y) / detail.tiling;
+    proj.z_ddx = dpdx(proj.z_uv);
+    proj.z_ddy = dpdy(proj.z_uv);
+    proj.w = vec3<f32>(1.0, 0.0, 0.0);
+    @if(WILDERNESS_DETAIL_TRIPLANAR) {
+        proj.w = triplanar_weights(base_normal);
+    }
+    proj.n = base_normal;
+    let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(base_normal.z) > 0.99);
+    proj.t = normalize(cross(ref_axis, base_normal));
+    proj.b = cross(base_normal, proj.t);
 
     var world_normal = base_normal;
     var albedo = rvt_a.rgb;
@@ -602,26 +694,22 @@ fn fragment(
         // so `da / da_avg` is unit-mean by construction and leaves the macro
         // albedo intact for any texture set, whatever its average brightness.
         let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
-        // Hex lattice weights, shared by every detail tap below (zeroed and
-        // unused on the plain path).
-        var taps: HexTaps;
-        @if(WILDERNESS_DETAIL_HEX) {
-            taps = hex_taps(dtile);
-        }
-        var dn = detail_tap(detail_normal_array, id0, dtile, taps, ddx, ddy).xyz * 2.0 - 1.0;
-        let da0 = detail_tap(detail_albedo_array, id0, dtile, taps, ddx, ddy);
+        let m0 = detail_maps(id0, proj);
+        var dn = m0.normal;
+        let da0 = m0.albedo;
         var da = da0.rgb;
         let mean0 = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id0, da_lod).rgb;
         var da_avg = mean0;
-        var dorm = detail_tap(detail_orm_array, id0, dtile, taps, ddx, ddy);
+        var dorm = m0.orm;
         // Mean colour of this RVT texel's material mix, as baked (`mblend` is the
         // second material's share). Stays `mean0` for a single material.
         var texel_mean = mean0;
         if (flags & 4u) == 0u && mblend > 0.0 {
-            let dn1 = detail_tap(detail_normal_array, id1, dtile, taps, ddx, ddy).xyz * 2.0 - 1.0;
-            let da1 = detail_tap(detail_albedo_array, id1, dtile, taps, ddx, ddy);
+            let m1 = detail_maps(id1, proj);
+            let dn1 = m1.normal;
+            let da1 = m1.albedo;
             let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id1, da_lod).rgb;
-            let dorm1 = detail_tap(detail_orm_array, id1, dtile, taps, ddx, ddy);
+            let dorm1 = m1.orm;
             // `mblend` is the second material's share of this RVT texel (~1 m);
             // the detail heights (albedo alpha) decide *which pixels* get it.
             let t = height_blend_weight(mblend, da0.a, da1.a, detail.height_blend[id0], detail.height_blend[id1]);
@@ -634,10 +722,7 @@ fn fragment(
         // Flip X (see bake) and reorient onto the base normal.
         dn = dn * vec3<f32>(-1.0, 1.0, 1.0);
         let dn_scaled = vec3<f32>(dn.xy * detail.normal_strength * detail_fade, dn.z);
-        let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(base_normal.z) > 0.99);
-        let dt = normalize(cross(ref_axis, base_normal));
-        let db = cross(base_normal, dt);
-        world_normal = normalize(dt * dn_scaled.x + db * dn_scaled.y + base_normal * dn_scaled.z);
+        world_normal = normalize(proj.t * dn_scaled.x + proj.b * dn_scaled.y + base_normal * dn_scaled.z);
 
         // Colour, in two parts (epsilons guard layers black in some channel):
         //
