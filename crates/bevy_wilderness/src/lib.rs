@@ -15,7 +15,7 @@ mod sun_shadow;
 mod texture;
 
 pub use clipmap::{
-    Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer,
+    CavityRule, Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer,
 };
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};

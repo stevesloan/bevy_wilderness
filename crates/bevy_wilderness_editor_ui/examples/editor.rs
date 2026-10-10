@@ -74,7 +74,7 @@ use bevy::{
 };
 
 use bevy_wilderness::{
-    Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog, HeightFogPlugin, HeightRule,
+    CavityRule, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog, HeightFogPlugin,
     SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
@@ -475,7 +475,7 @@ fn setup(
     // Same terrain material set as the basic example (fetch the textures once
     // with `python crates/bevy_wilderness/assets/fetch_textures.py`).
     let layer = |suffix: &str| {
-        ["grass", "dirt", "rock", "snow"]
+        ["grass", "dirt", "rock", "sediment"]
             .map(|name| format!("../bevy_wilderness/assets/terrain/{name}_{suffix}.png"))
     };
     let albedo_array = load_terrain_array(&mut images, &layer("albedo"), true);
@@ -545,11 +545,8 @@ fn setup(
                 normal_strength: 1.0,
                 roughness: 0.99,
                 slope: None,
-                height: Some(HeightRule {
-                    min: -2000.0,
-                    max: 700.0,
-                    blend: 250.0,
-                }),
+                height: None,
+                cavity: None,
             },
             TerrainLayer {
                 tiling_scale: 300.0,
@@ -561,11 +558,8 @@ fn setup(
                     max_deg: 55.0,
                     blend_deg: 10.0,
                 }),
-                height: Some(HeightRule {
-                    min: -2000.0,
-                    max: 700.0,
-                    blend: 250.0,
-                }),
+                height: None,
+                cavity: None,
             },
             TerrainLayer {
                 tiling_scale: 150.0,
@@ -578,21 +572,27 @@ fn setup(
                     blend_deg: 12.0,
                 }),
                 height: None,
+                cavity: None,
             },
+            // sediment — pebbles washed into gullies and hollows (cavity below
+            // ~0.3: ground the surrounding terrain rises above), on gentle slopes
+            // where water slows and drops its load. Placed by shape, which slope and
+            // height bands alone can't express.
             TerrainLayer {
                 tiling_scale: 100.0,
-                height_blend: 0.4,
-                normal_strength: 0.4,
-                roughness: 0.7,
+                height_blend: 0.6,
+                normal_strength: 1.0,
+                roughness: 0.9,
                 slope: Some(SlopeRule {
                     min_deg: 0.0,
-                    max_deg: 35.0,
-                    blend_deg: 12.0,
+                    max_deg: 30.0,
+                    blend_deg: 10.0,
                 }),
-                height: Some(HeightRule {
-                    min: 500.0,
-                    max: 800.0,
-                    blend: 250.0,
+                height: None,
+                cavity: Some(CavityRule {
+                    min: 0.0,
+                    max: 0.3,
+                    blend: 0.1,
                 }),
             },
         ],

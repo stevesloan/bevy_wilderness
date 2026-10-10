@@ -14,7 +14,7 @@ use bevy::{
 use bevy::pbr::ExtendedMaterial;
 use bevy_wilderness::{
     load_terrain_array, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog,
-    HeightFogExtension, HeightFogPlugin, HeightRule, SlopeRule, TerrainFog, TerrainLayer,
+    CavityRule, HeightFogExtension, HeightFogPlugin, SlopeRule, TerrainFog, TerrainLayer,
     TerrainQuality,
 };
 
@@ -246,7 +246,7 @@ fn setup(
     // download them. srgb = true for color, false for linear normal / ORM.
     // ORM packs occlusion, roughness, metallic into R, G, B (metallic ~0).
     let layer = |suffix: &str| {
-        ["grass", "dirt", "rock", "snow"].map(|name| format!("assets/terrain/{name}_{suffix}.png"))
+        ["grass", "dirt", "rock", "sediment"].map(|name| format!("assets/terrain/{name}_{suffix}.png"))
     };
     let albedo_array = load_terrain_array(&mut images, &layer("albedo"), true);
     let normal_array = load_terrain_array(&mut images, &layer("normal"), false);
@@ -287,9 +287,9 @@ fn setup(
             },
         ],
         // Fully procedural placement (no control map): grass/dirt/rock partition
-        // by slope, snow by height. Snowline ~700 m (height range is ±1312.5).
+        // by slope, sediment by terrain shape (gullies and hollows).
         layers: vec![
-            // grass — base layer, everywhere below the snowline. No slope band, so
+            // grass — base layer, everywhere. No slope band, so
             // it competes on cliffs and pokes through the rock (natural look).
             TerrainLayer {
                 tiling_scale: 150.0,
@@ -297,13 +297,10 @@ fn setup(
                 normal_strength: 1.0,
                 roughness: 0.99,
                 slope: None,
-                height: Some(HeightRule {
-                    min: -2000.0,
-                    max: 700.0,
-                    blend: 250.0,
-                }),
+                height: None,
+                cavity: None,
             },
-            // dirt — mid slopes, below the snowline
+            // dirt — mid slopes
             TerrainLayer {
                 tiling_scale: 300.0,
                 height_blend: 0.5,
@@ -314,13 +311,10 @@ fn setup(
                     max_deg: 55.0,
                     blend_deg: 10.0,
                 }),
-                height: Some(HeightRule {
-                    min: -2000.0,
-                    max: 700.0,
-                    blend: 250.0,
-                }),
+                height: None,
+                cavity: None,
             },
-            // rock — steep terrain at any height (cliffs stay bare above snow)
+            // rock — steep terrain at any height
             TerrainLayer {
                 tiling_scale: 150.0,
                 height_blend: 0.95,
@@ -332,22 +326,27 @@ fn setup(
                     blend_deg: 12.0,
                 }),
                 height: None,
+                cavity: None,
             },
-            // snow — above the snowline, on all but the steepest faces
+            // sediment — pebbles washed into gullies and hollows (cavity below
+            // ~0.3: ground the surrounding terrain rises above), on gentle slopes
+            // where water slows and drops its load. Placed by shape, which slope and
+            // height bands alone can't express.
             TerrainLayer {
                 tiling_scale: 100.0,
-                height_blend: 0.4,
-                normal_strength: 0.4,
-                roughness: 0.7,
+                height_blend: 0.6,
+                normal_strength: 1.0,
+                roughness: 0.9,
                 slope: Some(SlopeRule {
                     min_deg: 0.0,
-                    max_deg: 35.0,
-                    blend_deg: 12.0,
+                    max_deg: 30.0,
+                    blend_deg: 10.0,
                 }),
-                height: Some(HeightRule {
-                    min: 500.0,
-                    max: 800.0,
-                    blend: 250.0,
+                height: None,
+                cavity: Some(CavityRule {
+                    min: 0.0,
+                    max: 0.3,
+                    blend: 0.1,
                 }),
             },
         ],

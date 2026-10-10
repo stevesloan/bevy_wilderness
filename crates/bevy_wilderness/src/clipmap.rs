@@ -42,9 +42,25 @@ pub struct HeightRule {
     pub blend: f32,
 }
 
+/// Terrain-curvature band a layer occupies, on the baked cavity scale: 0 a
+/// deep hollow, 0.5 flat or evenly sloped, 1 a sharp ridge (the depression
+/// angle of the surrounding ~16 m ring, ±15° mapped to 0..1 — view it with the
+/// `dev-controls` cavity debug view). Same band shape as [`SlopeRule`].
+///
+/// Places material by *shape*: sediment and scree collect in gullies and
+/// hollows, ridges are scoured to rock — what slope and height alone can't
+/// express (a gully and a ridge of equal slope look the same to them).
+#[derive(Clone, Debug)]
+pub struct CavityRule {
+    pub min: f32,
+    pub max: f32,
+    pub blend: f32,
+}
+
 /// A single tiling material layer in a [`Clipmap`]'s splat set. Placement is
-/// procedural: a layer appears where its optional [`SlopeRule`] and [`HeightRule`]
-/// bands overlap (a layer with neither is present everywhere). No control map.
+/// procedural: a layer appears where its optional [`SlopeRule`], [`HeightRule`]
+/// and [`CavityRule`] bands overlap (a layer with none is present everywhere).
+/// No control map.
 #[derive(Clone, Debug)]
 pub struct TerrainLayer {
     /// World-space size of one texture tile, in meters.
@@ -61,6 +77,8 @@ pub struct TerrainLayer {
     pub slope: Option<SlopeRule>,
     /// World-height band this layer occupies (none = any height).
     pub height: Option<HeightRule>,
+    /// Curvature band this layer occupies (none = any shape).
+    pub cavity: Option<CavityRule>,
 }
 
 /// The near-range detail overlay: per-material high-frequency textures blended

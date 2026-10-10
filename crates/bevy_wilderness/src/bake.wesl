@@ -37,6 +37,9 @@ struct TerrainParams {
     height_min: vec4<f32>,
     height_max: vec4<f32>,
     height_range_blend: vec4<f32>,
+    cavity_min: vec4<f32>,
+    cavity_max: vec4<f32>,
+    cavity_blend: vec4<f32>,
     layer_count: u32,
 }
 
@@ -162,11 +165,34 @@ fn cos_arc(a: f32, b: f32, h: f32) -> f32 {
          + b * (0.5 - sin(h) * sin(h) * 0.5);
 }
 
+// Terrain curvature at `world_xz` (height `origin_h`). Shared by the ambient
+// gather (stored in the AO target's alpha) and the splat's cavity bands.
+fn cavity_at(world_xz: vec2<f32>, origin_h: f32) -> f32 {
+    // Cavity: concave (gullies, hollows) vs convex (ridges, knolls). <0.5
+    // concave, >0.5 convex, 0.5 flat. Measured as the *depression angle* — how
+    // far the ring of terrain at radius r sits above (concave) or below
+    // (convex) this point, over r — so it is independent of heightmap
+    // resolution and height range. On natural terrain the median is ~3° and
+    // the 95th percentile ~12°, so ±15° spans the useful range with only a few
+    // percent saturating. (A Laplacian with a fixed gain saturated ~85% of the
+    // example map to pure 0 / 1.)
+    const CAVITY_RING_TAPS = 8;
+    const CAVITY_SATURATION = 0.2679;  // tan(15°)
+    let r = max(2.0 * texel_size, 16.0);
+    var ring = 0.0;
+    for (var k = 0; k < CAVITY_RING_TAPS; k++) {
+        let a = f32(k) * (6.2831853 / f32(CAVITY_RING_TAPS));
+        ring += terrain_height(world_xz + vec2<f32>(cos(a), sin(a)) * r);
+    }
+    let depression = (ring / f32(CAVITY_RING_TAPS) - origin_h) / r;
+    return clamp(0.5 - 0.5 * depression / CAVITY_SATURATION, 0.0, 1.0);
+}
+
 // Macro ambient occlusion + bent normal + curvature, gathered from the
 // heightfield. Horizon-based: for each azimuth, march outward and track the
 // highest occluding horizon angle; the open sky above it drives AO and the
-// average unoccluded direction (the bent normal). Curvature comes from a small
-// height-Laplacian neighborhood. All sun-independent and baked once (mode 2) —
+// average unoccluded direction (the bent normal). Curvature comes from
+// `cavity_at`. All sun-independent and baked once (mode 2) —
 // never per-frame. This is the single heaviest bake pass; DIRS/STEPS are the
 // cost knobs (raise DIRS for smoother bent normals if the bake completes
 // comfortably; lower both, or drop RVT_SIZE, if the driver times the bake out).
@@ -222,24 +248,7 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
     let ao = clamp(ao_num / max(ao_den, 1e-5), 0.0, 1.0);
     let bent_n = normalize(bent + n * 1e-3);
 
-    // Cavity: concave (gullies, hollows) vs convex (ridges, knolls). <0.5
-    // concave, >0.5 convex, 0.5 flat. Measured as the *depression angle* — how
-    // far the ring of terrain at radius r sits above (concave) or below
-    // (convex) this point, over r — so it is independent of heightmap
-    // resolution and height range. On natural terrain the median is ~3° and
-    // the 95th percentile ~12°, so ±15° spans the useful range with only a few
-    // percent saturating. (A Laplacian with a fixed gain saturated ~85% of the
-    // example map to pure 0 / 1.)
-    const CAVITY_RING_TAPS = 8;
-    const CAVITY_SATURATION = 0.2679;  // tan(15°)
-    let r = max(2.0 * texel_size, 16.0);
-    var ring = 0.0;
-    for (var k = 0; k < CAVITY_RING_TAPS; k++) {
-        let a = f32(k) * (6.2831853 / f32(CAVITY_RING_TAPS));
-        ring += terrain_height(world_xz + vec2<f32>(cos(a), sin(a)) * r);
-    }
-    let depression = (ring / f32(CAVITY_RING_TAPS) - origin_h) / r;
-    let cavity = clamp(0.5 - 0.5 * depression / CAVITY_SATURATION, 0.0, 1.0);
+    let cavity = cavity_at(world_xz, origin_h);
 
     // R = AO, GB = bent normal world X/Z (Y reconstructed in the main pass),
     // A = cavity.
@@ -254,6 +263,7 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
     // (grass→dirt→rock) and its world-height band (e.g. snow above a snowline).
     let slope = acos(clamp(normal.y, -1.0, 1.0));
     let height = terrain_height(world_xz);
+    let cavity = cavity_at(world_xz, height);
 
     var w = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
     for (var i = 0u; i < MAX_LAYERS; i++) {
@@ -261,7 +271,8 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
             continue;
         }
         w[i] = band(slope, params.slope_min[i], params.slope_max[i], params.slope_blend[i])
-             * band(height, params.height_min[i], params.height_max[i], params.height_range_blend[i]);
+             * band(height, params.height_min[i], params.height_max[i], params.height_range_blend[i])
+             * band(cavity, params.cavity_min[i], params.cavity_max[i], params.cavity_blend[i]);
     }
 
     let wsum = w[0] + w[1] + w[2] + w[3];

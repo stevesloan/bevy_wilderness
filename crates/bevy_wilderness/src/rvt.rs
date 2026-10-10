@@ -43,6 +43,10 @@ struct TerrainParams {
     height_min: Vec4,
     height_max: Vec4,
     height_range_blend: Vec4,
+    /// Curvature band per layer (baked cavity scale, 0.5 = flat).
+    cavity_min: Vec4,
+    cavity_max: Vec4,
+    cavity_blend: Vec4,
     layer_count: u32,
 }
 
@@ -59,6 +63,9 @@ impl TerrainParams {
         let mut height_min = [-1.0e9f32; MAX_TERRAIN_LAYERS];
         let mut height_max = [1.0e9f32; MAX_TERRAIN_LAYERS];
         let mut height_range_blend = [1.0f32; MAX_TERRAIN_LAYERS];
+        let mut cavity_min = [-10.0f32; MAX_TERRAIN_LAYERS];
+        let mut cavity_max = [10.0f32; MAX_TERRAIN_LAYERS];
+        let mut cavity_blend = [0.01f32; MAX_TERRAIN_LAYERS];
         for (i, layer) in clipmap.layers.iter().take(MAX_TERRAIN_LAYERS).enumerate() {
             tiling_scale[i] = layer.tiling_scale.max(1e-3);
             height_blend[i] = layer.height_blend;
@@ -74,6 +81,11 @@ impl TerrainParams {
                 height_max[i] = h.max;
                 height_range_blend[i] = h.blend.max(1e-3);
             }
+            if let Some(c) = &layer.cavity {
+                cavity_min[i] = c.min;
+                cavity_max[i] = c.max;
+                cavity_blend[i] = c.blend.max(1e-3);
+            }
         }
         Self {
             tiling_scale: Vec4::from_array(tiling_scale),
@@ -86,6 +98,9 @@ impl TerrainParams {
             height_min: Vec4::from_array(height_min),
             height_max: Vec4::from_array(height_max),
             height_range_blend: Vec4::from_array(height_range_blend),
+            cavity_min: Vec4::from_array(cavity_min),
+            cavity_max: Vec4::from_array(cavity_max),
+            cavity_blend: Vec4::from_array(cavity_blend),
             layer_count: clipmap.layers.len().min(MAX_TERRAIN_LAYERS) as u32,
         }
     }
