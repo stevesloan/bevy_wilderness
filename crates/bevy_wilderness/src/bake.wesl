@@ -321,6 +321,23 @@ fn band_weights(
 // crowd rock off its slopes.
 const RELIEF_IN_BLEND: f32 = 0.35;
 
+// Breakup: each layer's *own* height texture (albedo alpha), mean-centred and
+// boosted into its blend height, read at a mid-scale tiling with a few metres
+// of blur. Slope bands vary over tens of metres, relief over 18–40 m, and the
+// macro-tiled height puts a texture's features at tens of metres too, so
+// without this a boundary is a smooth gradient tens of metres wide — soft at
+// medium distance. With it, rock's plates rise above the grass in ragged
+// fingers and islands, shaped by the texture itself.
+//
+// The scale matters: at the detail tiling (~9 m) a texture's height varies
+// at almost every 1 m RVT texel, so the material decision flipped texel by
+// texel into a pixelated mosaic. At 30 m tiling with a 4 m blur the heights
+// keep ~0.05–0.07 std, in smooth 4–15 m shapes. Only matters where layers
+// already compete; uniform textures (gravel) contribute little.
+const BREAKUP_TILING: f32 = 30.0;
+const BREAKUP_BLUR: f32 = 4.0;
+const BREAKUP_CONTRAST: f32 = 2.0;
+
 // `n0` is the heightmap normal; `e` one RVT texel (m).
 fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
     let height = terrain_height(world_xz);
@@ -351,10 +368,15 @@ fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
         // thins out continuously at its band edge. An additive height term
         // let a strongly height-blended layer (rock) score high right up to
         // the band edge and then vanish — a hard line around every band.
-        var blend_h = a.a;
+        let blend_uv = world_xz / BREAKUP_TILING;
+        let blur = BREAKUP_BLUR / BREAKUP_TILING;
+        let fine_h = hex_sample(albedo_array, albedo_sampler, i, blend_uv, vec2<f32>(blur, 0.0), vec2<f32>(0.0, blur)).a;
+        let mean_h = textureSampleLevel(albedo_array, albedo_sampler, vec2<f32>(0.5), i, f32(textureNumLevels(albedo_array) - 1u)).a;
+        var blend_h = a.a + BREAKUP_CONTRAST * (fine_h - mean_h);
         if params.relief_depth[i] > 0.0 {
-            blend_h = saturate(a.a + RELIEF_IN_BLEND * layer_relief_shape(world_xz, i));
+            blend_h += RELIEF_IN_BLEND * layer_relief_shape(world_xz, i);
         }
+        blend_h = saturate(blend_h);
         scores[i] = w[i] * max(1.0 + params.height_blend[i] * (2.0 * blend_h - 1.0), 0.05);
         maxs = max(maxs, scores[i]);
     }
