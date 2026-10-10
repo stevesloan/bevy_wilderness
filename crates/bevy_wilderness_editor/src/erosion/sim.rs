@@ -412,7 +412,7 @@ impl GpuErosion {
             }
             self.finalized = true;
         }
-        self.queue.0.submit([encoder.finish()]);
+        self.queue.submit([encoder.finish()]);
         if self.finalized {
             let request = |buffer: &Buffer, flag: &Arc<AtomicU8>| {
                 let flag = flag.clone();
@@ -453,25 +453,33 @@ impl GpuErosion {
             return None;
         }
         self.delivered = true;
+        let aborted = SimOutput {
+            heights: Vec::new(),
+            wear_deposit: None,
+            flow: None,
+        };
         if states.iter().any(|&s| s == MAP_ERROR) {
-            return Some(SimOutput {
-                heights: Vec::new(),
-                wear_deposit: None,
-                flow: None,
-            });
+            return Some(aborted);
         }
         let read = |buffer: &Buffer| {
-            let data = {
-                let range = buffer.slice(..).get_mapped_range();
-                bytes_f32(&range)
-            };
+            let data = buffer
+                .slice(..)
+                .get_mapped_range()
+                .map(|range| bytes_f32(&range));
             buffer.unmap();
             data
         };
+        let (Ok(heights), Ok(wear_deposit), Ok(flow)) = (
+            read(&self.staging_height),
+            self.staging_wd.as_ref().map(&read).transpose(),
+            self.staging_flow.as_ref().map(&read).transpose(),
+        ) else {
+            return Some(aborted);
+        };
         Some(SimOutput {
-            heights: read(&self.staging_height),
-            wear_deposit: self.staging_wd.as_ref().map(&read),
-            flow: self.staging_flow.as_ref().map(&read),
+            heights,
+            wear_deposit,
+            flow,
         })
     }
 

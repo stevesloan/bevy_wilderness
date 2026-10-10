@@ -38,15 +38,15 @@ pub struct ClipmapPlugin;
 
 impl Plugin for ClipmapPlugin {
     fn build(&self, app: &mut App) {
-        // Shared fog math, imported by terrain.wgsl (inline VR fog) and the
-        // height_fog.wgsl post-process (flatscreen fog).
-        load_shader_library!(app, "fog_functions.wgsl");
+        // Shared fog math, imported by terrain.wesl (inline VR fog) and the
+        // height_fog.wesl post-process (flatscreen fog).
+        load_shader_library!(app, "fog_functions.wesl");
         // Sampling for the baked sun shadow-ceiling field, imported by game
         // materials that want terrain shadow on their own meshes.
-        load_shader_library!(app, "sun_shadow.wgsl");
-        embedded_asset!(app, "terrain.wgsl");
-        embedded_asset!(app, "bake.wgsl");
-        embedded_asset!(app, "mesh_fog.wgsl");
+        load_shader_library!(app, "sun_shadow.wesl");
+        embedded_asset!(app, "terrain.wesl");
+        embedded_asset!(app, "bake.wesl");
+        embedded_asset!(app, "mesh_fog.wesl");
 
         app.add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, GridMaterial>,

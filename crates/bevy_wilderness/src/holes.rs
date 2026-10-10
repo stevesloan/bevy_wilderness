@@ -5,7 +5,7 @@
 //! its own collider; this crate only removes the visuals.
 //!
 //! The cut is gated per LOD ring: a shape only cuts where it spans at least
-//! `HOLE_MIN_CELLS` (terrain.wgsl) of that ring's cells, so a small hole seals
+//! `HOLE_MIN_CELLS` (terrain.wesl) of that ring's cells, so a small hole seals
 //! itself at distance instead of removing a coarse ring's huge triangles. Near
 //! the camera the finest ring is texel-dense, so holes are texel-exact there.
 
@@ -68,7 +68,7 @@ impl HoleShape {
 /// The packed shape list handed to the shader: two `vec4` per shape, kept in a
 /// named struct so it can be `Default` (fixed arrays past 32 aren't) and sit in
 /// `DevParams` behind `#[reflect(ignore)]`. Layout is `[center.xy, basis.xy]`,
-/// `[half.xy | radius, kind, min_extent]` — keep `unpack` in terrain.wgsl in
+/// `[half.xy | radius, kind, min_extent]` — keep `unpack` in terrain.wesl in
 /// step with [`HoleBuffer::pack`].
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub(crate) struct HoleBuffer {

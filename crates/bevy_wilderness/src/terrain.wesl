@@ -1,61 +1,61 @@
-#import bevy_pbr::mesh_functions
-#import bevy_pbr::view_transformations::position_world_to_clip
+import bevy_pbr::render::mesh_functions;
+import bevy_pbr::render::view_transformations::position_world_to_clip;
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
 // shadow pass rendering the terrain's displaced silhouette for clay mode's
 // dynamic shadows (D10), or a depth/normal prepass — compile this module too
-// for `fn vertex`, but `pbr_fragment` doesn't build against `prepass_io`'s
+// for `fn vertex`, but `pbr_fragment` doesn't build against `prepass::io`'s
 // trimmed VertexOutput and their layouts lack the light/cluster bindings.
 // `WILDERNESS_SHADE` is pushed in `GridMaterial::specialize`.
-#ifdef WILDERNESS_SHADE
-#import bevy_pbr::pbr_fragment::pbr_input_from_standard_material
-#import bevy_pbr::mesh_view_bindings::{view, lights, clustered_lights}
-#import bevy_pbr::{
+@if(WILDERNESS_SHADE)
+import bevy_pbr::render::{
+    pbr_fragment::pbr_input_from_standard_material,
+    mesh_view_bindings::{view, lights, clustered_lights},
     pbr_types,
     mesh_view_types,
-    lighting,
-    lighting::LAYER_BASE,
+    pbr_lighting as lighting,
+    pbr_lighting::LAYER_BASE,
     clustered_forward as clustering,
     shadows,
-    ambient,
+    pbr_ambient as ambient,
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
-}
+};
 
-#ifdef ENVIRONMENT_MAP
-#import bevy_pbr::environment_map
-#endif
+@if(WILDERNESS_SHADE && ENVIRONMENT_MAP)
+import bevy_pbr::light_probe::environment_map;
 
 // Shared with the fullscreen fog post-process, so the VR (inline) and flatscreen
 // (post-process) fog tiers use the exact same fog.
-#import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
-#endif  // WILDERNESS_SHADE
+@if(WILDERNESS_SHADE)
+import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog};
 
-#ifdef MESHLET_MESH_MATERIAL_PASS
-#import bevy_pbr::meshlet_visibility_buffer_resolve::VertexOutput
-#else ifdef PREPASS_PIPELINE
-#import bevy_pbr::prepass_io::{Vertex, VertexOutput, FragmentOutput}
-#ifdef DEFERRED_PREPASS
-#import bevy_pbr::pbr_deferred_functions::deferred_output;
-#endif  // DEFERRED_PREPASS
-#else   // PREPASS_PIPELINE
-#import bevy_pbr::forward_io::{Vertex, VertexOutput, FragmentOutput}
-#import bevy_pbr::pbr_functions::main_pass_post_lighting_processing
-#endif  // PREPASS_PIPELINE
+@if(MESHLET_MESH_MATERIAL_PASS)
+import bevy_pbr::meshlet::visibility_buffer_resolve::VertexOutput;
+@elif(PREPASS_PIPELINE)
+import bevy_pbr::prepass::io::{Vertex, VertexOutput, FragmentOutput};
+@else
+import bevy_pbr::render::{
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
+    pbr_functions::main_pass_post_lighting_processing,
+};
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var heightmap_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var heightmap_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var<uniform> texel_size: f32;
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var<uniform> minmax: vec2<f32>;
+@if(!MESHLET_MESH_MATERIAL_PASS && PREPASS_PIPELINE && DEFERRED_PREPASS)
+import bevy_pbr::deferred::functions::deferred_output;
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(102) var heightmap_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var heightmap_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var<uniform> texel_size: f32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var<uniform> minmax: vec2<f32>;
 // Packed flags (this material is at the bind-group binding limit, so quality
 // knobs ride here instead of new uniforms): bit0 = wireframe, bit1 = ambient
 // gather (sample RVT-AO), bit2 = single-layer detail.
-@group(#{MATERIAL_BIND_GROUP}) @binding(111) var<uniform> flags: u32;
-@group(#{MATERIAL_BIND_GROUP}) @binding(121) var rvt_albedo_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(122) var rvt_albedo_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(123) var rvt_normal_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var<uniform> flags: u32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(121) var rvt_albedo_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(122) var rvt_albedo_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(123) var rvt_normal_texture: texture_2d<f32>;
 // Baked macro AO (R) + bent normal world X/Z (GB) + cavity (A).
-@group(#{MATERIAL_BIND_GROUP}) @binding(132) var rvt_ao_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(132) var rvt_ao_texture: texture_2d<f32>;
 // rvt_normal/rvt_ao share rvt_albedo_sampler (122) — all sampled linearly at uv.
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
 // freed for ceiling headroom). ao/bent strength: 0 = off, 1 = full, each
@@ -84,15 +84,14 @@ struct HoleBuffer {
 // over, so small holes seal at distance rather than removing huge far
 // triangles. Tune in-headset; 3 bounds the visible hole to ~1.7× authored.
 const HOLE_MIN_CELLS: f32 = 3.0;
-@group(#{MATERIAL_BIND_GROUP}) @binding(110) var<uniform> dev: DevParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var<uniform> dev: DevParams;
 // Inline height fog params (VR tier). density == 0 skips it. Shading-only:
 // the HeightFog type comes from the gated fog_functions import above.
-#ifdef WILDERNESS_SHADE
-@group(#{MATERIAL_BIND_GROUP}) @binding(114) var<uniform> fog: HeightFog;
-#endif
-@group(#{MATERIAL_BIND_GROUP}) @binding(125) var detail_albedo_array: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(126) var detail_albedo_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(127) var detail_normal_array: texture_2d_array<f32>;
+@if(WILDERNESS_SHADE)
+@group(constants::MATERIAL_BIND_GROUP) @binding(114) var<uniform> fog: HeightFog;
+@group(constants::MATERIAL_BIND_GROUP) @binding(125) var detail_albedo_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(126) var detail_albedo_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(127) var detail_normal_array: texture_2d_array<f32>;
 // detail_normal/detail_orm share detail_albedo_sampler (126) — same tiling config.
 
 // Near-range detail overlay parameters.
@@ -103,23 +102,21 @@ struct DetailParams {
     near: f32,
     far: f32,
 }
-@group(#{MATERIAL_BIND_GROUP}) @binding(129) var<uniform> detail: DetailParams;
-@group(#{MATERIAL_BIND_GROUP}) @binding(130) var detail_orm_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(129) var<uniform> detail: DetailParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(130) var detail_orm_array: texture_2d_array<f32>;
 
 // Editor visualization overlay (`editing` feature): 0..1 mask tinted into the
 // surface albedo. Shares the heightmap sampler — no new sampler/uniform slots.
 // The def is pushed by GridMaterial::specialize only in editing builds, so the
 // declaration matches the bind-group layout on both sides.
-#ifdef WILDERNESS_EDIT_OVERLAY
-@group(#{MATERIAL_BIND_GROUP}) @binding(115) var edit_overlay_texture: texture_2d<f32>;
-#endif
+@if(WILDERNESS_EDIT_OVERLAY)
+@group(constants::MATERIAL_BIND_GROUP) @binding(115) var edit_overlay_texture: texture_2d<f32>;
 
 // Stamp preview heightfield (`editing`, D11): composited in `fn vertex` while
 // flags bit5 is set — the GPU floating preview that makes half-map stamps
 // per-frame free. Shares the heightmap sampler like the overlay.
-#ifdef WILDERNESS_STAMP
-@group(#{MATERIAL_BIND_GROUP}) @binding(116) var stamp_texture: texture_2d<f32>;
-#endif
+@if(WILDERNESS_STAMP)
+@group(constants::MATERIAL_BIND_GROUP) @binding(116) var stamp_texture: texture_2d<f32>;
 
 // Cheap per-point 2D hash in [0, 1)^2, seeded by world XZ. Used to stochastically
 // jitter the NEAREST material-id read so its RVT-texel grid dithers into fine
@@ -180,12 +177,12 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let height = height_bilinear(sample_uv, 0);
     var world_y = height * (minmax.y - minmax.x) + minmax.x;
 
-#ifdef WILDERNESS_STAMP
     // Stamp floating preview (D11, flags bit5): add the stamp heightfield
     // through its world transform, exactly what a commit will write into the
     // f32 field — same bilinear (texel centers at half-integers, clamped),
     // same mask weighting, same encode-range clamp. Keep this in lockstep
     // with the editor's CPU apply or the commit pops.
+    @if(WILDERNESS_STAMP)
     if (flags & 32u) != 0u {
         var rel = out.world_position.xz - dev.stamp_center;
         if looping {
@@ -200,19 +197,17 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
         let stamp_uv = local / (dev.stamp_half_size * 2.0) + 0.5;
         if all(stamp_uv > vec2(0.0)) && all(stamp_uv < vec2(1.0)) {
             var weight = 1.0;
-#ifdef WILDERNESS_EDIT_OVERLAY
             // Mask-confined (bit6): weight by the mask overlay, sampled the
             // same wrapped way the fragment tints it.
+            @if(WILDERNESS_EDIT_OVERLAY)
             if (flags & 64u) != 0u {
                 let overlay_uv = select(clamp(height_uv, vec2(0.0), vec2(1.0)), fract(height_uv), looping);
                 weight = textureSampleLevel(edit_overlay_texture, heightmap_sampler, overlay_uv, 0.0).r;
             }
-#endif
             let stamp_h = textureSampleLevel(stamp_texture, heightmap_sampler, stamp_uv, 0.0).r;
             world_y = clamp(world_y + dev.stamp_strength * stamp_h * weight, minmax.x, minmax.y);
         }
     }
-#endif
 
     // Out past the heightmap coverage the coarse LOD skirt would render as a wall
     // at the edge height. Drop those vertices to the height floor so the stripe
@@ -221,13 +216,12 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let in_coverage = all(height_uv >= vec2(0.0)) && all(height_uv <= vec2(1.0));
     out.world_position.y = select(minmax.x, world_y, in_coverage || looping);
 
-#ifdef WILDERNESS_HOLES
     // Collapse every triangle touching a vertex inside a hole: a NaN clip
     // position is culled before rasterization, so no fragment work and no
     // early-Z loss. Tested on world XZ (wrapped to the canonical tile when
     // looping) with the ring's cell size read off the instance transform —
     // both view-independent, so stereo eyes cull identically.
-    {
+    @if(WILDERNESS_HOLES) {
         let cell = length(model[0].xyz);
         var p = out.world_position.xz;
         if looping {
@@ -254,7 +248,6 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
             }
         }
     }
-#endif
 
     out.position = position_world_to_clip(out.world_position.xyz);
 
@@ -273,7 +266,7 @@ fn oct_decode(f: vec2<f32>) -> vec3<f32> {
 // Everything below is fragment shading — compiled only for the pipelines that
 // shade (see the WILDERNESS_SHADE import note at the top). Depth-only
 // pipelines end at `fn vertex` above.
-#ifdef WILDERNESS_SHADE
+@if(WILDERNESS_SHADE) {
 
 // Terrain PBR lighting with baked sun-visibility injected on the directional sun.
 // Compact fork of `apply_pbr_lighting`: base layer only, directional + clustered
@@ -354,6 +347,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
         if ((in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u
             && (lights.directional_lights[i].flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
             shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.frag_coord.xy);
+            shadow *= in.directional_shadow_factor;
         }
         var contrib = lighting::directional_light(i, &li, true);
         if sun_spec_keep < 0.999 {
@@ -380,7 +374,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
     }
 
     // Spot lights, likewise shadowed per-light.
-    for (var i = ranges.first_spot_light_index_offset; i < ranges.first_reflection_probe_index_offset; i++) {
+    for (var i = ranges.first_spot_light_index_offset; i < ranges.first_rect_light_index_offset; i++) {
         let light_id = clustering::get_clusterable_object_id(i);
         var shadow = 1.0;
         if ((in.flags & MESH_FLAGS_SHADOW_RECEIVER_BIT) != 0u
@@ -398,7 +392,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
 
     // Indirect: environment map (the physical-sky IBL) + flat ambient.
     var indirect = vec3<f32>(0.0);
-#ifdef ENVIRONMENT_MAP
+    @if(ENVIRONMENT_MAP) {
     // The bent normal drives the diffuse irradiance sample direction: an occluded
     // point (a valley floor) gathers sky only from the direction it can actually
     // see, instead of the full hemisphere about its geometric normal. Free — the
@@ -413,7 +407,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
     let diffuse_occ = gtao_multi_bounce(ao_scalar, diffuse_color);
     let spec_occ = specular_occlusion_from_ao(NdotV, ao_scalar, roughness);
     indirect += env.diffuse * diffuse_occ + env.specular * spec_occ;
-#endif
+    }
     // Flat ambient ignores the normal entirely; keep it on the shading normal.
     indirect += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, in.diffuse_occlusion);
 
@@ -456,24 +450,25 @@ fn fragment(
         n = select(n, -n, n.y < 0.0);
         clay_in.world_normal = n;
         var albedo = vec3<f32>(0.5);
-#ifdef WILDERNESS_EDIT_OVERLAY
+        @if(WILDERNESS_EDIT_OVERLAY) {
         let clay_overlay_uv = select(clamp(uv, vec2(0.0), vec2(1.0)), fract(uv), (flags & 8u) != 0u);
         let clay_overlay = textureSample(edit_overlay_texture, heightmap_sampler, clay_overlay_uv).r;
         albedo = mix(albedo, vec3<f32>(1.0, 0.25, 0.05), clay_overlay * 0.5);
-#endif
+        }
         var clay_pbr = pbr_input_from_standard_material(clay_in, is_front);
         clay_pbr.material.base_color = vec4<f32>(albedo, 1.0);
         clay_pbr.material.perceptual_roughness = 0.95;
         clay_pbr.material.metallic = 0.0;
         clay_pbr.diffuse_occlusion = vec3<f32>(1.0);
-#ifdef PREPASS_PIPELINE
+        @if(PREPASS_PIPELINE)
         let out = deferred_output(clay_in, clay_pbr);
-#else
+        @if(!PREPASS_PIPELINE)
         var out: FragmentOutput;
+        @if(!PREPASS_PIPELINE) {
         // Sun visibility 1.0: there's no valid bake to shadow with.
         out.color = terrain_apply_lighting(clay_pbr, 1.0, n);
         out.color = main_pass_post_lighting_processing(clay_pbr, out.color);
-#endif
+        }
         return out;
     }
 
@@ -583,14 +578,14 @@ fn fragment(
     }
     in_modified.world_normal = world_normal;
 
-#ifdef WILDERNESS_EDIT_OVERLAY
+    @if(WILDERNESS_EDIT_OVERLAY) {
     // Editor mask visualization: tint the albedo where the overlay is painted.
     // Applied to albedo (not post-lighting) so it shades plausibly and works in
     // the deferred path too. `fract` wraps the sample on looping terrain.
     let overlay_uv = select(clamp(uv, vec2(0.0), vec2(1.0)), fract(uv), (flags & 8u) != 0u);
     let overlay = textureSample(edit_overlay_texture, heightmap_sampler, overlay_uv).r;
     albedo = mix(albedo, vec3<f32>(1.0, 0.25, 0.05), overlay * 0.5);
-#endif
+    }
 
     var pbr_input = pbr_input_from_standard_material(in_modified, is_front);
     pbr_input.material.base_color = vec4<f32>(albedo, 1.0);
@@ -602,12 +597,13 @@ fn fragment(
     pbr_input.diffuse_occlusion = vec3<f32>(ao * macro_ao);
     let bent_normal = normalize(mix(world_normal, baked_bent_normal, dev.bent_strength));
 
-#ifdef PREPASS_PIPELINE
+    @if(PREPASS_PIPELINE)
     let out = deferred_output(in_modified, pbr_input);
-#else
+    @if(!PREPASS_PIPELINE)
     var out: FragmentOutput;
     // Debug: output a single baked channel unlit so the tonemapper shows it as a
     // literal value (grayscale for AO/cavity, encoded RGB for the bent normal).
+    @if(!PREPASS_PIPELINE)
     if dev.debug_view == 1u {
         out.color = vec4<f32>(vec3<f32>(rvt_ao_s.r), 1.0);
     } else if dev.debug_view == 2u {
@@ -618,9 +614,8 @@ fn fragment(
         out.color = terrain_apply_lighting(pbr_input, rvt_a.a, bent_normal);
         out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     }
-#endif
 
     return out;
 }
 
-#endif  // WILDERNESS_SHADE
+}  // @if(WILDERNESS_SHADE)

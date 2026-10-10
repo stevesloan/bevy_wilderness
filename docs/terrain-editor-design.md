@@ -97,8 +97,8 @@ code (the `bevy-clipmap` fork being renamed to `bevy_wilderness`, §7); the
 on a line number.
 
 - **Geometry is displaced live in the vertex shader.** The clipmap is a flat
-  grid; `fn vertex` (`src/terrain.wgsl:119`) samples the heightmap (binding 102,
-  `src/terrain.wgsl:34`) every frame. **Mutating heightmap texels deforms the
+  grid; `fn vertex` (`src/terrain.wesl:119`) samples the heightmap (binding 102,
+  `src/terrain.wesl:34`) every frame. **Mutating heightmap texels deforms the
   terrain next frame — no mesh rebuild.** This is why live editing is free.
 - **Heightmap is single-channel 16-bit** (`R16Unorm`), 1024² in the example, KTX2
   with `is_srgb=false` (`examples/basic.rs:233-238`).
@@ -117,7 +117,7 @@ on a line number.
   (`src/rvt.rs:27`) from `SlopeRule`/`HeightRule` (`src/lib.rs:80,91`). Erosion
   changes slope hard, so a re-bake is what makes carved cliffs *turn rocky*.
 - **Looping is already toroidal in the shaders.** Reads wrap: bake at
-  `src/bake.wgsl:71` (`idx = ((p % size) + size) % size`), vertex via flags bit3,
+  `src/bake.wesl:71` (`idx = ((p % size) + size) % size`), vertex via flags bit3,
   RVT targets use a Repeat sampler (`looping_rvt_sampler`, `src/texture.rs:18`).
   **A looping heightmap has no seam** — position 0 and position *width* are the
   same terrain.
@@ -307,7 +307,7 @@ turns fresh cliffs rocky. Fires `TerrainRegionChanged` for host tools.
 ### D6 — Seam painting seamless by construction
 On looping terrain there's nothing to stitch — make every edit toroidal (D2) and
 erosion use wrapped neighbor reads (droplets exiting one edge re-enter the
-opposite); the bake already wraps (`src/bake.wgsl:71`). Add a **visibility aid**
+opposite); the bake already wraps (`src/bake.wesl:71`). Add a **visibility aid**
 (wrap line is invisible by design): a toggleable **gizmo overlay** of the tile
 boundary and/or **ghosted neighbor copies** so edits near an edge show on the far
 side live.
@@ -415,7 +415,7 @@ shading smears over new geometry. Two pieces:
    survives. Two supporting pieces:
    - `GridMaterial` gained a **prepass vertex shader** (the shadow pass
      renders casters with it; without it terrain would cast its flat,
-     undisplaced grid), and `terrain.wgsl`'s fragment machinery is gated
+     undisplaced grid), and `terrain.wesl`'s fragment machinery is gated
      behind a `WILDERNESS_SHADE` def pushed in `specialize` — depth-only
      pipelines compile the displacement vertex alone.
    - ⚠️ **Known bevy-internals coupling (re-verify on every bevy

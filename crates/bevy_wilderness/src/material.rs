@@ -190,13 +190,13 @@ impl GridMaterial {
 impl MaterialExtension for GridMaterial {
     fn vertex_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("terrain.wesl")).with_source("embedded"),
         )
     }
 
     fn deferred_vertex_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("terrain.wesl")).with_source("embedded"),
         )
     }
 
@@ -208,19 +208,19 @@ impl MaterialExtension for GridMaterial {
     /// already compiles under `PREPASS_PIPELINE` (the deferred path uses it).
     fn prepass_vertex_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("terrain.wesl")).with_source("embedded"),
         )
     }
 
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("terrain.wesl")).with_source("embedded"),
         )
     }
 
     fn deferred_fragment_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("terrain.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("terrain.wesl")).with_source("embedded"),
         )
     }
 
@@ -242,7 +242,7 @@ impl MaterialExtension for GridMaterial {
                 .shader_defs
                 .push("WILDERNESS_HOLES".into());
         }
-        // terrain.wgsl's fragment machinery only compiles in pipelines that
+        // terrain.wesl's fragment machinery only compiles in pipelines that
         // shade: the forward pass and the deferred g-buffer pass. Depth-only
         // pipelines — the shadow pass casting the terrain's displaced
         // silhouette (clay mode, D10) and depth/normal prepasses — compile
@@ -268,7 +268,7 @@ impl MaterialExtension for GridMaterial {
         }
         // The edit-overlay and stamp bindings exist only in editing builds;
         // gate the shader's declarations + samples on defs so the same
-        // terrain.wgsl compiles against both bind-group layouts. Both go to
+        // terrain.wesl compiles against both bind-group layouts. Both go to
         // the *vertex* stage too: the stamp preview composites in the vertex
         // shader (including depth-only shadow pipelines, so a previewed
         // mountain casts its previewed silhouette) and samples the overlay

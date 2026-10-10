@@ -360,9 +360,7 @@ pub(crate) fn apply_finished_runs(
 mod tests {
     use super::*;
     use crate::field::TerrainField;
-    use bevy::render::renderer::WgpuWrapper;
     use bevy::tasks::block_on;
-    use std::sync::Arc;
 
     /// A headless device via raw wgpu (any backend, software fallback
     /// included). `None` skips the test on machines with no adapter at all.
@@ -375,10 +373,7 @@ mod tests {
         let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .inspect_err(|e| eprintln!("skipping erosion GPU test: no device ({e})"))
             .ok()?;
-        Some((
-            RenderDevice::from(device),
-            RenderQueue(Arc::new(WgpuWrapper::new(queue))),
-        ))
+        Some((RenderDevice::from(device), RenderQueue::new(queue)))
     }
 
     /// 128² field with a central cone, ~150 m tall over ~40 texels.

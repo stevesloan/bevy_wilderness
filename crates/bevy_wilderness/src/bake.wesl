@@ -2,28 +2,28 @@
 // same splat blend as the main pass but writes raw channels unlit, so the main
 // pass can sample the result instead of blending per-fragment. Rendered by a
 // top-down orthographic camera over a flat quad covering the terrain.
-#import bevy_pbr::forward_io::VertexOutput
+import bevy_pbr::render::forward_io::VertexOutput;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var heightmap_texture: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var heightmap_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var<uniform> texel_size: f32;
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> minmax: vec2<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(4) var albedo_array: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(5) var albedo_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> params: TerrainParams;
-@group(#{MATERIAL_BIND_GROUP}) @binding(9) var normal_array: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(10) var normal_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(11) var orm_array: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(12) var orm_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var heightmap_texture: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var heightmap_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var<uniform> texel_size: f32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var<uniform> minmax: vec2<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(4) var albedo_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(5) var albedo_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(8) var<uniform> params: TerrainParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(9) var normal_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(10) var normal_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(11) var orm_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(12) var orm_sampler: sampler;
 // 0 = albedo target (rgb albedo, a sun-visibility); 1 = normal target (rg
 // octahedral world normal, b roughness, a = packed top-2 material ids + blend);
 // 2 = ambient gather; 3 = sun shadow-ceiling field (see `shadow_ceiling`).
-@group(#{MATERIAL_BIND_GROUP}) @binding(13) var<uniform> output_mode: u32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(13) var<uniform> output_mode: u32;
 // Normalized direction toward the fixed sun.
-@group(#{MATERIAL_BIND_GROUP}) @binding(14) var<uniform> sun_direction: vec3<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(14) var<uniform> sun_direction: vec3<f32>;
 // 1 = looping terrain: read the heightmap toroidally so the shadow/AO marches
 // wrap across tile edges (baked shadows tile seamlessly); 0 = finite (clamp).
-@group(#{MATERIAL_BIND_GROUP}) @binding(15) var<uniform> looping: u32;
+@group(constants::MATERIAL_BIND_GROUP) @binding(15) var<uniform> looping: u32;
 
 struct TerrainParams {
     tiling_scale: vec4<f32>,

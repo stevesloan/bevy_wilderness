@@ -1,5 +1,5 @@
 // Sampling for the baked sun shadow-ceiling field (see `shadow_ceiling` in
-// `bake.wgsl`). Imported by the terrain and by *game* materials that want the
+// `bake.wesl`). Imported by the terrain and by *game* materials that want the
 // same terrain shadow on their own meshes — characters, vehicles, dropped
 // pickups. The clipmap is typically `NotShadowCaster` (rendering it into the
 // cascades costs more than it returns, and doubly so in stereo), so cascaded
@@ -8,8 +8,6 @@
 // The field is a plain 2D texture, so this costs one fetch and works at any
 // height — a flying player resolves correctly, which an on-surface shadow map
 // cannot do.
-#define_import_path bevy_wilderness::sun_shadow
-
 struct SunShadowParams {
     // World XZ -> UV: `uv = world_xz * inv_world_size + 0.5`. The field covers
     // the clipmap, which is origin-centered.

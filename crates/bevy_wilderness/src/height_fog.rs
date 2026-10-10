@@ -1,7 +1,7 @@
 //! Fullscreen height-fog post-process — the *flatscreen* fog tier. Fogs the whole
 //! view (terrain AND atmosphere sky), so valley mist has no terrain/sky seam;
 //! costs one fullscreen pass. The *VR* tier applies the same fog inline in
-//! `terrain.wgsl` (terrain-only, virtually free); both share `fog_functions.wgsl`
+//! `terrain.wesl` (terrain-only, virtually free); both share `fog_functions.wesl`
 //! and [`HeightFogParams`], so the tiers match.
 //!
 //! Add [`HeightFogPlugin`] and put a [`HeightFog`] on an HDR camera. The pass binds
@@ -46,7 +46,7 @@ use bevy::{
         renderer::{RenderContext, RenderDevice, ViewQuery},
         sync_component::SyncComponent,
         view::{
-            ExtractedView, ViewDepthTexture, ViewTarget, ViewUniform, ViewUniformOffset,
+            ExtractedView, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset,
             ViewUniforms, prepare_view_targets,
         },
     },
@@ -129,11 +129,11 @@ impl From<&HeightFog> for HeightFogParams {
     }
 }
 
-impl SyncComponent for HeightFog {
+impl SyncComponent<RenderApp> for HeightFog {
     type Target = HeightFogParams;
 }
 
-impl ExtractComponent for HeightFog {
+impl ExtractComponent<RenderApp> for HeightFog {
     type QueryData = &'static Self;
     type QueryFilter = With<Camera>;
     type Out = HeightFogParams;
@@ -148,7 +148,7 @@ pub struct HeightFogPlugin;
 
 impl Plugin for HeightFogPlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "height_fog.wgsl");
+        embedded_asset!(app, "height_fog.wesl");
         app.add_plugins((
             ExtractComponentPlugin::<HeightFog>::default(),
             UniformComponentPlugin::<HeightFogParams>::default(),
@@ -212,7 +212,7 @@ fn init_height_fog_pipeline(
         sampler,
         layout: BindGroupLayoutDescriptor::new("height_fog_layout", entries),
         fullscreen_shader: fullscreen_shader.clone(),
-        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "height_fog.wgsl"),
+        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "height_fog.wesl"),
     });
 }
 
@@ -276,7 +276,7 @@ fn height_fog(
     view: ViewQuery<(
         &ViewUniformOffset,
         &ViewTarget,
-        &ViewDepthTexture,
+        &ViewDepthStencilTexture,
         &HeightFogPipelineId,
         &HeightFogParams,
     )>,
@@ -293,7 +293,7 @@ fn height_fog(
     }
     // Depth binds as single-sampled `texture_2d`; MSAA makes it multisampled and the
     // bind fails. MSAA is the game's, so skip our own pass (don't override it) + warn.
-    if depth.texture.sample_count() > 1 {
+    if depth.texture().sample_count() > 1 {
         warn_once!(
             "bevy_wilderness: the fullscreen height-fog pass requires Msaa::Off on the fog \
              camera (its depth binding is single-sampled) — skipping it. Set Msaa::Off, \
@@ -301,6 +301,9 @@ fn height_fog(
         );
         return;
     }
+    let Some(depth_view) = depth.attachment.depth_stencil_views().depth_only_view() else {
+        return;
+    };
     let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline_id.0) else {
         return;
     };
@@ -317,7 +320,7 @@ fn height_fog(
         &pipeline_cache.get_bind_group_layout(&pipeline.layout),
         &BindGroupEntries::sequential((
             view_binding,
-            depth.view(),
+            depth_view,
             post.source,
             &pipeline.sampler,
             fog_binding,

@@ -342,7 +342,7 @@ pub(crate) fn warn_late_quality(
 }
 
 /// Material that bakes the terrain splat into the RVT. Runs the same source data
-/// as `GridMaterial` but outputs raw channels unlit; see `bake.wgsl`.
+/// as `GridMaterial` but outputs raw channels unlit; see `bake.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub(crate) struct BakeMaterial {
     #[texture(0)]
@@ -376,7 +376,7 @@ pub(crate) struct BakeMaterial {
 impl Material for BakeMaterial {
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("bake.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("bake.wesl")).with_source("embedded"),
         )
     }
 

@@ -61,7 +61,7 @@ unchanged, VRAM ~4×, judged worth it for the mid-ground). What gets baked:
 - Octahedral world normal + roughness + **packed material ids** in alpha (§3.5)
 
 The bake runs via top-down orthographic cameras → `RenderTarget::Image`, then
-stops. The main `terrain.wgsl` pass collapses from ~14 samples to ~2 fetches
+stops. The main `terrain.wesl` pass collapses from ~14 samples to ~2 fetches
 (+ the near-only detail samples, §3.5) — the unused source-array bindings were
 removed from the main material, freeing 4 sampled-texture slots against the
 ~16-per-stage ceiling on mobile-VR GPUs.
@@ -119,7 +119,7 @@ and RGBA `control_maps` are superseded — see §3.2.)
 
 **The painted RGBA control map is REMOVED.** Landscapes are user-generated, so
 placement must derive from the terrain itself. Each layer's weight is computed
-in the bake as the overlap of two optional **bands** (`band()` in `bake.wgsl`):
+in the bake as the overlap of two optional **bands** (`band()` in `bake.wesl`):
 
 - **`SlopeRule { min_deg, max_deg, blend_deg }`** — slope-angle band: grass on
   flat, dirt mid-slope, rock steep. Weight is 1 inside the band, ramping out
@@ -156,7 +156,7 @@ overlay (§3.5). The remaining near-range items:
 
 - **Stochastic / hex tiling** to eliminate visible repetition in the *baked base*.
   ~3× samples + `textureSampleGrad`, so it runs **inside the RVT bake** (§2,
-  `bake.wgsl`), not per-fragment — amortized to ~zero per-frame. ✅ done.
+  `bake.wesl`), not per-fragment — amortized to ~zero per-frame. ✅ done.
   - **Gotcha — hex cell size (`triangle_grid`).** Cells must span **~1 texture
     repeat**. Sub-repeat cells randomize the UV every few RVT texels, so under
     the bake's heavy minification the base collapses into per-texel speckle
@@ -245,7 +245,7 @@ texture read per frame — zero per-frame shadow work, perfectly stable (no shim
 Static objects bake into the same channel (render them from the sun during the
 bake).
 
-**Terrain self-shadow ✅ done** (`bake.wgsl` `sun_visibility`, stored in the RVT
+**Terrain self-shadow ✅ done** (`bake.wesl` `sun_visibility`, stored in the RVT
 albedo target's alpha). The bake's sun direction is **detected from the scene's
 `DirectionalLight`** (its `back()` = direction *toward* the sun), read once in
 `init_rvt` — not a config field, so the bake can never disagree with the light
@@ -254,7 +254,7 @@ that actually renders the scene. Implementation notes:
   (geometric) step size** — fine near-field so grazing sun-facing slopes don't
   self-shadow (acne), growing steps for reach (`MAX_DIST` 6000 covers low-sun
   long casts). Soft penumbra via a clearance/distance ramp.
-- **Applied through a compact lighting fork** (`terrain.wgsl`
+- **Applied through a compact lighting fork** (`terrain.wesl`
   `terrain_apply_lighting`): base layer + directional + clustered point/spot lights
   + ambient + env map, with `sun_vis` multiplied onto **only the direct sun term**
   so shadowed areas keep sky/ambient (not black). Point/spot lights are *not*
@@ -283,7 +283,7 @@ The FFT horizon map is **removed**. Decision rationale:
 **Removal touches:**
 - `src/lib.rs`: `Clipmap.horizon` / `horizon_coeffs` fields, `GridMaterial`
   bindings 104/105/106, and the two material-construction sites passing them.
-- `src/terrain.wgsl`: bindings 104–106, `reconstruct_horizon` (130-142), and the
+- `src/terrain.wesl`: bindings 104–106, `reconstruct_horizon` (130-142), and the
   horizon block at 416-428 — `min(shadow, horizon_shadow)` simplifies to
   `shadow` (later `min(shadow, baked_static_shadow)`).
 - `convert/clipmap.py`: the `horizon` subcommand.
@@ -335,7 +335,7 @@ non-zero height. Altitude demands a *3D* occlusion query, not a surface lookup.
 
 **Tool — per-entity heightfield ray-march toward the fixed sun.** The sun is
 fixed and the heightmap is resident, so from any 3D point you march the heightmap
-toward the sun and test occlusion — the exact `bake.wgsl sun_visibility` logic,
+toward the sun and test occlusion — the exact `bake.wesl sun_visibility` logic,
 seeded at the entity's *actual* world position instead of the surface. Height-
 correct at any altitude, with no shadow-map resolution ceiling.
 
@@ -616,7 +616,7 @@ current angle); only genuinely dynamic objects use live CSM every frame.
 ## 6. Foundational cleanup (do before piling on features)
 
 ### 6.1 Shrink or eliminate the copied lighting shader
-`terrain_apply_lighting` in `terrain.wgsl` is a hand-copied fork of Bevy's
+`terrain_apply_lighting` in `terrain.wesl` is a hand-copied fork of Bevy's
 `apply_pbr_lighting`, now existing to inject `sun_vis` onto **only the direct sun
 term** (the horizon-map reason is gone — §4.1). It is the single biggest
 maintenance liability (re-taxed every Bevy upgrade — already felt in the 0.18→0.19
@@ -677,7 +677,7 @@ material rewrite.
   no first-party Bevy XR in 0.19). Per-material uniforms like `translation` are
   view-independent — good.
 - **Forward + MSAA for the VR path; keep deferred for flatscreen.** Both
-  pipelines already exist (`deferred_output` in `terrain.wgsl`). Treat the choice
+  pipelines already exist (`deferred_output` in `terrain.wesl`). Treat the choice
   as part of the quality preset.
 - **Stable shadows.** Snap CSM texels to world grid; prefer stable techniques —
   shadow shimmer is nausea-inducing in a headset.
@@ -737,11 +737,11 @@ claim (§2.1, §7). Before committing presets, profile on a headset:
 
 | Location                                    | Role                                                    |
 | ------------------------------------------- | ------------------------------------------------------- |
-| `src/bake.wgsl` `splat_terrain` / `hex_sample` | Layer splat + hex de-tiling; writes the RVT channels |
-| `src/bake.wgsl` `band()`                    | Procedural slope/height placement bands (§3.2)          |
-| `src/bake.wgsl` `sun_visibility`            | Adaptive heightfield ray-march (baked terrain shadow)   |
-| `src/terrain.wgsl` `terrain_apply_lighting` | Compact PBR fork: baked sun-vis on the sun + clustered point/spot lights |
-| `src/terrain.wgsl` packed-id unpack + detail block | Top-2 detail blend, NEAREST id read, far skip (§3.5) |
+| `src/bake.wesl` `splat_terrain` / `hex_sample` | Layer splat + hex de-tiling; writes the RVT channels |
+| `src/bake.wesl` `band()`                    | Procedural slope/height placement bands (§3.2)          |
+| `src/bake.wesl` `sun_visibility`            | Adaptive heightfield ray-march (baked terrain shadow)   |
+| `src/terrain.wesl` `terrain_apply_lighting` | Compact PBR fork: baked sun-vis on the sun + clustered point/spot lights |
+| `src/terrain.wesl` packed-id unpack + detail block | Top-2 detail blend, NEAREST id read, far skip (§3.5) |
 | `src/lib.rs` `load_terrain_array`           | Decode + stack + mip real texture sets (public API)     |
 | `src/rvt.rs` `init_rvt` / `drive_rvt_bake`  | Sentinel-gated RVT bake lifecycle                       |
 | `src/lib.rs` `TerrainLayer` / `SlopeRule` / `HeightRule` | Layer config + placement bands (§3.2)      |

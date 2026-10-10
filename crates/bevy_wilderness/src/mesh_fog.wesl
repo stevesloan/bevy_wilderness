@@ -1,15 +1,15 @@
 // StandardMaterial + inline height fog for meshes, matching the terrain fog on the
 // `Low` tier. Shared fog math; no-op when density == 0 (the `High` tier, where the
 // fullscreen pass fogs meshes by depth).
-#import bevy_pbr::{
+import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
     mesh_view_bindings::view,
-}
-#import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog}
+};
+import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog};
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> fog: HeightFog;
+@group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> fog: HeightFog;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {

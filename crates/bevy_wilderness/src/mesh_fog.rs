@@ -27,7 +27,7 @@ impl MaterialExtension for HeightFogExtension {
     // by depth, so the deferred path keeps StandardMaterial's default gbuffer.
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path(
-            AssetPath::from_path_buf(embedded_path!("mesh_fog.wgsl")).with_source("embedded"),
+            AssetPath::from_path_buf(embedded_path!("mesh_fog.wesl")).with_source("embedded"),
         )
     }
 }

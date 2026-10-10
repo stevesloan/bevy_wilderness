@@ -10,7 +10,7 @@ repository = "https://github.com/stevesloan/bevy_wilderness"
 exclude = ["assets/*"]
 
 [dependencies]
-bevy = "0.19.0"
+bevy = "0.20.0"
 
 [features]
 # Demo A/B keybinds (B/N/V) for the AO/bent-normal experiment. Off by default so
@@ -22,4 +22,4 @@ dev-controls = []
 editing = []
 
 [dev-dependencies]
-bevy = { version = "0.19.0", features = ["free_camera"] }
+bevy = { version = "0.20.0", features = ["free_camera"] }

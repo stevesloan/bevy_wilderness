@@ -1,6 +1,6 @@
 use bevy::{prelude::*, render::render_resource::TextureFormat};
 
-/// CPU view over a clipmap heightmap. Mirrors `bake.wgsl`'s `terrain_height`, so
+/// CPU view over a clipmap heightmap. Mirrors `bake.wesl`'s `terrain_height`, so
 /// CPU and GPU agree on where the ground is — keep the two in sync.
 ///
 /// Public under the `editing` feature so editor crates reuse this world↔texel +

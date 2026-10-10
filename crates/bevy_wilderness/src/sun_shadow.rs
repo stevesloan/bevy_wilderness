@@ -1,6 +1,6 @@
 //! The sun shadow-ceiling field: which world heights the terrain shadows.
 //!
-//! Baked once per clipmap (see `shadow_ceiling` in `bake.wgsl`) into a texture
+//! Baked once per clipmap (see `shadow_ceiling` in `bake.wesl`) into a texture
 //! holding, per world column, the height at which the sun ray grazing that
 //! column's last occluder passes, plus the distance to that occluder. A point is
 //! lit exactly when its height clears the ceiling, so *any* mesh can resolve its
@@ -31,7 +31,7 @@ pub struct TerrainSunShadow {
 }
 
 /// GPU form of the field's parameters, matching the WGSL `SunShadowParams` in
-/// `sun_shadow.wgsl`.
+/// `sun_shadow.wesl`.
 #[derive(Component, ShaderType, Clone, Reflect, Debug)]
 pub struct SunShadowParams {
     /// World XZ → UV scale; the field covers the origin-centered clipmap.

@@ -1,9 +1,7 @@
 // Shared analytic exponential height fog (Crytek/Wenzel). Imported by both the
-// fullscreen post-process (`height_fog.wgsl`, flatscreen tier, fogs the sky too)
-// and the terrain shader (`terrain.wgsl`, VR tier, inline / virtually free but
+// fullscreen post-process (`height_fog.wesl`, flatscreen tier, fogs the sky too)
+// and the terrain shader (`terrain.wesl`, VR tier, inline / virtually free but
 // terrain-only), so the two tiers match.
-#define_import_path bevy_wilderness::fog_functions
-
 struct HeightFog {
     color: vec3<f32>,   // mist color, linear, exposure-applied HDR range (~0..1)
     density: f32,       // base density at base_height; 0 disables
