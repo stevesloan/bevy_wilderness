@@ -55,19 +55,21 @@ of rules.
 | Capability | AAA practice | bevy_wilderness | Gap |
 | ---------- | ------------ | --------------- | --- |
 | Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched, **no morphing** | P0 |
-| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, **no mips, uncompressed** | P0 / P1 |
+| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, baked at load, **no mips, uncompressed** | P0 / P1 (offline bake) |
 | Material placement | Procedural rules (slope, height, curvature/flow masks) + height blending | Slope / height / cavity bands + height blending (4 layers) | ok |
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake; distance-faded detail overlay with per-pixel height blend, hex-tiled on desktop | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
-| Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | triplanar in bake + near detail; no cliff/rock meshes | P2 (meshes) |
+| Cliffs / rock | Triplanar on steep slopes; rock as scanned meshes (Death Stranding, FC5 procedural cliffs) | triplanar in bake + near detail; no rock meshes | P2 (rock meshes) |
 | Mid-scale relief (1–10 m) | Per-material macro detail height / normals | Procedural `Relief` per layer (noise + ledges), baked into normals + near-field shadow | ok |
-| Close-up relief | Tessellation / Nanite displacement / displacement decals | none | P2 (desktop) |
+| Close-up relief | Tessellation / Nanite displacement / POM / displacement decals | none | P2 (desktop) |
+| Contact AO | GTAO / screen-space AO | baked macro AO + detail AO + micro-shadows | P2 (desktop SSAO) |
 | Terrain shadow | Heightfield/baked for terrain + CSM for dynamic | baked sun-vis + height-correct shadow-ceiling field for meshes | ok |
 | Static objects → terrain shadow | Baked into lighting | not yet | P2 |
 | Terrain GI | Baked sky + bounce, probe volumes for dynamics | macro AO + bent normal (monochrome) | P2 |
 | Object ↔ terrain blending | RVT sampled by meshes at ground contact (UE) | not exposed | P2 |
-| Vegetation / ground cover | GPU procedural placement (Horizon Zero Dawn), GPU grass (Ghost of Tsushima) | **none** | P2 — biggest visual gap |
+| Scatter: rock meshes, vegetation | GPU procedural placement (Horizon Zero Dawn / Death Stranding), GPU grass (Ghost of Tsushima) | **none** | P2 — biggest visual gap |
 | Fog / atmosphere | Height fog + aerial perspective | analytic height fog, two tiers; Bevy atmosphere in the example | ok |
+| Source elevation | 1–2 m lidar / DEM + erosion tools | USGS 3DEP 1 m (US) + ~30 m global tiles; 4096² editor maps (2 m) | P1 (sources) |
 | World size | Streamed heightmaps + VT pages | single resident heightmap + RVT (~8 km at 1 m/texel) | P3 |
 | Time of day | Dynamic sun with cached/amortized shadow | fixed sun, baked | P3 |
 
@@ -80,7 +82,7 @@ of rules.
 | Static-object shadows as a separate crate | **Revised** | The part that matters most — buildings shadowing *terrain* — needs this crate's bake, so it belongs here as an occluder-registration hook (§5 P2). Object-on-object shadows stay the game's (Bevy CSM on desktop, baked/blob on Frame). |
 | Full GI system: DDGI probes, per-building volumes, vertex-baked bounce | **Narrowed** | The terrain half (colored sky + one sun bounce baked into the RVT) is cheap and high-value — keep. Leak-free probe volumes for interiors are a game/engine-level system, not terrain; drop from this roadmap. |
 | Sky/contact AO channel revival | **Folded in** | Ambient gather already bakes AO + bent normal. Contact AO under objects comes with occluder registration. |
-| Triplanar on steep slopes (stretch) | **Promoted** | Cliffs are where heightfield terrain looks cheapest; slope-gated **biplanar** (only cliffs pay) on the desktop tier, cliff meshes for hero rock. |
+| Triplanar on steep slopes (stretch) | **Done** | Triplanar in the bake (always) and the near detail (`detail_triplanar`, desktop). What remains for rock is meshes (P2). |
 | Toroidal ring RVT for flatscreen density | **Replaced** | Superseded by mip-chained RVT + a streamed/adaptive virtual texture when worlds outgrow one RVT (P3). Don't revive the ring. |
 | Parallax / POM | **Kept, desktop only** | Plus a denser near grid for real displacement (§5 P2). |
 | `TerrainQualityKey` + crate feature flags (`hextile`, `rvt`, …) | **Revised** | Runtime presets on `TerrainQuality` instead; compile-time flags would fork the material. |
@@ -88,7 +90,9 @@ of rules.
 | HMD-centered clipmap, multiview check, forward+MSAA for VR | **Kept, P1** | Standard VR practice. |
 | Shrink/remove the lighting fork | **Kept** | Still re-taxed every Bevy upgrade (0.20 added rect lights). |
 | Erosion (droplet, then GPU pipe model) | **Dropped** | Never looked right. Authoring natural landforms is better served by real-world import (already built) and external tools (Gaea, World Machine) exporting 16-bit heightmaps. Revisit only with a proven method (e.g. stream-power + thermal at low resolution, upsampled with detail). |
-| Editor Phase 12: progressive strip re-bake | **Kept, conditional** | Only if a full re-bake measurably hitches. |
+| Editor Phase 12: progressive strip re-bake | **Kept, conditional** | Only if a full re-bake measurably hitches *in the editor*. For shipping, the bake moves offline (P1). |
+| Real-scale texture sets (macro aerial + ground-level detail per layer) | **Tried, reverted** | Measured: the example's scans are used 1.7–50× off their real size. A two-set, true-scale version was built and rejected on look; the original textures stay. Revisit per texture, not wholesale. |
+| Replacement rock textures (`rock_ground_02`, `rocks_ground_02`, `cliff_side`) | **Compared, kept original** | Side-by-side renders on the same cliff; the original `marble_cliff_05` stays. Rock realism up close comes from meshes, not the terrain texture. |
 
 ## 5. Roadmap
 
@@ -102,14 +106,17 @@ of rules.
   sRGB targets, and box-averaging corrupts the packed material ids. Preferred:
   **bake each mip level directly** (one bake camera per level into a mip
   view) — the bake's `textureSampleGrad` then prefilters the source arrays
-  correctly at every level, and ids stay valid. ~⅓ extra bake time.
+  correctly at every level, and ids stay valid. ~⅓ extra bake time. With the
+  offline bake (P1) the mips can be built at export instead, with per-channel
+  filters (renormalized normals, majority ids).
 - **Geomorph LOD transitions.** Blend each vertex toward its coarser-level
   position across the outer band of every ring (GPU Gems 2 clipmaps / CDLOD
   morphing) so resolution changes are continuous instead of popping.
 - **Specular anti-aliasing.** Raise roughness from normal variance (Toksvig-
   style, from the length of the filtered normal) in the RVT mips and detail
   normals, plus a geometric term from screen-space normal derivatives (Valve's
-  VR rendering talk). Kills sparkle on rough ground.
+  VR rendering talk). Kills sparkle on rough ground — more pressing now that
+  rock has a sheen (roughness 0.8).
 - **Unbaked fallback for non-editing builds.** Clay exists only with
   `editing`; a shipping build shows chrome until the bake lands. Make clay (or
   a flat neutral shade) the default fallback.
@@ -120,6 +127,14 @@ of rules.
 
 ### P1 — Scaling: one terrain, two tiers
 
+- **Offline bake: export and load.** The bake will be pre-rendered rather
+  than run on the headset. Export the RVT targets and the sun shadow-ceiling
+  field (KTX2, mipped, block-compressed: ASTC for the Frame, BC for desktop)
+  from the editor alongside the heightmap; the runtime loads them instead of
+  baking. Absorbs RVT mips and texture compression, and makes bake cost a
+  build-time concern — today's bake (relief, cavity, breakup, triplanar)
+  already runs long enough to stall a desktop frame. The sun is fixed at
+  export, as it is at bake today. Editing keeps the runtime bake.
 - **Named presets.** `TerrainQuality::standalone()` / `::desktop()` (and
   `::low()`), tuned by profiling. Starting point:
 
@@ -134,7 +149,7 @@ of rules.
   | AA | MSAA 4×, forward | TAA or MSAA, deferred ok |
   | `detail_hex_tiling` | off | on |
   | `detail_triplanar` | off (bake stays triplanar) | on |
-  | biplanar cliffs / POM / dense near grid | off | on |
+  | POM / dense near grid / SSAO | off (maybe one-step parallax ≤ 3 m, if profiling allows) | on |
   | ground cover density & distance | low | high |
   | dynamic-object shadows | blob / one cascade | CSM |
 
@@ -150,19 +165,32 @@ of rules.
   screen and is ideal for it. Verify availability on device.
 - **CPU sun-visibility query.** A CPU twin of the shadow-ceiling field for
   gameplay (is the player in shade?) and per-object material params.
+- **More elevation sources.** World import offers USGS 3DEP 1 m (US) and
+  ~30 m global tiles. Add: Copernicus GLO-30 (better global 30 m, COGs on
+  AWS), Norway DTM1 (1 m, CC BY 4.0), England LIDAR DTM (1 m), swissALTI3D,
+  ArcticDEM (2 m, north of 60° incl. Iceland; the 2 m product is licensed for
+  research/education), New Zealand LINZ (1 m regional). Use bare-earth DTMs.
+  And 8192² editor maps: the default 4096² over 8 km is 2 m/texel, so 1 m
+  lidar is averaged away. With lidar-resolution maps, `Relief` depth can drop.
 - **Device profiling gate.** Before freezing presets, profile on a Frame:
   ms per pass, RVT memory, samples per near fragment against the ~16-texture
   ceiling, and thermal throttling over a 20-minute session.
 
 ### P2 — Visual pillars
 
-- **Ground cover and scatter** (biggest gap). GPU procedural placement driven
-  by the same slope/height bands and baked material ids (the Horizon Zero
-  Dawn model: deterministic, data-driven, regenerated around the player), with
-  GPU-generated grass blades near the camera (Ghost of Tsushima), instanced
-  meshes mid-range and impostors far. Density and distance are tier knobs.
-  Probably its own crate (`bevy_wilderness_foliage`) consuming the terrain's
-  public data: `Heightfield`, material ids, the shadow field.
+- **Scatter: rock meshes first, then ground cover** (biggest gap). Up close,
+  rock in AAA games is scanned meshes, not terrain texture (Death Stranding:
+  photogrammetry + GPU procedural placement; ~25 M polygons in one DS2 scene).
+  GPU procedural placement driven by the same slope / height / cavity bands
+  and baked material ids (the Horizon Zero Dawn model: deterministic,
+  data-driven, regenerated around the player). **Rock first:** boulders and
+  outcrops on rock areas, sunk into the terrain and blended via the RVT;
+  on the Frame, a few low-poly hero rocks with baked normal maps, aggressive
+  LOD and impostors. **Then ground cover:** GPU grass near the camera (Ghost
+  of Tsushima), instanced meshes mid-range, impostors far. Density and
+  distance are tier knobs. Probably its own crate (`bevy_wilderness_scatter`
+  or `_foliage`; **open decision**) consuming the terrain's public data:
+  `Heightfield`, material ids, the shadow field.
 - **Terrain GI.** Extend the ambient gather from monochrome sky occlusion to
   colored sky irradiance + a single sun bounce (light reflected off sunlit
   slopes into shadowed valleys), baked into the RVT. Zero runtime cost; the
@@ -182,16 +210,19 @@ of rules.
   applied to ambient occlusion and removed: measured on the example map it
   darkened deep gullies to ~40 % where the physically based horizon AO gave
   ~83 %, and 71 % of its darkening landed where the AO saw ≥ 90 % open sky.
-- **Cliffs.** Slope-gated biplanar mapping in the main pass detail overlay
-  (desktop; flat ground stays single-planar), and authored/procedural cliff
-  meshes for hero rock (Far Cry 5's procedural cliff pipeline uses slope as
-  its input).
 - **Close-up relief (desktop).** wgpu has no tessellation shaders, so: a finer
   level-0 grid near the camera displaced by the baked `Relief` function (so
   geometry matches the relief shading) plus the detail height of the dominant
-  material, plus POM for the remaining near rock. Far Cry 5 shipped
-  displacement *decals* instead of tessellation for cost — a good fit for
-  rocks, roots and paths.
+  material, plus POM **with self-shadowing** for the remaining near rock. Far
+  Cry 5 shipped displacement *decals* instead of tessellation for cost — a
+  good fit for rocks, roots and paths. The Frame might afford a one-step
+  parallax within ~3 m; profile first.
+- **Screen-space AO (desktop).** Bevy's SSAO for small-scale contact
+  darkening; a deliberate desktop-only exception to "bake everything" (a
+  fullscreen pass is expensive on a tiled mobile GPU).
+- **Micro-shadowing for local lights.** It covers the sun only; point and
+  spot lights (torches) would gain the same crevice depth. Terrain also
+  doesn't receive Bevy 0.20's rect area lights.
 
 ### P3 — Scale and dynamics
 
@@ -227,6 +258,8 @@ Stale comments found while writing these docs:
   `sun_shadow_size`.
 - `TerrainGesture::open()` has no callers since erosion was removed.
 - The example header doesn't list Alt+wheel (stamp feather).
+- `assets/stamps/Erosion2_Out_8K.png` in the editor UI crate is a leftover from
+  the erosion work.
 
 ## 7. References
 
@@ -241,3 +274,6 @@ Stale comments found while writing these docs:
 - [Adreno texture best practices (Qualcomm)](https://developer.qualcomm.com/sites/default/files/docs/adreno-gpu/snapdragon-game-toolkit/gdg/gpu/best_practices_texture.html)
 - [GPU Geometry Clipmaps (GPU Gems 2)](https://developer.nvidia.com/gpugems/gpugems2/part-i-geometric-complexity/chapter-2-terrain-rendering-using-gpu-based-geometry)
 - [Hex-tiling (Mikkelsen)](https://github.com/mmikk/hextile-demo)
+- [Normal Mapping for a Triplanar Shader — Ben Golus](https://bgolus.medium.com/normal-mapping-for-a-triplanar-shader-10bf39dca05a)
+- Death Stranding: [PC Gamer on Decima](https://www.pcgamer.com/games/action/13-year-old-decima-engine-allows-death-stranding-team-to-accomplish-many-things-that-would-be-difficult-to-achieve-elsewhere/), [Kojima on photogrammetry](https://ag.hyperxgaming.com/article/2256/kojima-talks-photogrammetry-in-death-stranding)
+- Elevation data: [ArcticDEM on AWS](https://registry.opendata.aws/pgc-arcticdem), [Copernicus DEM on AWS](https://forum.sentinel-hub.com/t/copernicus-dem-data-available-on-aws/3027), [Norway DTM1](https://data.norge.no/en/datasets/1a7327eb-1fa5-3432-8dea-fc198a5ede13/hoyde-dtm1), [England LIDAR DTM](https://ckan.publishing.service.gov.uk/dataset/01b3ee39-da3f-47b6-83da-dc98e73a461f), [swissALTI3D](https://ckan.opendata.swiss/dataset/swissalti3d/resource/c2d9dbe8-18ea-4ac5-972e-ba69d0b37706)
