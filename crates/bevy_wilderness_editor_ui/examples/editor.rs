@@ -546,7 +546,13 @@ fn setup(
                 roughness: 0.99,
                 slope: None,
                 height: None,
-                cavity: None,
+                // Yields in deep hollows so gullies are clearly sediment, not a
+                // grass/gravel mix (grass is the base layer and competes everywhere).
+                cavity: Some(CavityRule {
+                    min: 0.25,
+                    max: 1.0,
+                    blend: 0.15,
+                }),
                 relief: Some(Relief {
                     depth: 6.0,
                     scale: 24.0,

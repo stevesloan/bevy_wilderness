@@ -269,13 +269,26 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
 // baked result. Procedural placement + hex de-tiling.
 // Procedural placement: each layer's weight is the overlap of its slope,
 // world-height and curvature bands, normalized across layers.
-fn band_weights(normal: vec3<f32>, height: f32, cavity: f32) -> vec4<f32> {
-    let slope = acos(clamp(normal.y, -1.0, 1.0));
+//
+// A layer with relief evaluates its slope band on the surface tilted by *its
+// own* relief only, so a rock ledge's steep riser becomes rock while its
+// tread doesn't — strata weathering, not a smooth slope ramp. Other layers'
+// relief is ignored here: grass hummocks tipping a hillside past dirt's slope
+// band would speckle dirt across every grassy slope. Height and curvature
+// bands use the heightmap alone, so placement matches the cavity debug view.
+fn band_weights(xz: vec2<f32>, n0: vec3<f32>, height: f32, cavity: f32, e: f32) -> vec4<f32> {
     var w = vec4<f32>(0.0);
     for (var i = 0u; i < MAX_LAYERS; i++) {
         if i >= params.layer_count {
             continue;
         }
+        var n = n0;
+        if params.relief_depth[i] > 0.0 {
+            var own = vec4<f32>(0.0);
+            own[i] = 1.0;
+            n = relief_normal(xz, n0, own, e);
+        }
+        let slope = acos(clamp(n.y, -1.0, 1.0));
         w[i] = band(slope, params.slope_min[i], params.slope_max[i], params.slope_blend[i])
              * band(height, params.height_min[i], params.height_max[i], params.height_range_blend[i])
              * band(cavity, params.cavity_min[i], params.cavity_max[i], params.cavity_blend[i]);
@@ -301,14 +314,7 @@ const RELIEF_IN_BLEND: f32 = 0.35;
 // `n0` is the heightmap normal; `e` one RVT texel (m).
 fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
     let height = terrain_height(world_xz);
-    let cavity = cavity_at(world_xz, height);
-    // Placement sees the relief: slope bands are evaluated on the relief-
-    // tilted surface, so a rock ledge's steep riser becomes rock while its
-    // flat tread stays grass — strata weathering, not a smooth slope ramp.
-    // The relief needs weights to blend, so take them from the smooth surface
-    // first, then place on the surface they shape.
-    let relief_n = relief_normal(world_xz, n0, band_weights(n0, height, cavity), e);
-    let w = band_weights(relief_n, height, cavity);
+    let w = band_weights(world_xz, n0, height, cavity_at(world_xz, height), e);
 
     var colors = array<vec3<f32>, 4>();
     var normals = array<vec3<f32>, 4>();
