@@ -203,7 +203,9 @@ on looping terrain so marches cross the seam.
 - **Ambient gather** (`ambient_gather`, AO target). Horizon-based over 8
   azimuths × 12 steps out to 400 m: macro AO integrated about the surface
   normal (an unoccluded slope bakes to 1), the visibility-weighted **bent
-  normal**, and a Laplacian **cavity** term. Off on low quality.
+  normal**, and a **cavity** term: the depression angle of an 8-tap ring at
+  r = max(2 texels, 16 m), ±15° mapped to 0..1 (0.5 flat) — resolution- and
+  height-range-independent. Off on low quality.
 - **Shadow ceiling** (`shadow_ceiling`, sun-shadow target). For each column,
   the height below which the terrain shadows it (and the occluder distance for
   penumbra width) — §7.

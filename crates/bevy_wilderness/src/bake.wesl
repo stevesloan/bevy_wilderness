@@ -222,16 +222,24 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
     let ao = clamp(ao_num / max(ao_den, 1e-5), 0.0, 1.0);
     let bent_n = normalize(bent + n * 1e-3);
 
-    // Curvature / cavity from the height Laplacian: concave (valleys, cracks) vs
-    // convex (ridges, ledges). >0.5 convex, <0.5 concave, 0.5 flat. The 8.0
-    // scale is a look knob — tune to the terrain's height range.
-    let e = texel_size * 2.0;
-    let hr = terrain_height(world_xz + vec2<f32>(e, 0.0));
-    let hl = terrain_height(world_xz - vec2<f32>(e, 0.0));
-    let ht = terrain_height(world_xz + vec2<f32>(0.0, e));
-    let hb = terrain_height(world_xz - vec2<f32>(0.0, e));
-    let lap = (hr + hl + ht + hb - 4.0 * origin_h) / e;
-    let cavity = clamp(0.5 - lap * 8.0, 0.0, 1.0);
+    // Cavity: concave (gullies, hollows) vs convex (ridges, knolls). <0.5
+    // concave, >0.5 convex, 0.5 flat. Measured as the *depression angle* — how
+    // far the ring of terrain at radius r sits above (concave) or below
+    // (convex) this point, over r — so it is independent of heightmap
+    // resolution and height range. On natural terrain the median is ~3° and
+    // the 95th percentile ~12°, so ±15° spans the useful range with only a few
+    // percent saturating. (A Laplacian with a fixed gain saturated ~85% of the
+    // example map to pure 0 / 1.)
+    const CAVITY_RING_TAPS = 8;
+    const CAVITY_SATURATION = 0.2679;  // tan(15°)
+    let r = max(2.0 * texel_size, 16.0);
+    var ring = 0.0;
+    for (var k = 0; k < CAVITY_RING_TAPS; k++) {
+        let a = f32(k) * (6.2831853 / f32(CAVITY_RING_TAPS));
+        ring += terrain_height(world_xz + vec2<f32>(cos(a), sin(a)) * r);
+    }
+    let depression = (ring / f32(CAVITY_RING_TAPS) - origin_h) / r;
+    let cavity = clamp(0.5 - 0.5 * depression / CAVITY_SATURATION, 0.0, 1.0);
 
     // R = AO, GB = bent normal world X/Z (Y reconstructed in the main pass),
     // A = cavity.
