@@ -215,7 +215,14 @@ on looping terrain so marches cross the seam.
   march). It fills the 1–10 m band the heightmap (smooth between texels) and
   the detail overlay (near only) both miss — ledges and strata that give the
   mid-ground shape. Shading only: geometry and CPU height queries ignore it.
-  Placement uses the plain heightmap (relief depends on placement).
+  Relief also drives **material transitions**: slope bands are evaluated on
+  the relief-tilted normal (weights from the smooth surface shape the relief
+  first, then placement runs on it), so ledge risers turn to rock while
+  treads stay grass; and a relief layer's blend height swings ±0.35 with its
+  relief shape around its texture height (`RELIEF_IN_BLEND`), so outcrops win
+  on their own high ground and boundaries interlock at tens of metres instead
+  of cross-fading — while each layer keeps its average competitiveness (tall
+  rock textures still hold steep ground against the base grass layer).
 - **Sun visibility** (`sun_visibility`, albedo alpha). Soft heightfield
   ray-march toward the sun: 96 geometrically growing steps out to 6 km, origin
   pushed off the surface, penumbra from clearance / distance.

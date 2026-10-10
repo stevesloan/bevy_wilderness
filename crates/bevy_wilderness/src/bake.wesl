@@ -267,14 +267,11 @@ fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
 // Blends the terrain layers at one world position and returns the packed RVT
 // channels. This is the *only* place the splat runs — the main pass samples the
 // baked result. Procedural placement + hex de-tiling.
-fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
-    // Procedural placement: each layer's weight is the overlap of its slope band
-    // (grass→dirt→rock) and its world-height band (e.g. snow above a snowline).
+// Procedural placement: each layer's weight is the overlap of its slope,
+// world-height and curvature bands, normalized across layers.
+fn band_weights(normal: vec3<f32>, height: f32, cavity: f32) -> vec4<f32> {
     let slope = acos(clamp(normal.y, -1.0, 1.0));
-    let height = terrain_height(world_xz);
-    let cavity = cavity_at(world_xz, height);
-
-    var w = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var w = vec4<f32>(0.0);
     for (var i = 0u; i < MAX_LAYERS; i++) {
         if i >= params.layer_count {
             continue;
@@ -283,15 +280,35 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
              * band(height, params.height_min[i], params.height_max[i], params.height_range_blend[i])
              * band(cavity, params.cavity_min[i], params.cavity_max[i], params.cavity_blend[i]);
     }
-
-    let wsum = w[0] + w[1] + w[2] + w[3];
+    let wsum = w.x + w.y + w.z + w.w;
     if wsum < 1e-4 {
-        w[0] = 1.0;
-    } else {
-        for (var i = 0u; i < MAX_LAYERS; i++) {
-            w[i] = w[i] / wsum;
-        }
+        return vec4<f32>(1.0, 0.0, 0.0, 0.0);
     }
+    return w / wsum;
+}
+
+// How far a relief layer's blend height swings with its relief shape (±, in
+// 0..1 height units). Texture heights are cm-scale detail that filters nearly
+// flat at RVT resolution, so on their own they barely move a transition; the
+// relief shape is a real mid-scale height, so outcrops win on their own high
+// ground and transitions interlock at tens of meters. It's added *around* the
+// texture height rather than replacing it: the filtered texture height is the
+// layer's average — tall rock textures out-compete low grass on steep ground —
+// and replacing it with zero-mean noise erased that and let the base layer
+// crowd rock off its slopes.
+const RELIEF_IN_BLEND: f32 = 0.35;
+
+// `n0` is the heightmap normal; `e` one RVT texel (m).
+fn splat_terrain(world_xz: vec2<f32>, n0: vec3<f32>, e: f32) -> SplatResult {
+    let height = terrain_height(world_xz);
+    let cavity = cavity_at(world_xz, height);
+    // Placement sees the relief: slope bands are evaluated on the relief-
+    // tilted surface, so a rock ledge's steep riser becomes rock while its
+    // flat tread stays grass — strata weathering, not a smooth slope ramp.
+    // The relief needs weights to blend, so take them from the smooth surface
+    // first, then place on the surface they shape.
+    let relief_n = relief_normal(world_xz, n0, band_weights(n0, height, cavity), e);
+    let w = band_weights(relief_n, height, cavity);
 
     var colors = array<vec3<f32>, 4>();
     var normals = array<vec3<f32>, 4>();
@@ -316,7 +333,11 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
         // thins out continuously at its band edge. An additive height term
         // let a strongly height-blended layer (rock) score high right up to
         // the band edge and then vanish — a hard line around every band.
-        scores[i] = w[i] * max(1.0 + params.height_blend[i] * (2.0 * a.a - 1.0), 0.05);
+        var blend_h = a.a;
+        if params.relief_depth[i] > 0.0 {
+            blend_h = saturate(a.a + RELIEF_IN_BLEND * layer_relief_shape(world_xz, i));
+        }
+        scores[i] = w[i] * max(1.0 + params.height_blend[i] * (2.0 * blend_h - 1.0), 0.05);
         maxs = max(maxs, scores[i]);
     }
 
@@ -438,6 +459,11 @@ fn relief_shape(xz: vec2<f32>, scale: f32, ledges: f32, seed: u32) -> f32 {
     return n;
 }
 
+// Layer `i`'s relief shape (-1..1) — its own noise field (per-layer seed).
+fn layer_relief_shape(xz: vec2<f32>, i: u32) -> f32 {
+    return relief_shape(xz, params.relief_scale[i], params.relief_ledges[i], i * 7919u + 1u);
+}
+
 // Relief height (m, around 0) at `xz` for fixed layer `weights`.
 fn relief_at(xz: vec2<f32>, weights: vec4<f32>) -> f32 {
     var r = 0.0;
@@ -446,8 +472,7 @@ fn relief_at(xz: vec2<f32>, weights: vec4<f32>) -> f32 {
         if weights[i] < 1e-3 || depth <= 0.0 {
             continue;
         }
-        let shape = relief_shape(xz, params.relief_scale[i], params.relief_ledges[i], i * 7919u + 1u);
-        r += weights[i] * depth * 0.5 * shape;
+        r += weights[i] * depth * 0.5 * layer_relief_shape(xz, i);
     }
     return r;
 }
@@ -581,8 +606,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // One RVT texel in world units — the relief normal's difference step.
     let e = max(length(dpdx(world_xz)), 1e-3);
     let n0 = geo_normal(world_xz);
-    // Placement uses the heightmap alone (relief depends on placement).
-    let splat = splat_terrain(world_xz, n0);
+    let splat = splat_terrain(world_xz, n0, e);
     let n = relief_normal(world_xz, n0, splat.weights, e);
     if output_mode == 0u {
         let vis = min(sun_visibility(world_xz), relief_shadow(world_xz, n, splat.weights, e));
