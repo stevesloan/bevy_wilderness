@@ -2,9 +2,8 @@
 //! heightmap updates, but the baked shading (sun self-shadow, AO, slope-placed
 //! material splat) only re-runs once edits settle: each dirty flush re-arms a
 //! ~200 ms timer, and when it expires the terrain gets a `RebakeRequested` —
-//! so a held stroke bakes once on release, not every frame. Matters most for
-//! erosion: the splat places rock by slope, so the re-bake is what turns
-//! freshly carved cliffs rocky.
+//! so a held stroke bakes once on release, not every frame. The splat places
+//! rock by slope, so the re-bake is what turns freshly sculpted cliffs rocky.
 
 use bevy::prelude::*;
 use bevy_wilderness::{Clipmap, ClipmapReady, RebakeRequested};

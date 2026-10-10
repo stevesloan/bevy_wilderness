@@ -72,16 +72,13 @@ for the full list):
 
 - **Sculpt** (S) — raise / lower / smooth / flatten under an adjustable brush;
   hold Shift to smooth or Ctrl to invert without leaving the current mode.
-- **Mask** (M) — paint a feathered mask that confines sculpting and erosion.
-- **Erode** (E) — background hydraulic + thermal erosion with a live progress
-  bar: slope-gated droplets, flow-accumulation-carved dendritic channels,
-  smoothed sediment fans. Tune it under the panel's Erosion → Realism section.
+- **Mask** (M) — paint a feathered mask that confines sculpting and stamps.
 - **Stamp** (T) — float a grayscale heightfield PNG under the cursor as a live
   GPU preview; wheel = strength (negative carves), Ctrl+wheel = size,
   Shift+wheel = rotate; click commits. Drop your own 8/16-bit PNGs into the
   gallery folder (`crates/bevy_wilderness_editor_ui/assets/stamps/`, generated
   on first run) and hit Rescan.
-- **Undo/redo** — Ctrl+Z / Ctrl+Shift+Z, every tool and erosion included.
+- **Undo/redo** — Ctrl+Z / Ctrl+Shift+Z, every tool included.
 - **Export** — writes the heightmap as both `.ktx2` (engine master) and
   16-bit `.png` (interchange). Reload an export without restarting via the
   panel's "Load terrain…", or at launch:

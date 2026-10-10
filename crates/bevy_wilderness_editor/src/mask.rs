@@ -1,7 +1,7 @@
 //! The built-in mask paint tool (D4): paint a 0..1 weight mask with the shared
 //! brush while LMB is held (Shift+LMB erases). The brush's smoothstep falloff
 //! feathers the edge by construction — no hard rectangular seam — and masked
-//! ops (sculpt now, erosion in Phase 5) weight their deltas by it so edited
+//! ops (sculpt, stamp) weight their deltas by it so edited
 //! ground blends into untouched ground. Footprints wrap on looping terrain
 //! like every other edit.
 

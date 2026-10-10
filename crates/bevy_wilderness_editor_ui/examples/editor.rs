@@ -10,16 +10,15 @@
 //! Everything is driven from the side panel; keyboard shortcuts mirror it
 //! (WASD + right-drag to fly):
 //! - **Left mouse (held)** — apply the active tool under the brush ring
-//! - **S / M / E / P / T** — sculpt / mask paint / erode / place-prop /
-//!   stamp tool
+//! - **S / M / P / T** — sculpt / mask paint / place-prop / stamp tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
 //! - **Shift / Ctrl** (sculpt tool, held) — smooth / invert the current mode
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
 //! - **[ / ]** — brush radius down / up
 //! - **- / =** — brush strength down / up
 //! - **Ctrl+Z / Ctrl+Shift+Z** — undo / redo
-//! - **B** — toggle the tile-boundary ring (the terrain loops; edits and
-//!   erosion wrap across it)
+//! - **B** — toggle the tile-boundary ring (the terrain loops; edits wrap
+//!   across it)
 //!
 //! The stamp tool (T, D11) floats a heightfield PNG under the cursor as a
 //! live GPU preview; **click commits it**. While it's active the wheel
@@ -30,15 +29,14 @@
 //! stamps folder on first run — drop your own 8/16-bit grayscale PNGs
 //! there and hit "rescan".
 //!
-//! A painted mask (orange tint) confines sculpting *and* erosion to it,
-//! feathered at the edge. Erosion runs in the background over the mask (the
-//! whole map if none); when it lands, the re-bake turns fresh cliffs rocky.
+//! A painted mask (orange tint) confines sculpting *and* stamps to it,
+//! feathered at the edge; the re-bake after an edit turns fresh cliffs rocky.
 //! The place-prop tool (P) drops cubes that snap to the surface and *re-snap*
-//! whenever the ground under them changes — sculpt or erode under one and
-//! watch it follow.
+//! whenever the ground under them changes — sculpt under one and watch it
+//! follow.
 //!
 //! The editor opens on a **new terrain** by default: a flat plain at the D1
-//! 4096² working resolution over an 8192 m world footprint. Sculpt it, erode
+//! 4096² working resolution over an 8192 m world footprint. Sculpt it, stamp
 //! it, export it — the exports are the new terrain's master files. The panel's
 //! **New** button starts over (at a chosen resolution) and **Load terrain…**
 //! opens an existing heightmap through a file dialog, both without a restart.
@@ -80,10 +78,10 @@ use bevy_wilderness::{
     SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
-    ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, ErosionRun,
-    RedoRequest, SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField,
-    TerrainGesture, TerrainHeight, TerrainRegionChanged, ToolId, UndoApplied, UndoBuffer,
-    UndoHistory, UndoRequest, tool_active,
+    ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, RedoRequest,
+    SculptMode, SeamOverlay, TerrainCursor, TerrainEditorPlugin, TerrainField, TerrainGesture,
+    TerrainHeight, TerrainRegionChanged, ToolId, UndoApplied, UndoBuffer, UndoHistory, UndoRequest,
+    tool_active,
 };
 use bevy_wilderness_editor_ui::{TerrainEditorUiPlugin, UiExportPath, UiStampFolder};
 
@@ -166,7 +164,6 @@ fn main() {
                 stamp_wheel_guard,
                 undo_keys,
                 clear_mask_key,
-                erosion_progress,
                 resnap_props,
             ),
         )
@@ -215,7 +212,7 @@ fn place_prop_tool(
 }
 
 /// The extension-API hook (design doc §6): when terrain changes under a placed
-/// prop — sculpt, erosion, undo, anything — re-snap it to the new surface via
+/// prop — sculpt, stamp, undo, anything — re-snap it to the new surface via
 /// the core's height query.
 fn resnap_props(
     mut changed: MessageReader<TerrainRegionChanged>,
@@ -284,10 +281,6 @@ fn brush_controls(
     if keys.just_pressed(KeyCode::KeyM) {
         active.0 = Some(ToolId::MASK);
         info!("tool: mask paint (Shift+LMB erases, C clears)");
-    }
-    if keys.just_pressed(KeyCode::KeyE) {
-        active.0 = Some(ToolId::ERODE);
-        info!("tool: erode (click to run over the mask, or the whole map if none)");
     }
     if keys.just_pressed(KeyCode::KeyP) {
         active.0 = Some(PLACE);
@@ -363,25 +356,6 @@ fn undo_keys(
         redo.write(RedoRequest);
     } else {
         undo.write(UndoRequest);
-    }
-}
-
-/// Progress-bar stand-in: logs a running erosion every ~20%, and once when the
-/// result lands — the same `ErosionRun::progress` a UI's bar will read.
-fn erosion_progress(runs: Query<&ErosionRun>, mut last: Local<Option<u32>>) {
-    match runs.iter().next() {
-        Some(run) => {
-            let pct = (run.progress() * 100.0) as u32 / 20 * 20;
-            if *last != Some(pct) {
-                *last = Some(pct);
-                info!("erosion: {pct}% simulated");
-            }
-        }
-        None => {
-            if last.take().is_some() {
-                info!("erosion: result applied");
-            }
-        }
     }
 }
 

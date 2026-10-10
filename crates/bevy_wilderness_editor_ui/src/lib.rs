@@ -11,7 +11,7 @@
 //! - **Embedded** (`TerrainEditorUiPlugin { embedded: true }`): no panel is
 //!   drawn; the host takes the [`TerrainUi`] system param in its own egui
 //!   system and calls the section methods it wants (`brush_section`,
-//!   `erosion_section`, …) inside its own window or panel. Sections self-gate
+//!   `stamp_section`, …) inside its own window or panel. Sections self-gate
 //!   on the active tool, so a host can call them unconditionally.
 //!
 //! No egui type leaks back into the core (P2's hard rule); the only coupling
@@ -23,11 +23,11 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
-    ErosionRequested, ErosionRun, ErosionSettings, ExportRequested, FogTier, HeightmapExported,
-    LoadRequested, NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings,
-    RedoRequest, SculptMode, SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded,
-    TerrainQuality, ToolId, UndoBuffer, UndoHistory, UndoRequest, WorldImportRequested,
-    WorldImportRun, WorldImportSettings, WorldImportSource, WorldImported,
+    ExportRequested, FogTier, HeightmapExported, LoadRequested, NewTerrainRequested,
+    PointerBlocked, RebakeRequested, RebakeSettings, RedoRequest, SculptMode, SeamOverlay,
+    StampData, StampSettings, TerrainGesture, TerrainLoaded, TerrainQuality, ToolId, UndoBuffer,
+    UndoHistory, UndoRequest, WorldImportRequested, WorldImportRun, WorldImportSettings,
+    WorldImportSource, WorldImported,
 };
 
 /// Named lat/lon starting points for the world-import section — dramatic,
@@ -198,7 +198,7 @@ fn block_pointer_over_ui(mut contexts: EguiContexts, mut blocked: ResMut<Pointer
 /// Everything the terrain sections read and write, as one system param a host
 /// UI system can take alongside its own. Each `*_section` method draws one
 /// block of widgets into a `&mut egui::Ui` the host provides. Tool-specific
-/// sections (brush, stamp, mask, erosion) gate themselves on [`ActiveTool`]
+/// sections (brush, stamp, mask) gate themselves on [`ActiveTool`]
 /// and draw nothing for other tools, so hosts call every section
 /// unconditionally and the UI reorganizes itself per tool; undo, bake, and
 /// the seam toggle are tool-independent.
@@ -210,15 +210,12 @@ pub struct TerrainUi<'w, 's> {
     pub active: ResMut<'w, ActiveTool>,
     tools: Res<'w, EditorTools>,
     brush: ResMut<'w, BrushSettings>,
-    erosion: ResMut<'w, ErosionSettings>,
     seam: ResMut<'w, SeamOverlay>,
     history: ResMut<'w, UndoHistory>,
     gesture: ResMut<'w, TerrainGesture>,
     undo_requests: MessageWriter<'w, UndoRequest>,
     redo_requests: MessageWriter<'w, RedoRequest>,
     terrains: Query<'w, 's, (Entity, &'static mut EditableTerrain)>,
-    runs: Query<'w, 's, &'static ErosionRun>,
-    erode: MessageWriter<'w, ErosionRequested>,
     world_import: ResMut<'w, WorldImportSettings>,
     world_runs: Query<'w, 's, &'static WorldImportRun>,
     world_requests: MessageWriter<'w, WorldImportRequested>,
@@ -256,7 +253,6 @@ impl TerrainUi<'_, '_> {
         self.brush_section(ui);
         self.stamp_section(ui, contexts);
         self.mask_section(ui);
-        self.erosion_section(ui);
         self.bake_section(ui);
         self.quality_section(ui);
         self.seam_section(ui);
@@ -577,10 +573,9 @@ impl TerrainUi<'_, '_> {
         ui.small("replaces the map with Earth elevation at this point (AWS terrain tiles)");
     }
 
-    /// Clear-mask button, for the mask tool and the erode tool (erosion runs
-    /// over the mask). Draws nothing for other tools.
+    /// Clear-mask button, for the mask tool. Draws nothing for other tools.
     pub fn mask_section(&mut self, ui: &mut egui::Ui) {
-        if !matches!(self.active.0, Some(ToolId::MASK) | Some(ToolId::ERODE)) {
+        if self.active.0 != Some(ToolId::MASK) {
             return;
         }
         ui.separator();
@@ -600,81 +595,6 @@ impl TerrainUi<'_, '_> {
                 }
             }
         }
-    }
-
-    /// Erosion parameters, the realism knobs, and the run button/progress.
-    /// Draws nothing unless the erode tool is active.
-    pub fn erosion_section(&mut self, ui: &mut egui::Ui) {
-        if self.active.0 != Some(ToolId::ERODE) {
-            return;
-        }
-        ui.separator();
-        ui.label("Erosion");
-        ui.add(
-            egui::Slider::new(&mut self.erosion.iterations, 100..=4000)
-                .logarithmic(true)
-                .text("iterations"),
-        )
-        .on_hover_text("Simulated weather: more carves deeper, linearly slower");
-        ui.add(
-            egui::Slider::new(&mut self.erosion.rain_rate, 0.001..=0.05)
-                .logarithmic(true)
-                .text("rainfall"),
-        )
-        .on_hover_text("The main strength knob: meters of rain per simulated second");
-        ui.add(
-            egui::Slider::new(&mut self.erosion.capacity, 0.01..=0.5)
-                .logarithmic(true)
-                .text("capacity"),
-        )
-        .on_hover_text("Sediment the flow can carry: higher = deeper channels, bigger fans");
-        ui.add(egui::Slider::new(&mut self.erosion.dissolve_rate, 0.05..=2.0).text("erode rate"));
-        ui.add(egui::Slider::new(&mut self.erosion.deposit_rate, 0.05..=2.0).text("deposit rate"));
-        ui.add(
-            egui::Slider::new(&mut self.erosion.talus_angle_deg, 20.0..=45.0).text("talus angle °"),
-        );
-        // The D12 realism knobs — sane defaults, tucked away.
-        egui::CollapsingHeader::new("Realism").show(ui, |ui| {
-            ui.add(egui::Slider::new(&mut self.erosion.evaporation, 0.0..=0.2).text("evaporation"))
-                .on_hover_text("Water lost per second; bounds how far flows and fans reach");
-            ui.add(
-                egui::Slider::new(&mut self.erosion.min_tilt_deg, 0.0..=10.0).text("min tilt °"),
-            )
-            .on_hover_text("Channels that grade themselves flat keep incising at this tilt");
-            ui.add(
-                egui::Slider::new(&mut self.erosion.max_erosion_depth, 0.0..=3.0)
-                    .text("max depth m"),
-            )
-            .on_hover_text("Water deeper than this armors the bed instead of digging pits");
-            ui.add(
-                egui::Slider::new(&mut self.erosion.max_flow_speed, 1.0..=15.0)
-                    .text("max flow speed"),
-            )
-            .on_hover_text("Caps how fast water can carve; low values soften striping");
-            ui.add(
-                egui::Slider::new(&mut self.erosion.thermal_rate, 0.0..=20.0).text("thermal rate"),
-            )
-            .on_hover_text("How fast over-steep slopes shed talus; 0 disables");
-            ui.add(egui::Slider::new(&mut self.erosion.time_step, 0.01..=0.1).text("time step s"))
-                .on_hover_text(
-                    "Solver step; larger simulates more per iteration but can destabilize",
-                );
-        });
-        match self.runs.iter().next() {
-            Some(run) => {
-                ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
-            }
-            None => {
-                if ui.button("Erode").clicked() {
-                    // Over the mask, or the whole map if none — same
-                    // semantics as the erode tool's click.
-                    for (entity, _) in &self.terrains {
-                        self.erode.write(ErosionRequested { terrain: entity });
-                    }
-                }
-            }
-        }
-        ui.small("erodes the masked region, or the whole map if none");
     }
 
     /// Terrain performance profile. Fog applies live; the bake-time knobs (RVT

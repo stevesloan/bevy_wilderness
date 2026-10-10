@@ -1,9 +1,9 @@
 //! The f32 authoritative height field (design doc P1).
 //!
-//! Sculpt and erosion mutate this field; the `R16Unorm` display heightmap the
+//! Sculpt and stamp mutate this field; the `R16Unorm` display heightmap the
 //! renderer samples is *derived* from it by quantizing dirty regions. Never
 //! accumulate edits in R16 — one R16 step over a ±1312 m range is ≈ 0.04 m, so
-//! erosion's sub-LSB sediment moves would round to zero and stall.
+//! a gentle brush's sub-LSB per-frame deltas would round to zero and stall.
 
 use bevy::{
     asset::RenderAssetUsages,

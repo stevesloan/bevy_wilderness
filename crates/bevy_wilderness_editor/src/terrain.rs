@@ -37,8 +37,8 @@ pub struct Editable;
 pub struct EditableTerrain {
     pub field: TerrainField,
     /// The paint mask (D4): per-texel 0..1 weight, same dimensions as the
-    /// field. Feathered by the brush falloff; erosion (Phase 5) weights its
-    /// deltas by it, and sculpt confines itself to it when it's non-empty.
+    /// field. Feathered by the brush falloff; sculpt and stamp weight their
+    /// deltas by it when it's non-empty.
     mask: Vec<f32>,
     /// Count of non-zero mask texels — cheap "is a mask painted at all?".
     mask_nonzero: usize,
@@ -178,8 +178,8 @@ impl EditableTerrain {
     }
 }
 
-/// Emitted after edits are flushed into the display heightmap (and after
-/// erosion / re-bake in later phases): the terrain under `region` changed.
+/// Emitted after edits are flushed into the display heightmap: the terrain
+/// under `region` changed.
 /// Host tools subscribe to re-snap placed props (design doc §6) — e.g. reset a
 /// prop's Y to [`TerrainHeight::sample`] when its XZ falls inside `region`.
 #[derive(Message, Debug, Clone, PartialEq)]

@@ -28,7 +28,6 @@ use bevy::{
 use bevy_wilderness::Clipmap;
 
 use crate::{
-    erosion::ErosionRun,
     field::TerrainField,
     gesture::TerrainGesture,
     terrain::{Editable, EditableTerrain},
@@ -184,10 +183,10 @@ pub(crate) fn swap_in(
     commands
         .entity(terrain)
         // Drop the load marker in case a swap pre-empts an in-flight decode,
-        // and cancel any in-flight erosion or world-import run (dropping the
-        // task aborts it): their buffers are sized for the replaced field —
-        // landing them would corrupt the new one, or index out of its bounds.
-        .remove::<(Editable, ErosionRun, crate::world::WorldImportRun)>()
+        // and cancel any in-flight world-import run (dropping the task aborts
+        // it): its buffers are sized for the replaced field — landing it
+        // would corrupt the new one, or index out of its bounds.
+        .remove::<(Editable, crate::world::WorldImportRun)>()
         .insert(editable);
     // The old tile snapshots describe a field that no longer exists.
     history.clear();

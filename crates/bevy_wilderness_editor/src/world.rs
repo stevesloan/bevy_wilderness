@@ -1,7 +1,7 @@
 //! Real-world terrain import: fill the map with actual Earth elevation
 //! centered on a latitude/longitude — the fastest route to base shapes with
-//! believable ridge hierarchy for the erosion tool to sharpen, since nature
-//! already ran the weathering at full fidelity.
+//! believable ridge hierarchy, since nature already ran the weathering at
+//! full fidelity.
 //!
 //! Data comes from the public AWS Open Data **Terrain Tiles** set (the former
 //! Mapzen tiles): 256² web-mercator PNGs in *terrarium* encoding

@@ -12,12 +12,7 @@
 //!   goes empty so tools don't paint through panels.
 //! - [`TerrainHeight`] — height at (x, z), for snapping props to the surface.
 //! - [`TerrainRegionChanged`] — emitted when terrain changes; re-snap props.
-//! - [`BrushSettings`] / [`ErosionSettings`] — the state a UI reads/writes.
-//! - [`ErosionRequested`] / [`ErosionRun`] — start an erosion run / watch its
-//!   progress (D3).
-//! - [`ErosionMaps`] — per-run wear/deposit/flow analysis maps (D12), kept
-//!   on the terrain when [`ErosionSettings::keep_maps`] is set — e.g. for
-//!   host splat or scatter rules.
+//! - [`BrushSettings`] — the state a UI reads/writes.
 //! - [`SeamOverlay`] — toggle the looping tile-boundary visualization (D6).
 //! - [`ActiveStamp`] / [`StampSettings`] — the stamp tool's heightfield PNG
 //!   and transform (D11); the GPU preview floats it under the cursor, a
@@ -45,7 +40,6 @@ use bevy::prelude::*;
 
 mod cog;
 mod cursor;
-mod erosion;
 mod export;
 mod field;
 mod gesture;
@@ -65,13 +59,12 @@ mod utm;
 mod world;
 
 pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
-pub use erosion::{ErosionMaps, ErosionRequested, ErosionRun};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
 pub use gesture::{TerrainGesture, UNDO_TILE_SIZE, UndoBuffer};
 pub use rebake::RebakeSettings;
 pub use seam::SeamOverlay;
-pub use settings::{BrushSettings, ErosionSettings, SculptMode};
+pub use settings::{BrushSettings, SculptMode};
 pub use stamp::{ActiveStamp, BakeParams, StampData, StampSettings};
 pub use swap::{LoadRequested, NewTerrainRequested, TerrainLoaded};
 pub use terrain::{Editable, EditableTerrain, TerrainHeight, TerrainRegionChanged};
@@ -112,7 +105,6 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<TerrainCursor>()
             .init_resource::<PointerBlocked>()
             .init_resource::<BrushSettings>()
-            .init_resource::<ErosionSettings>()
             .init_resource::<WorldImportSettings>()
             .init_resource::<UndoHistory>()
             .init_resource::<TerrainGesture>()
@@ -123,7 +115,6 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<StampSettings>()
             .init_resource::<export::ExportTasks>()
             .add_message::<TerrainRegionChanged>()
-            .add_message::<ErosionRequested>()
             .add_message::<ExportRequested>()
             .add_message::<HeightmapExported>()
             .add_message::<NewTerrainRequested>()
@@ -165,9 +156,6 @@ impl Plugin for TerrainEditorPlugin {
                     mask::apply_mask_paint
                         .run_if(tool_active(ToolId::MASK))
                         .in_set(EditorSet::Tools),
-                    erosion::request_on_click
-                        .run_if(tool_active(ToolId::ERODE))
-                        .in_set(EditorSet::Tools),
                     // Rebake first so a changed bake setting previews (and
                     // could commit) the same frame.
                     (stamp::rebake_on_settings_change, stamp::drive_stamp_tool)
@@ -178,21 +166,9 @@ impl Plugin for TerrainEditorPlugin {
                     stamp::clear_stamp_preview
                         .run_if(not(tool_active(ToolId::STAMP)))
                         .in_set(EditorSet::Tools),
-                    // Between Tools and Apply: a click's request starts its
-                    // GPU run the same frame, each frame advances a bounded
-                    // chunk of iterations, and a landed result's dirty region
-                    // flushes (quantize + event + re-bake debounce) the same
-                    // frame it applies.
-                    (
-                        erosion::start_requested_runs,
-                        erosion::drive_runs,
-                        erosion::apply_finished_runs,
-                    )
-                        .chain()
-                        .after(EditorSet::Tools)
-                        .before(EditorSet::Apply),
-                    // Same slot: an undone action's dirty regions flush
-                    // (quantize + event + re-bake debounce) the same frame.
+                    // Between Tools and Apply: an undone action's dirty
+                    // regions flush (quantize + event + re-bake debounce) the
+                    // same frame.
                     undo::apply_undo_requests
                         .after(EditorSet::Tools)
                         .before(EditorSet::Apply),
@@ -219,7 +195,6 @@ impl Plugin for TerrainEditorPlugin {
         let mut tools = app.world_mut().resource_mut::<EditorTools>();
         tools.register(ToolId::SCULPT, "Sculpt");
         tools.register(ToolId::MASK, "Mask");
-        tools.register(ToolId::ERODE, "Erode");
         tools.register(ToolId::STAMP, "Stamp");
     }
 }

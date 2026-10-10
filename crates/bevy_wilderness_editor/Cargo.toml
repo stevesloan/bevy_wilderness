@@ -3,7 +3,7 @@ name = "bevy_wilderness_editor"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Embeddable terrain editor core for bevy_wilderness — sculpt, mask, erosion; UI-agnostic"
+description = "Embeddable terrain editor core for bevy_wilderness — sculpt, mask, stamp; UI-agnostic"
 repository = "https://github.com/stevesloan/bevy_wilderness"
 
 [dependencies]
@@ -31,9 +31,4 @@ serde_json = "1"
 [dev-dependencies]
 # Parses the hand-written KTX2 export in tests (same version bevy loads with).
 ktx2 = "0.5"
-# The erosion tests drive the GPU sim against a headless device (bevy's own
-# wgpu version; tests skip gracefully when the machine has no adapter), and
-# naga validates the embedded WGSL without needing any GPU at all.
-wgpu = "30"
-naga = { version = "30", features = ["wgsl-in"] }
 

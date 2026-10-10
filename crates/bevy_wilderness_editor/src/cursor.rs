@@ -86,10 +86,8 @@ impl Default for BrushRing {
     }
 }
 
-/// Ring + dot for sculpt/mask (they brush with the radius); dot alone for
-/// erode (it runs over the mask, not a radius — a ring would mislead, same
-/// reason the UI hides its radius slider). Stamp previews itself, and host
-/// tools draw their own indicators.
+/// Ring + dot for sculpt/mask (they brush with the radius). Stamp previews
+/// itself, and host tools draw their own indicators.
 pub(crate) fn draw_brush_ring(
     ring: Res<BrushRing>,
     cursor: Res<TerrainCursor>,
@@ -100,21 +98,17 @@ pub(crate) fn draw_brush_ring(
     if !ring.enabled {
         return;
     }
-    let with_ring = match active.0 {
-        Some(ToolId::SCULPT) | Some(ToolId::MASK) => true,
-        Some(ToolId::ERODE) => false,
-        _ => return,
-    };
+    if !matches!(active.0, Some(ToolId::SCULPT) | Some(ToolId::MASK)) {
+        return;
+    }
     let Some(hit) = &cursor.0 else {
         return;
     };
-    if with_ring {
-        let up = Isometry3d::new(
-            hit.position + Vec3::Y * 0.5,
-            Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-        );
-        gizmos.circle(up, brush.radius, Color::srgb(1.0, 0.4, 0.1));
-    }
+    let up = Isometry3d::new(
+        hit.position + Vec3::Y * 0.5,
+        Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+    );
+    gizmos.circle(up, brush.radius, Color::srgb(1.0, 0.4, 0.1));
     gizmos.sphere(
         Isometry3d::from_translation(hit.position),
         2.0,

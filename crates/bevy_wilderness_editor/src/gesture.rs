@@ -1,7 +1,7 @@
 //! Terrain tile snapshots (D8): the built-in tools' [`UndoAction`], built up
 //! over a gesture.
 //!
-//! One input gesture (a stroke's press→release, one erosion run) becomes one
+//! One input gesture (a stroke's press→release, one stamp commit) becomes one
 //! [`TileAction`] on the [`UndoHistory`]: the first time the gesture touches a
 //! 64²-texel tile, that tile's *pre-edit* contents are copied (~16 KB each) —
 //! so an entry costs what it touched, never a full-field snapshot. Undo pastes
@@ -175,8 +175,8 @@ impl TerrainGesture {
         history.push(label, action);
     }
 
-    /// Whether a gesture is currently open. Deferred appliers (the erosion
-    /// result landing from its background task) check this and wait a frame,
+    /// Whether a gesture is currently open. Deferred appliers (a result
+    /// landing from a background task) check this and wait a frame,
     /// so they never seal another tool's stroke mid-gesture and split its
     /// entry.
     pub fn open(&self) -> bool {
