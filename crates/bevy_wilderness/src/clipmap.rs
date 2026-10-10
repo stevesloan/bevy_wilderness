@@ -69,6 +69,9 @@ pub struct TerrainLayer {
 #[derive(Clone, Debug)]
 pub struct DetailConfig {
     /// Per-material detail albedo array (`2d_array`, one slice per layer).
+    /// Alpha is height, as in [`Clipmap::albedo_array`]: it drives the
+    /// per-pixel height blend where two materials meet (opaque alpha
+    /// degrades it to a sharper cross-fade).
     pub albedo_array: Handle<Image>,
     /// Per-material detail normal array (`2d_array`), for close-up relief.
     pub normal_array: Handle<Image>,
@@ -329,8 +332,10 @@ pub(crate) fn init_clipmaps(
         });
 
         // Quality bits packed into `flags` alongside the per-material wireframe bit
-        // (bit1 = ambient gather, bit2 = single-layer detail, bit3 = looping).
-        let quality_bits = ((quality.ambient_gather as u32) << 1)
+        // (bit1 = ambient gather, bit2 = single-layer detail, bit3 = looping,
+        // bit7 = hex-tiled detail).
+        let quality_bits = ((quality.detail_hex_tiling as u32) << 7)
+            | ((quality.ambient_gather as u32) << 1)
             | ((quality.detail_layers <= 1) as u32) << 2
             | (clipmap.looping as u32) << 3;
         // One material per clipmap, shared by every LOD grid (identical across
@@ -354,7 +359,7 @@ pub(crate) fn init_clipmaps(
                     fog: initial_fog.clone(),
                     detail_albedo_array: clipmap.detail.albedo_array.clone(),
                     detail_normal_array: clipmap.detail.normal_array.clone(),
-                    detail: DetailParams::from_config(&clipmap.detail),
+                    detail: DetailParams::from_clipmap(clipmap),
                     detail_orm_array: clipmap.detail.orm_array.clone(),
                     #[cfg(feature = "editing")]
                     edit_overlay: edit_overlay.clone(),

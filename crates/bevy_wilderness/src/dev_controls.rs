@@ -1,9 +1,10 @@
-//! Demo A/B keybinds (B/N/V) for the AO/bent-normal experiment (`dev-controls`
-//! feature). Off by default so the library ships no input systems.
+//! Demo A/B keybinds (`dev-controls` feature): B/N/V for the AO/bent-normal
+//! experiment, H for hex-tiled detail. Off by default so the library ships no
+//! input systems.
 
 use bevy::{core_pipeline::tonemapping::Tonemapping, pbr::ExtendedMaterial, prelude::*};
 
-use crate::Clipmap;
+use crate::{Clipmap, TerrainQuality};
 use crate::material::GridMaterial;
 
 /// Press V to cycle the terrain debug view: lit → macro AO → bent normal →
@@ -100,5 +101,21 @@ pub(crate) fn toggle_bent(
     info!(
         "terrain bent-normal ambient: {}",
         if next > 0.5 { "on" } else { "off" }
+    );
+}
+
+/// Press H to toggle hex-tiled near detail
+/// ([`TerrainQuality::detail_hex_tiling`]), to compare it with plain tiling.
+pub(crate) fn toggle_detail_hex(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut quality: ResMut<TerrainQuality>,
+) {
+    if !keys.just_pressed(KeyCode::KeyH) {
+        return;
+    }
+    quality.detail_hex_tiling = !quality.detail_hex_tiling;
+    info!(
+        "terrain hex-tiled detail: {}",
+        if quality.detail_hex_tiling { "on" } else { "off" }
     );
 }

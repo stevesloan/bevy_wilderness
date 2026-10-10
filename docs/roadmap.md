@@ -57,7 +57,7 @@ of rules.
 | Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched, **no morphing** | P0 |
 | Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, **no mips, uncompressed** | P0 / P1 |
 | Material placement | Procedural rules + height blending | Slope/height bands + height blending (4 layers) | ok |
-| Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake + distance-faded detail overlay, top-2 blend | ok |
+| Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake; distance-faded detail overlay with per-pixel height blend, hex-tiled on desktop | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
 | Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
 | Close-up relief | Tessellation / Nanite displacement / displacement decals | none | P2 (desktop) |
@@ -94,10 +94,14 @@ of rules.
 ### P0 — Stability and correctness (small, high value, both tiers)
 
 - **Mip-chain the RVT.** Targets are single-level today, so distant terrain
-  samples an 8192² texture with no mips: shimmer (worst in VR) and texture
-  cache thrash (worst on mobile). Generate mips after each bake (box downsample
-  for albedo/roughness/AO; renormalize normals; take the max-weight id for the
-  packed-id channel, or exclude it — it's read NEAREST near the camera only).
+  samples an 8192² texture with no mips: shimmer (worst in VR), texture
+  cache thrash (worst on mobile), and material boundaries that alias into a
+  hard line at distance instead of averaging into a soft transition.
+  Bevy 0.20's `MipGenerationJobs` downsampler doesn't fit: it can't write
+  sRGB targets, and box-averaging corrupts the packed material ids. Preferred:
+  **bake each mip level directly** (one bake camera per level into a mip
+  view) — the bake's `textureSampleGrad` then prefilters the source arrays
+  correctly at every level, and ids stay valid. ~⅓ extra bake time.
 - **Geomorph LOD transitions.** Blend each vertex toward its coarser-level
   position across the outer band of every ring (GPU Gems 2 clipmaps / CDLOD
   morphing) so resolution changes are continuous instead of popping.
@@ -110,8 +114,6 @@ of rules.
   a flat neutral shade) the default fallback.
 - **RVT edge coverage.** Fade/clamp baked channels past the heightmap
   coverage on finite terrain (the geometry already drops; the shading smears).
-- **Use or drop cavity.** It is baked and unused. Use it (cavity darkening of
-  albedo / specular occlusion in crevices — cheap realism) or stop baking it.
 - **Correctness checks:** grid AABBs when `base_scale ≠ 1`; `Heightfield`
   wrapping for looping terrain.
 
@@ -125,10 +127,11 @@ of rules.
   | `rvt_size` | 4096² | 8192² |
   | RVT compression | ASTC / ETC2 | BC1 / BC5 |
   | `ambient_gather` | on (it's baked; costs one sample) | on |
-  | `detail_layers` | 1 | 2 |
+  | `detail_layers` | 2 (1 drops the per-pixel height blend; boundary pixels only) | 2 |
   | detail fade distance | short | long |
   | fog | `Low` (inline) | `High` (fullscreen) |
   | AA | MSAA 4×, forward | TAA or MSAA, deferred ok |
+  | `detail_hex_tiling` | off | on |
   | biplanar cliffs / POM / dense near grid | off | on |
   | ground cover density & distance | low | high |
   | dynamic-object shadows | blob / one cascade | CSM |

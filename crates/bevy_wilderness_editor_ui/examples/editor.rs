@@ -408,6 +408,7 @@ fn setup(
         rvt_size: 4096,
         ambient_gather: true,
         detail_layers: 1,
+        detail_hex_tiling: false,
         sun_shadow_size: 1024,
     });
 

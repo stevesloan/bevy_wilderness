@@ -43,6 +43,7 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 | `rvt.rs` / `bake.wesl` | Bake material, sentinel-gated bake lifecycle, re-bake |
 | `quality.rs` | `TerrainQuality`, `FogTier`, `TerrainFog`, `InlineFog` |
 | `height_fog.rs` / `.wesl`, `fog_functions.wesl`, `mesh_fog.rs` / `.wesl` | Height fog: shared math, fullscreen pass, inline mesh fog |
+| `hex_tiling.wesl` | Stochastic hex tiling, shared by the bake and the detail overlay |
 | `sun_shadow.rs` / `.wesl` | Baked sun shadow-ceiling field for *your* meshes |
 | `holes.rs` | Terrain holes (tunnels, caves, basements) |
 | `heightfield.rs` | CPU height queries |
@@ -83,7 +84,7 @@ fog *look*), `InlineFog` (active inline-fog params for your own shaders).
   `ClipmapStamp`, the overlay/stamp bindings, clay mode. Default consumers pay
   nothing for it.
 - `dev-controls` — V cycles debug views (AO / bent normal / cavity),
-  B / N toggle AO / bent-normal strength.
+  B / N toggle AO / bent-normal strength, H toggles hex-tiled detail.
 
 ## 4. Geometry — clipmap rings
 
@@ -142,7 +143,8 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | 132 | RVT AO |
 
 `flags`: bit 0 wireframe · 1 ambient gather on · 2 single-layer detail ·
-3 looping · 4 clay · 5 stamp preview · 6 stamp mask-weighted.
+3 looping · 4 clay · 5 stamp preview · 6 stamp mask-weighted · 7 hex-tiled
+detail (pipeline key only).
 
 > ⚠️ **Binding ceiling.** The material sits at the per-stage limit for uniform
 > buffers and near the ~16 sampled-texture limit of mobile GPUs. Adding uniform
@@ -157,6 +159,8 @@ one solid + one wireframe instance per clipmap, shared by all rings.
   layouts lack light bindings. The prepass vertex shader is `terrain.wesl` too,
   so shadow casters are displaced.
 - `WILDERNESS_HOLES` — `GridMaterialKey.holes` (any holes present).
+- `WILDERNESS_DETAIL_HEX` — fragment; `TerrainQuality::detail_hex_tiling`
+  (flags bit 7). Compiles the hex path in; cheaper tiers carry none of it.
 - `WILDERNESS_EDIT_OVERLAY` / `WILDERNESS_STAMP` — `editing` builds.
 
 ## 6. The bake — RVT and friends
@@ -182,9 +186,12 @@ on looping terrain so marches cross the seam.
   optional bands — `SlopeRule` (degrees) and `HeightRule` (meters) — each a
   smoothstep ramp of width `blend` outside `[min, max]`. A layer with no rules
   is present everywhere (the "base layer" pattern, which keeps boundaries
-  organic). Weights then go through **height blending**
-  (`weight + albedo.a · height_blend`, keeping layers within 0.2 of the max),
-  so grass fills the cracks between rocks instead of cross-fading. Every layer
+  organic). Weights then go through **height blending**: each layer scores
+  `weight × (1 ± height_blend)` modulated by its height (albedo alpha), and
+  layers within 20 % of the best score contribute — so grass fills the cracks
+  between rocks instead of cross-fading. The height term *scales* the weight
+  (rather than adding to it) so a layer thins out continuously at its band
+  edge; an additive term drew a hard line around every band. Every layer
   is sampled with **hex (stochastic) tiling** (Mikkelsen, 3 taps) to kill
   repetition — affordable because it runs in the bake, not per frame.
   Normals are reoriented onto the geometric normal (central differences).
@@ -246,8 +253,15 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    Skipped entirely past `far` (derivatives hoisted out of the branch). Reads
    the packed material ids **NEAREST** (a packed byte can't be filtered) with a
    world-locked ±½-texel jitter standing in for bilinear, then samples the top
-   material's detail albedo / normal / ORM — and the second material's, lerped,
-   unless single-layer detail is set or one material dominates. Detail albedo
+   material's detail albedo / normal / ORM — and the second material's, unless
+   single-layer detail is set or one material dominates. The two are combined
+   with a **per-pixel height blend** that mirrors the bake's (detail heights
+   from albedo alpha × each layer's `height_blend`), so the second material
+   shows in the low spots of the first — grass in the cracks between stones —
+   instead of as a cross-fade. The blend drives **colour** too: the RVT colour
+   divided by its texel's mean material mix gives the macro tint, which times
+   the per-pixel mix gives each pixel its own material's colour (the RVT alone
+   is a ~1 m bilinear smear across boundaries). Detail albedo
    contributes a **unit-mean ratio** (`da / da_mean`, the mean read from the
    coarsest mip) so it adds variation without double-darkening the RVT albedo.
 3. **Lighting** — `terrain_apply_lighting`, a trimmed fork of Bevy's
@@ -256,8 +270,12 @@ There are **no realtime shadow passes in normal rendering** — terrain is
      specular suppressed on rough ground (dry terrain shouldn't look wet at
      sunset);
    - clustered point and spot lights with their own shadows (not sun-vis);
+   - **micro-shadowing** on the sun from the detail AO (Uncharted 4's
+     approximation, `saturate(|N·L| + 2·ao² − 1)`), so crevices read as
+     recessed under direct light, not only in ambient;
    - environment map diffuse looked up along the **bent normal**, with colored
-     multi-bounce AO and specular occlusion from AO;
+     multi-bounce AO and specular occlusion from AO. Macro AO includes the
+     baked **cavity** term (concave ground loses up to 60 % of its ambient);
    - flat ambient; inline height fog when on the Low fog tier.
    This fork exists because Bevy has no hook for a per-pixel factor on the
    directional term only. **Re-check it on every Bevy upgrade** against
@@ -287,7 +305,8 @@ standalone VR.
 | `fog` | `High` | fullscreen fog pass vs inline fog | live |
 | `rvt_size` | 8192 | albedo / normal / AO target size | spawn or re-bake |
 | `ambient_gather` | true | bake + sample AO / bent normal | spawn or re-bake |
-| `detail_layers` | 2 | 1 = skip the second material's detail samples | spawn or re-bake |
+| `detail_layers` | 2 | 1 = skip the second material's detail samples (and the per-pixel height blend) | spawn or re-bake |
+| `detail_hex_tiling` | true | hex-tile the detail overlay (3× near detail samples) | live |
 | `sun_shadow_size` | 2048 | shadow-ceiling field size | spawn or re-bake |
 
 Bake-time fields are snapshotted when the clipmap spawns; changing them later
@@ -307,7 +326,10 @@ bytes) before anything reads them.
 
 **Textures.** `load_terrain_array(images, paths, srgb)` decodes one file per
 layer into a mip-chained 2D array (mips matter: the bake samples heavily
-minified). Normal maps are **OpenGL convention**; the bake and overlay flip X
+minified). **Albedo alpha must hold the layer's height** (0–1, full range):
+both the bake's and the overlay's height blending read it; opaque alpha
+silently turns height blending into a plain contrast cross-fade.
+`assets/fetch_textures.py` packs Poly Haven displacement maps there. Normal maps are **OpenGL convention**; the bake and overlay flip X
 to match the reorientation tangent — DirectX normals make cracks look raised.
 
 **`Heightfield`** (`editing`): CPU bilinear height query matching the shader.
@@ -320,7 +342,7 @@ Requires a CPU-resident R16Unorm image; does not wrap for looping terrain.
 | Every frame, CPU | ring snapping (writes only on snap), change-gated quality/fog/holes sync |
 | Every frame, GPU vertex | 4 heightmap loads (+ hole loop, + stamp in editing) |
 | Every frame, GPU fragment, far | 2–3 RVT samples + lighting |
-| Every frame, GPU fragment, near | + 1 id load + 4 detail samples (8 when blending two materials) |
+| Every frame, GPU fragment, near | + 1 id load + 4 detail samples (8 when blending two materials); ×3 for the hex-tiled taps when `detail_hex_tiling` is on |
 | Every frame, High fog | one fullscreen pass |
 | Once per bake | 4 full-terrain render passes (hex-tiled splat ×2, gather, shadow ceiling), ~2 frames each |
 

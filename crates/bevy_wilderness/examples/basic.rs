@@ -152,12 +152,13 @@ fn setup(
     }));
     // Performance profile, set once from device detection. Desktop-grade values
     // (== TerrainQuality::default()); a headset dials them down (FogTier::Low,
-    // 2048² RVT, no ambient gather, single detail layer).
+    // 2048² RVT, no ambient gather, single detail layer, no hex detail).
     commands.insert_resource(TerrainQuality {
         fog: FogTier::High,
         rvt_size: 8192,
         ambient_gather: true,
         detail_layers: 2,
+        detail_hex_tiling: true,
         sun_shadow_size: 2048,
     });
 
@@ -251,7 +252,7 @@ fn setup(
     let normal_array = load_terrain_array(&mut images, &layer("normal"), false);
     let orm_array = load_terrain_array(&mut images, &layer("orm"), false);
     // Close-range detail reuses the same arrays at a finer tiling — the RVT
-    // only holds ~2m texels, so all sub-2m structure comes from these.
+    // only holds ~1 m texels, so all sub-meter structure comes from these.
     let detail_albedo_array = albedo_array.clone();
     let detail_normal_array = normal_array.clone();
     let detail_orm_array = orm_array.clone();
@@ -354,11 +355,15 @@ fn setup(
             albedo_array: detail_albedo_array,
             normal_array: detail_normal_array,
             orm_array: detail_orm_array,
-            tiling: 50.0,
+            // ~6 m per repeat: ~340 px/m from 2K textures. The overlay only
+            // adds variation on top of the unique RVT albedo, so repetition
+            // stays muted; fading out by ~250 m keeps the repeat from
+            // showing as a pattern across the mid-ground.
+            tiling: 6.0,
             normal_strength: 0.8,
             albedo_strength: 0.8,
-            near: 60.0,
-            far: 600.0,
+            near: 40.0,
+            far: 250.0,
         },
         min: -1312.5,
         max: 1312.5,

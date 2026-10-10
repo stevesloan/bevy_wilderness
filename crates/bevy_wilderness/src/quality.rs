@@ -32,7 +32,8 @@ pub enum FogTier {
 
 /// Terrain performance profile — set **once at startup** from device detection
 /// (dial the knobs down for a standalone headset, up for desktop). Only
-/// [`fog`](Self::fog) applies live; the bake-time fields
+/// [`fog`](Self::fog) and [`detail_hex_tiling`](Self::detail_hex_tiling) apply
+/// live; the bake-time fields
 /// (`rvt_size`, `ambient_gather`, `detail_layers`, `sun_shadow_size`) are read
 /// when a clipmap bakes —
 /// changing them after has no effect (it would need a rebake). [`default`]
@@ -51,6 +52,11 @@ pub struct TerrainQuality {
     /// Near-detail overlay: blend the top `1` (cheapest, ~3 fewer samples) or `2`
     /// (smoothest boundaries) materials per fragment.
     pub detail_layers: u8,
+    /// Hex-tile the near detail overlay (stochastic tiling, as the bake does)
+    /// so a fine detail tiling doesn't show its repeat. Triples the detail
+    /// samples near the camera — a desktop feature; standalone VR leaves it
+    /// off. Live-switchable (re-specializes the terrain pipeline).
+    pub detail_hex_tiling: bool,
     /// Resolution (square) of the sun shadow-ceiling field that shadows *meshes*
     /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Sized
     /// separately from [`rvt_size`](Self::rvt_size) and much smaller: it holds a
@@ -69,6 +75,7 @@ impl Default for TerrainQuality {
             rvt_size: 8192,
             ambient_gather: true,
             detail_layers: 2,
+            detail_hex_tiling: true,
             sun_shadow_size: 2048,
         }
     }
@@ -119,8 +126,14 @@ pub(crate) fn apply_terrain_quality(
     let inline = inline_fog_params(&fog, quality.fog);
     // Publish for the game to fog its own materials (change-detected).
     inline_fog.0 = inline.clone();
+    let hex = if quality.detail_hex_tiling {
+        GridMaterial::FLAG_DETAIL_HEX
+    } else {
+        0
+    };
     for (_, material) in materials.iter_mut() {
         material.extension.fog = inline.clone();
+        material.extension.flags = (material.extension.flags & !GridMaterial::FLAG_DETAIL_HEX) | hex;
     }
     // Meshes (characters/props) using HeightFogExtension get the same inline fog,
     // so they don't render as unfogged cutouts on the Low tier.

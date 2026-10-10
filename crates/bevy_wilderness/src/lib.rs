@@ -44,6 +44,8 @@ impl Plugin for ClipmapPlugin {
         // Sampling for the baked sun shadow-ceiling field, imported by game
         // materials that want terrain shadow on their own meshes.
         load_shader_library!(app, "sun_shadow.wesl");
+        // Stochastic hex tiling, shared by the RVT bake and the detail overlay.
+        load_shader_library!(app, "hex_tiling.wesl");
         embedded_asset!(app, "terrain.wesl");
         embedded_asset!(app, "bake.wesl");
         embedded_asset!(app, "mesh_fog.wesl");
@@ -112,6 +114,7 @@ impl Plugin for ClipmapPlugin {
                 dev_controls::debug_cycle_view,
                 dev_controls::toggle_ao,
                 dev_controls::toggle_bent,
+                dev_controls::toggle_detail_hex,
             ),
         );
     }

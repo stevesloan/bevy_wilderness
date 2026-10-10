@@ -1,5 +1,6 @@
 import bevy_pbr::render::mesh_functions;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
+import bevy_wilderness::hex_tiling::{HexTaps, hex_taps, hex_sample_taps};
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
@@ -101,6 +102,30 @@ struct DetailParams {
     albedo_strength: f32,
     near: f32,
     far: f32,
+    // Per-layer height-blend strength (the layers' `height_blend`), so the
+    // per-pixel blend between the top two materials matches the bake's.
+    height_blend: vec4<f32>,
+}
+
+// Height-blend contrast: materials scoring within this fraction of the best
+// one contribute — the bake's `TRANSITION`.
+const HEIGHT_BLEND_TRANSITION: f32 = 0.2;
+
+// Crevices (baked cavity below 0.5) lose up to this fraction of their ambient.
+const CAVITY_STRENGTH: f32 = 0.6;
+
+// Weight of the second material after a per-pixel height blend — the bake's
+// scoring at detail resolution: each material's coverage, modulated ± by its
+// detail height × its layer's height_blend; only scores near the best one
+// contribute. So a little grass shows only in the cracks between stones,
+// never as a uniform haze.
+fn height_blend_weight(m: f32, h0: f32, h1: f32, k0: f32, k1: f32) -> f32 {
+    let s0 = (1.0 - m) * max(1.0 + k0 * (2.0 * h0 - 1.0), 0.05);
+    let s1 = m * max(1.0 + k1 * (2.0 * h1 - 1.0), 0.05);
+    let top = max(s0, s1) * (1.0 - HEIGHT_BLEND_TRANSITION);
+    let b0 = max(s0 - top, 0.0);
+    let b1 = max(s1 - top, 0.0);
+    return b1 / max(b0 + b1, 1e-5);
 }
 @group(constants::MATERIAL_BIND_GROUP) @binding(129) var<uniform> detail: DetailParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(130) var detail_orm_array: texture_2d_array<f32>;
@@ -254,6 +279,28 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     return out;
 }
 
+// One detail-array tap at the overlay's UV. Hex-tiled (3 taps, repetition
+// hidden) when `TerrainQuality::detail_hex_tiling` pushes
+// `WILDERNESS_DETAIL_HEX`; a single plain tap otherwise — the def compiles the
+// hex path out entirely, so cheaper tiers carry no extra code or registers.
+fn detail_tap(
+    tex: texture_2d_array<f32>,
+    layer: u32,
+    uv: vec2<f32>,
+    taps: HexTaps,
+    ddx: vec2<f32>,
+    ddy: vec2<f32>,
+) -> vec4<f32> {
+    var c: vec4<f32>;
+    @if(WILDERNESS_DETAIL_HEX) {
+        c = hex_sample_taps(tex, detail_albedo_sampler, layer, uv, taps, ddx, ddy);
+    }
+    @else {
+        c = textureSampleGrad(tex, detail_albedo_sampler, uv, layer, ddx, ddy);
+    }
+    return c;
+}
+
 // Octahedral decode of a 0..1 encoded unit vector (2 channels).
 fn oct_decode(f: vec2<f32>) -> vec3<f32> {
     let e = f * 2.0 - 1.0;
@@ -295,7 +342,13 @@ fn specular_occlusion_from_ao(n_dot_v: f32, ao: f32, roughness: f32) -> f32 {
 // ambient (the sky/diffuse term), so a valley floor draws sky light from the strip
 // it can actually see rather than the whole hemisphere. Direct/specular still use
 // the shading normal `in.N`.
-fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f32>) -> vec4<f32> {
+//
+// `micro_ao` is the small-scale (detail texture) occlusion. It shadows the sun
+// too, via Uncharted 4's micro-shadow approximation: a crevice whose AO says it
+// sees only a narrow cone of sky can't see a sun outside that cone either. This
+// is what makes cracks between stones read as recessed under direct light,
+// where AO on the ambient term alone leaves them flat.
+fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f32>, micro_ao: f32) -> vec4<f32> {
     let base_color = in.material.base_color;
     let metallic = in.material.metallic;
     let perceptual_roughness = in.material.perceptual_roughness;
@@ -353,7 +406,9 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
         if sun_spec_keep < 0.999 {
             contrib -= (1.0 - sun_spec_keep) * lighting::directional_light(i, &li, false);
         }
-        direct += contrib * shadow * sun_vis;
+        let to_sun = lights.directional_lights[i].direction_to_light;
+        let micro_shadow = saturate(abs(dot(in.N, to_sun)) + 2.0 * micro_ao * micro_ao - 1.0);
+        direct += contrib * shadow * sun_vis * micro_shadow;
     }
 
     // Clusterable lights (point + spot) touching this fragment's cluster. The same
@@ -466,7 +521,7 @@ fn fragment(
         var out: FragmentOutput;
         @if(!PREPASS_PIPELINE) {
         // Sun visibility 1.0: there's no valid bake to shadow with.
-        out.color = terrain_apply_lighting(clay_pbr, 1.0, n);
+        out.color = terrain_apply_lighting(clay_pbr, 1.0, n, 1.0);
         out.color = main_pass_post_lighting_processing(clay_pbr, out.color);
         }
         return out;
@@ -487,7 +542,11 @@ fn fragment(
     var cavity = 0.5;
     if (flags & 2u) != 0u {
         rvt_ao_s = textureSample(rvt_ao_texture, rvt_albedo_sampler, uv);
-        macro_ao = mix(1.0, rvt_ao_s.r, dev.ao_strength);
+        // Cavity: 0.5 is flat, lower is concave. Crevices and gullies lose
+        // some ambient on top of the horizon AO, which misses features
+        // narrower than its march steps.
+        let cavity_occ = 1.0 - saturate((0.5 - rvt_ao_s.a) * 2.0) * CAVITY_STRENGTH;
+        macro_ao = mix(1.0, rvt_ao_s.r * cavity_occ, dev.ao_strength);
         let bent_xz = rvt_ao_s.gb * 2.0 - 1.0;
         let bent_y = sqrt(max(0.0, 1.0 - dot(bent_xz, bent_xz)));
         baked_bent_normal = vec3<f32>(bent_xz.x, bent_y, bent_xz.y);
@@ -547,19 +606,34 @@ fn fragment(
         // so `da / da_avg` is unit-mean by construction and leaves the macro
         // albedo intact for any texture set, whatever its average brightness.
         let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
-        var dn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id0, ddx, ddy).xyz * 2.0 - 1.0;
-        var da = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id0, ddx, ddy).rgb;
-        var da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id0, da_lod).rgb;
-        var dorm = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id0, ddx, ddy);
+        // Hex lattice weights, shared by every detail tap below (zeroed and
+        // unused on the plain path).
+        var taps: HexTaps;
+        @if(WILDERNESS_DETAIL_HEX) {
+            taps = hex_taps(dtile);
+        }
+        var dn = detail_tap(detail_normal_array, id0, dtile, taps, ddx, ddy).xyz * 2.0 - 1.0;
+        let da0 = detail_tap(detail_albedo_array, id0, dtile, taps, ddx, ddy);
+        var da = da0.rgb;
+        let mean0 = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id0, da_lod).rgb;
+        var da_avg = mean0;
+        var dorm = detail_tap(detail_orm_array, id0, dtile, taps, ddx, ddy);
+        // Mean colour of this RVT texel's material mix, as baked (`mblend` is the
+        // second material's share). Stays `mean0` for a single material.
+        var texel_mean = mean0;
         if (flags & 4u) == 0u && mblend > 0.0 {
-            let dn1 = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id1, ddx, ddy).xyz * 2.0 - 1.0;
-            let da1 = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id1, ddx, ddy).rgb;
+            let dn1 = detail_tap(detail_normal_array, id1, dtile, taps, ddx, ddy).xyz * 2.0 - 1.0;
+            let da1 = detail_tap(detail_albedo_array, id1, dtile, taps, ddx, ddy);
             let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id1, da_lod).rgb;
-            let dorm1 = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id1, ddx, ddy);
-            dn = mix(dn, dn1, mblend);
-            da = mix(da, da1, mblend);
-            da_avg = mix(da_avg, da1_avg, mblend);
-            dorm = mix(dorm, dorm1, mblend);
+            let dorm1 = detail_tap(detail_orm_array, id1, dtile, taps, ddx, ddy);
+            // `mblend` is the second material's share of this RVT texel (~1 m);
+            // the detail heights (albedo alpha) decide *which pixels* get it.
+            let t = height_blend_weight(mblend, da0.a, da1.a, detail.height_blend[id0], detail.height_blend[id1]);
+            dn = mix(dn, dn1, t);
+            da = mix(da, da1.rgb, t);
+            da_avg = mix(mean0, da1_avg, t);
+            dorm = mix(dorm, dorm1, t);
+            texel_mean = mix(mean0, da1_avg, mblend);
         }
         // Flip X (see bake) and reorient onto the base normal.
         dn = dn * vec3<f32>(-1.0, 1.0, 1.0);
@@ -569,10 +643,20 @@ fn fragment(
         let db = cross(base_normal, dt);
         world_normal = normalize(dt * dn_scaled.x + db * dn_scaled.y + base_normal * dn_scaled.z);
 
-        // Epsilon guards a layer that is black in some channel; without it the
-        // ratio is a division by zero rather than the intended no-op.
-        let da_ratio = da / max(da_avg, vec3<f32>(1e-4));
-        albedo *= mix(vec3<f32>(1.0), da_ratio, detail.albedo_strength * detail_fade);
+        // Colour, in two parts (epsilons guard layers black in some channel):
+        //
+        // - Identity: which material this *pixel* is. The RVT colour is a ~1 m
+        //   bilinear smear across material boundaries, so near the camera
+        //   rebuild it per pixel: dividing the RVT colour by its texel's mean
+        //   material mix leaves the macro tint the bake captured; multiplying
+        //   back by the per-pixel (height-blended) mix gives each pixel its own
+        //   material's colour. For a single material this is exactly the RVT.
+        // - Grain: the detail texture's variation around its own mean (unit
+        //   mean, so it never re-darkens the albedo the RVT already holds).
+        let macro_tint = rvt_a.rgb / max(texel_mean, vec3<f32>(1e-4));
+        let identity = mix(rvt_a.rgb, macro_tint * da_avg, detail_fade);
+        let grain = da / max(da_avg, vec3<f32>(1e-4));
+        albedo = identity * mix(vec3<f32>(1.0), grain, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
     }
@@ -611,7 +695,7 @@ fn fragment(
     } else if dev.debug_view == 3u {
         out.color = vec4<f32>(vec3<f32>(rvt_ao_s.a), 1.0);
     } else {
-        out.color = terrain_apply_lighting(pbr_input, rvt_a.a, bent_normal);
+        out.color = terrain_apply_lighting(pbr_input, rvt_a.a, bent_normal, ao);
         out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     }
 

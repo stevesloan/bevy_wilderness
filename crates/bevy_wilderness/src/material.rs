@@ -8,7 +8,7 @@ use bevy::{
 
 use crate::height_fog::HeightFogParams;
 use crate::holes::HoleBuffer;
-use crate::DetailConfig;
+use crate::{Clipmap, MAX_TERRAIN_LAYERS};
 
 /// Pipeline-specializing state. `holes` keys a separate pipeline so terrain
 /// without holes compiles a vertex shader with no shape loop at all.
@@ -17,6 +17,7 @@ use crate::DetailConfig;
 pub(crate) struct GridMaterialKey {
     wireframe: bool,
     holes: bool,
+    detail_hex: bool,
 }
 
 impl From<&GridMaterial> for GridMaterialKey {
@@ -24,6 +25,7 @@ impl From<&GridMaterial> for GridMaterialKey {
         Self {
             wireframe: material.flags & 1 != 0,
             holes: material.dev.hole_count > 0,
+            detail_hex: material.flags & GridMaterial::FLAG_DETAIL_HEX != 0,
         }
     }
 }
@@ -85,16 +87,25 @@ pub(crate) struct DetailParams {
     /// Camera distances (m) over which the overlay fades out.
     near: f32,
     far: f32,
+    /// Per-layer `TerrainLayer::height_blend`, for the per-pixel height blend
+    /// between the top two materials (matching the bake's).
+    height_blend: Vec4,
 }
 
 impl DetailParams {
-    pub(crate) fn from_config(d: &DetailConfig) -> Self {
+    pub(crate) fn from_clipmap(clipmap: &Clipmap) -> Self {
+        let d = &clipmap.detail;
+        let mut height_blend = [0.0f32; MAX_TERRAIN_LAYERS];
+        for (slot, layer) in height_blend.iter_mut().zip(&clipmap.layers) {
+            *slot = layer.height_blend;
+        }
         Self {
             tiling: d.tiling.max(1e-3),
             normal_strength: d.normal_strength,
             albedo_strength: d.albedo_strength,
             near: d.near,
             far: d.far,
+            height_blend: Vec4::from_array(height_blend),
         }
     }
 }
@@ -163,7 +174,8 @@ pub(crate) struct GridMaterial {
     #[uniform(109)]
     pub(crate) minmax: Vec2,
     /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail,
-    /// bit3 looping, bit4 clay display mode (`editing`). Quality knobs ride
+    /// bit3 looping, bit4 clay display mode, bit5/6 stamp preview (`editing`),
+    /// bit7 hex-tiled detail (pipeline key, not read by the shader). Quality knobs ride
     /// here rather than adding uniforms (this material is at the bind-group binding
     /// limit — extra uniforms silently break its pipeline).
     #[uniform(111)]
@@ -171,6 +183,12 @@ pub(crate) struct GridMaterial {
 }
 
 impl GridMaterial {
+    /// `flags` bit7: hex-tile the near detail overlay. Part of the pipeline
+    /// key (it selects the `WILDERNESS_DETAIL_HEX` shader variant), so flipping
+    /// it re-specializes rather than branching per fragment. Kept in sync with
+    /// [`TerrainQuality::detail_hex_tiling`](crate::TerrainQuality) by
+    /// `apply_terrain_quality`.
+    pub(crate) const FLAG_DETAIL_HEX: u32 = 1 << 7;
     /// `flags` bit4: clay display mode — grey + screen-derivative
     /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
     #[cfg(feature = "editing")]
@@ -241,6 +259,12 @@ impl MaterialExtension for GridMaterial {
                 .vertex
                 .shader_defs
                 .push("WILDERNESS_HOLES".into());
+        }
+        // Fragment-only: the detail overlay's hex tiling (desktop tier).
+        if key.bind_group_data.detail_hex
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("WILDERNESS_DETAIL_HEX".into());
         }
         // terrain.wesl's fragment machinery only compiles in pipelines that
         // shade: the forward pass and the deferred g-buffer pass. Depth-only
