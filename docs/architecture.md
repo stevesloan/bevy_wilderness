@@ -118,8 +118,15 @@ four `textureLoad`s (`height_bilinear`) → `min + h · (max − min)`.
   Holes are visual only — cut your own collider.
 - **Stamp preview** (`editing`): see [editor.md](editor.md) §5.
 
-LOD transitions are **not morphed**: rings switch resolution at snap
-boundaries (see roadmap: geomorphing).
+**Geomorphing.** Each ring has half the resolution of the one inside it, and
+rings snap with the camera, so an unblended seam would jump as you move. Across
+the outer 30 % of each ring (`MORPH_BAND`, by Chebyshev distance from the
+camera) every vertex blends toward the height the coarser ring renders there:
+the same height on shared vertices, the average of a coarse edge's ends, or
+the coarse quad's (+x, +z) diagonal at its centre (`coarse_height_at`). At the
+seam the two rings match exactly. The band finishes 4 cells inside the ring
+edge to cover snap lag, and assumes the camera is the clipmap target.
+`DevParams::ring_half_cells` carries `Clipmap::half_width` to the shader.
 
 ## 5. Material — `GridMaterial`
 

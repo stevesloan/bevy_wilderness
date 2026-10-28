@@ -366,6 +366,7 @@ pub(crate) fn init_clipmaps(
                         DevParams {
                             holes,
                             hole_count,
+                            ring_half_cells: clipmap.half_width as f32,
                             ..DevParams::default()
                         }
                     },

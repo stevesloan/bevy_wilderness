@@ -54,8 +54,8 @@ of rules.
 
 | Capability | AAA practice | bevy_wilderness | Gap |
 | ---------- | ------------ | --------------- | --- |
-| Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched, **no morphing** | P0 |
-| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, **no mips, uncompressed** | P0 / P1 |
+| Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched and geomorphed; coarse rings sample the full-res heightmap | P0 (prefilter) |
+| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, baked at load, **no mips, uncompressed** | P0 / P1 (offline bake) |
 | Material placement | Procedural rules (slope, height, curvature/flow masks) + height blending | Slope / height / cavity bands + height blending (4 layers) | ok |
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake + distance-faded detail overlay, top-2 blend | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
@@ -94,13 +94,23 @@ of rules.
 ### P0 — Stability and correctness (small, high value, both tiers)
 
 - **Mip-chain the RVT.** Targets are single-level today, so distant terrain
-  samples an 8192² texture with no mips: shimmer (worst in VR) and texture
-  cache thrash (worst on mobile). Generate mips after each bake (box downsample
-  for albedo/roughness/AO; renormalize normals; take the max-weight id for the
-  packed-id channel, or exclude it — it's read NEAREST near the camera only).
-- **Geomorph LOD transitions.** Blend each vertex toward its coarser-level
-  position across the outer band of every ring (GPU Gems 2 clipmaps / CDLOD
-  morphing) so resolution changes are continuous instead of popping.
+  samples an 8192² texture with no mips: shimmer (worst in VR), texture
+  cache thrash (worst on mobile), and material boundaries that alias into a
+  hard line at distance instead of averaging into a soft transition.
+  Bevy 0.20's `MipGenerationJobs` downsampler doesn't fit: it can't write
+  sRGB targets, and box-averaging corrupts the packed material ids. Preferred:
+  **bake each mip level directly** (one bake camera per level into a mip
+  view) — the bake's `textureSampleGrad` then prefilters the source arrays
+  correctly at every level, and ids stay valid. ~⅓ extra bake time. With the
+  offline bake (P1) the mips can be built at export instead, with per-channel
+  filters (renormalized normals, majority ids).
+- ~~**Geomorph LOD transitions.**~~ Done: vertices blend toward the coarser
+  ring's surface across each ring's outer band.
+- **Prefilter coarse rings.** Rings coarser than the heightmap texel sample it
+  at their vertices only (mip 0), so as they snap, distant silhouettes swim:
+  undersampling, which geomorphing doesn't address. Give the heightmap a mip
+  chain (kept in sync with editor edits) and sample the mip matching each
+  ring's cell size.
 - **Specular anti-aliasing.** Raise roughness from normal variance (Toksvig-
   style, from the length of the filtered normal) in the RVT mips and detail
   normals, plus a geometric term from screen-space normal derivatives (Valve's
@@ -140,7 +150,9 @@ of rules.
   KTX2 with both BC and ASTC variants, chosen at load by device capability.
 - **VR rendering path.** Forward + MSAA; clipmap `target` = the HMD head, not
   an eye; verify multiview (both eyes share rings, RVT and fields — they are
-  view-independent by design). If the Frame's runtime exposes eye-tracked
+  view-independent by design). Geomorphing measures its band from
+  `view.world_position`, i.e. per eye (~3 cm apart, sub-millimetre height
+  difference); pass the head position instead so both eyes morph identically. If the Frame's runtime exposes eye-tracked
   foveation (variable-rate shading), use it — terrain fills most of the
   screen and is ideal for it. Verify availability on device.
 - **CPU sun-visibility query.** A CPU twin of the shadow-ceiling field for
