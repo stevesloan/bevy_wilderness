@@ -608,7 +608,7 @@ fn fragment(
         // The RVT already holds this same albedo array blended at macro tiling, so
         // the detail sample must contribute *variation*, not colour, or the two
         // multiply into albedo squared. Its coarsest mip is the layer's own mean,
-        // so `da / da_avg` is unit-mean by construction and leaves the macro
+        // so the grain below is unit-mean by construction and leaves the macro
         // albedo intact for any texture set, whatever its average brightness.
         let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
         var dn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id0, ddx, ddy).xyz * 2.0 - 1.0;
@@ -633,10 +633,14 @@ fn fragment(
         let db = cross(base_normal, dt);
         world_normal = normalize(dt * dn_scaled.x + db * dn_scaled.y + base_normal * dn_scaled.z);
 
-        // Epsilon guards a layer that is black in some channel; without it the
-        // ratio is a division by zero rather than the intended no-op.
-        let da_ratio = da / max(da_avg, vec3<f32>(1e-4));
-        albedo *= mix(vec3<f32>(1.0), da_ratio, detail.albedo_strength * detail_fade);
+        // Grain is the detail's *brightness* around its own mean, capped. A
+        // per-channel ratio amplified grass's near-zero blue up to ~6×, and
+        // where the NEAREST material id and the filtered colour disagree (a
+        // grass id over rock colour) that tinted rock purple. Brightness can't
+        // change hue, whatever colour it lands on.
+        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+        let grain = min(dot(da, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
+        albedo *= mix(1.0, grain, detail.albedo_strength * detail_fade);
         rough = mix(rvt_n.b, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
     }
