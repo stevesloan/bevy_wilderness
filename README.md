@@ -41,7 +41,7 @@ repo. Fetch them once before running it:
 
 ```sh
 > pip install Pillow
-> python crates/bevy_wilderness/assets/fetch_textures.py   # downloads grass/dirt/rock/snow into crates/bevy_wilderness/assets/terrain/
+> python crates/bevy_wilderness/assets/fetch_textures.py   # downloads grass/dirt/rock/sediment into crates/bevy_wilderness/assets/terrain/
 > cargo run --example basic
 ```
 

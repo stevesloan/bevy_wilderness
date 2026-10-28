@@ -3,7 +3,7 @@
 
 Downloads four Poly Haven (polyhaven.com, CC0) texture sets at 2K, converts
 them to 8-bit, and packs occlusion + roughness into ORM maps, producing
-`assets/terrain/{grass,dirt,rock,snow}_{albedo,normal,orm}.png`.
+`assets/terrain/{grass,dirt,rock,sediment}_{albedo,normal,orm}.png`.
 
 Requires Pillow: pip install Pillow
 """
@@ -20,7 +20,7 @@ ASSETS = {
     "grass": "rocky_terrain_02",
     "dirt": "coast_land_rocks_01",
     "rock": "marble_cliff_05",
-    "snow": "snow_field_aerial",
+    "sediment": "gravel",
 }
 RESOLUTION = "2k"
 # Poly Haven map key -> our suffix

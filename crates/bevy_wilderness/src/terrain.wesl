@@ -484,14 +484,16 @@ fn fragment(
     var rvt_ao_s = vec4<f32>(1.0, 0.5, 0.5, 0.5);
     var macro_ao = 1.0;
     var baked_bent_normal = base_normal;
-    var cavity = 0.5;
     if (flags & 2u) != 0u {
         rvt_ao_s = textureSample(rvt_ao_texture, rvt_albedo_sampler, uv);
+        // The horizon AO is the physical sky visibility (4 m–400 m), so it
+        // alone occludes the ambient. Cavity (A) is shape, not occlusion — an
+        // open hollow is concave yet sees the sky — so it isn't applied here;
+        // it's for material response (sediment / moisture in gullies).
         macro_ao = mix(1.0, rvt_ao_s.r, dev.ao_strength);
         let bent_xz = rvt_ao_s.gb * 2.0 - 1.0;
         let bent_y = sqrt(max(0.0, 1.0 - dot(bent_xz, bent_xz)));
         baked_bent_normal = vec3<f32>(bent_xz.x, bent_y, bent_xz.y);
-        cavity = rvt_ao_s.a;
     }
 
     let cam_dist = distance(view.world_position, in.world_position.xyz);

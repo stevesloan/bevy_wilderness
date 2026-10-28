@@ -56,7 +56,7 @@ of rules.
 | ---------- | ------------ | --------------- | --- |
 | Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched, **no morphing** | P0 |
 | Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, **no mips, uncompressed** | P0 / P1 |
-| Material placement | Procedural rules + height blending | Slope/height bands + height blending (4 layers) | ok |
+| Material placement | Procedural rules (slope, height, curvature/flow masks) + height blending | Slope / height / cavity bands + height blending (4 layers) | ok |
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake + distance-faded detail overlay, top-2 blend | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
 | Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
@@ -169,6 +169,14 @@ of rules.
 - **Object–terrain blending.** Expose the RVT (albedo, normal) so rocks,
   buildings and props sample it near their ground contact and blend into the
   terrain seamlessly (Unreal's RVT mesh blending). Cheap: the RVT exists.
+- **Curvature-driven material response.** Use the baked cavity as a material
+  mask, not an occlusion term. *Placement is done* (`CavityRule`; the example
+  puts gravel sediment in gullies). Remaining: a darker, smoother "damp"
+  surface response in hollows, and exposed weathered ridges. Standard in
+  terrain tools (Gaea and World Machine curvature/flow masks). It was briefly
+  applied to ambient occlusion and removed: measured on the example map it
+  darkened deep gullies to ~40 % where the physically based horizon AO gave
+  ~83 %, and 71 % of its darkening landed where the AO saw ≥ 90 % open sky.
 - **Cliffs.** Slope-gated biplanar mapping in the main pass detail overlay
   (desktop; flat ground stays single-planar), and authored/procedural cliff
   meshes for hero rock (Far Cry 5's procedural cliff pipeline uses slope as

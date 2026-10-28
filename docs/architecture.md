@@ -73,7 +73,7 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 **Resources.** `TerrainQuality` (performance profile, §8), `TerrainFog` (the
 fog *look*), `InlineFog` (active inline-fog params for your own shaders).
 
-**Other.** `TerrainLayer`, `SlopeRule`, `HeightRule`, `DetailConfig`,
+**Other.** `TerrainLayer`, `SlopeRule`, `HeightRule`, `CavityRule`, `DetailConfig`,
 `HoleShape`, `MAX_HOLES` (24), `HeightFog`/`HeightFogParams`,
 `HeightFogExtension`, `FogTier`, `SunShadowParams`, `load_terrain_array`,
 `build_terrain_array`.
@@ -178,9 +178,12 @@ samples them with a Repeat sampler.
 All bake modes read the heightmap the same way as the vertex shader, wrapping
 on looping terrain so marches cross the seam.
 
-- **Splat** (`splat_terrain`). Each layer's weight is the product of two
-  optional bands — `SlopeRule` (degrees) and `HeightRule` (meters) — each a
-  smoothstep ramp of width `blend` outside `[min, max]`. A layer with no rules
+- **Splat** (`splat_terrain`). Each layer's weight is the product of three
+  optional bands — `SlopeRule` (degrees), `HeightRule` (meters) and
+  `CavityRule` (terrain shape on the baked cavity scale: 0 hollow, 0.5 flat,
+  1 ridge) — each a smoothstep ramp of width `blend` outside `[min, max]`.
+  Cavity placement is what lets sediment collect in gullies and ridges stay
+  bare, which slope and height can't tell apart. A layer with no rules
   is present everywhere (the "base layer" pattern, which keeps boundaries
   organic). Weights then go through **height blending**
   (`weight + albedo.a · height_blend`, keeping layers within 0.2 of the max),
@@ -196,7 +199,9 @@ on looping terrain so marches cross the seam.
 - **Ambient gather** (`ambient_gather`, AO target). Horizon-based over 8
   azimuths × 12 steps out to 400 m: macro AO integrated about the surface
   normal (an unoccluded slope bakes to 1), the visibility-weighted **bent
-  normal**, and a Laplacian **cavity** term. Off on low quality.
+  normal**, and a **cavity** term (`cavity_at`, shared with the splat): the depression angle of an 8-tap ring at
+  r = max(2 texels, 16 m), ±15° mapped to 0..1 (0.5 flat) — resolution- and
+  height-range-independent. Off on low quality.
 - **Shadow ceiling** (`shadow_ceiling`, sun-shadow target). For each column,
   the height below which the terrain shadows it (and the occluder distance for
   penumbra width) — §7.
@@ -257,7 +262,9 @@ There are **no realtime shadow passes in normal rendering** — terrain is
      sunset);
    - clustered point and spot lights with their own shadows (not sun-vis);
    - environment map diffuse looked up along the **bent normal**, with colored
-     multi-bounce AO and specular occlusion from AO;
+     multi-bounce AO and specular occlusion from AO. The baked cavity is shape,
+     not occlusion (an open hollow is concave yet sees the sky), so it drives
+     material placement rather than darkening;
    - flat ambient; inline height fog when on the Low fog tier.
    This fork exists because Bevy has no hook for a per-pixel factor on the
    directional term only. **Re-check it on every Bevy upgrade** against
