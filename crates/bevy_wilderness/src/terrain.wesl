@@ -59,6 +59,24 @@ import bevy_pbr::deferred::functions::deferred_output;
 // The sun shadow-ceiling field (see `sun_shadow.wesl`), which shadows the
 // ground as it does meshes. Its params ride in `dev.sun_shadow`.
 @group(constants::MATERIAL_BIND_GROUP) @binding(132) var sun_shadow_field: texture_2d<f32>;
+// The host's baked lighting (see `baked_light.rs`), sampled with 122. Its
+// regions ride in `dev.baked`; with none, nothing reads it.
+@group(constants::MATERIAL_BIND_GROUP) @binding(133) var baked_light_atlas: texture_2d<f32>;
+// Matches `BakedRegionGpu`: world = min xz, max xz; color = atlas UV min, max;
+// direction.xy = its tile's UV min, the same size as `color`'s.
+struct BakedRegion {
+    world: vec4<f32>,
+    color: vec4<f32>,
+    direction: vec4<f32>,
+}
+// Matches `BakedLightParams`.
+struct BakedLight {
+    count: u32,
+    exposure: f32,
+    sky_luminance: f32,
+    patch_fade: f32,
+    regions: array<BakedRegion, 8>,
+}
 // rvt_normal and the field share rvt_albedo_sampler (122), all sampled linearly.
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
 // freed for ceiling headroom). debug_view: 0 = lit terrain, 1 = cavity,
@@ -67,6 +85,7 @@ import bevy_pbr::deferred::functions::deferred_output;
 // bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
     sun_shadow: SunShadowParams,
+    baked: BakedLight,
     debug_view: u32,
     stamp_center: vec2<f32>,
     stamp_half_size: vec2<f32>,
@@ -353,7 +372,9 @@ fn specular_occlusion_from_ao(n_dot_v: f32, ao: f32, roughness: f32) -> f32 {
     return saturate(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
-fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32) -> vec4<f32> {
+// `baked`, when `found`, replaces the environment map's diffuse and the flat
+// ambient; the caller has already taken its sun visibility into `sun_vis`.
+fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSample) -> vec4<f32> {
     let base_color = in.material.base_color;
     let metallic = in.material.metallic;
     let perceptual_roughness = in.material.perceptual_roughness;
@@ -428,7 +449,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32) -> vec4<f32> {
             && (clustered_lights.data[light_id].flags & mesh_view_types::POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
             shadow = shadows::fetch_point_shadow(light_id, in.world_position, in.world_normal, in.frag_coord.xy);
         }
-        direct += lighting::point_light(light_id, &li, true, true) * shadow;
+        direct += lighting::point_light(light_id, &li, baked_diffuse(light_id, baked), true) * shadow;
     }
 
     // Spot lights, likewise shadowed per-light.
@@ -445,23 +466,36 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32) -> vec4<f32> {
                 in.frag_coord.xy,
             );
         }
-        direct += lighting::spot_light(light_id, &li, true) * shadow;
+        direct += lighting::spot_light(light_id, &li, baked_diffuse(light_id, baked)) * shadow;
     }
 
-    // Indirect: environment map (the physical-sky IBL) + flat ambient.
+    // Indirect: baked light, else the environment map (the physical-sky IBL)
+    // + flat ambient. Colored multi-bounce diffuse occlusion + AO-derived
+    // specular occlusion from the detail AO, which is finer than either.
     var indirect = vec3<f32>(0.0);
-    @if(ENVIRONMENT_MAP) {
-    let env = environment_map::environment_map_light(&li, &ranges, false);
-    // Colored multi-bounce diffuse occlusion + AO-derived specular occlusion
-    // from the detail AO, so the sky IBL is occluded physically rather than
-    // uniformly darkened.
     let ao_scalar = in.diffuse_occlusion.r;
     let diffuse_occ = gtao_multi_bounce(ao_scalar, diffuse_color);
-    let spec_occ = specular_occlusion_from_ao(NdotV, ao_scalar, roughness);
-    indirect += env.diffuse * diffuse_occ + env.specular * spec_occ;
+    var spec_occ = specular_occlusion_from_ao(NdotV, ao_scalar, roughness);
+    if baked.found {
+        indirect += diffuse_color * baked.light * diffuse_occ;
+        // Reflections of the environment map are of the open sky: keep only
+        // the share of it the baked light says reaches here.
+        if dev.baked.sky_luminance > 0.0 {
+            let luminance = dot(baked.light, vec3<f32>(0.2126, 0.7152, 0.0722));
+            spec_occ *= saturate(luminance / dev.baked.sky_luminance);
+        }
     }
-    // Flat ambient ignores the normal entirely; keep it on the shading normal.
-    indirect += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, in.diffuse_occlusion);
+    @if(ENVIRONMENT_MAP) {
+    let env = environment_map::environment_map_light(&li, &ranges, false);
+    if !baked.found {
+        indirect += env.diffuse * diffuse_occ;
+    }
+    indirect += env.specular * spec_occ;
+    }
+    if !baked.found {
+        // Flat ambient ignores the normal entirely; keep it on the shading normal.
+        indirect += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, in.diffuse_occlusion);
+    }
 
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
@@ -471,6 +505,68 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32) -> vec4<f32> {
         color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz);
     }
     return vec4<f32>(color, base_color.a);
+}
+
+// Whether clustered light `light_id` lights the ground's diffuse: not where
+// baked light holds it already, as Bevy leaves a lightmapped mesh's diffuse
+// to its lightmap for a light without `affects_lightmapped_mesh_diffuse`.
+fn baked_diffuse(light_id: u32, baked: BakedSample) -> bool {
+    return !baked.found
+        || (clustered_lights.data[light_id].flags & mesh_view_types::POINT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT) != 0u;
+}
+
+// The baked light at a point: irradiance / π re-aimed at the shading normal,
+// and the sun visibility.
+struct BakedSample {
+    light: vec3<f32>,
+    sun_visibility: f32,
+    found: bool,
+}
+
+fn no_baked_light() -> BakedSample {
+    return BakedSample(vec3<f32>(0.0), 1.0, false);
+}
+
+// Region `i`'s colour and direction at world `xz`, clamped half a texel inside
+// its tiles so filtering never reads a neighbour's.
+fn baked_region_sample(i: u32, xz: vec2<f32>, n: vec3<f32>) -> vec4<f32> {
+    let region = dev.baked.regions[i];
+    let local = (xz - region.world.xy) / (region.world.zw - region.world.xy);
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(baked_light_atlas));
+    let size = region.color.zw - region.color.xy;
+    let inner = clamp(local * size, half_texel, size - half_texel);
+    let color = textureSampleLevel(baked_light_atlas, rvt_albedo_sampler, region.color.xy + inner, 0.0);
+    let direction = textureSampleLevel(baked_light_atlas, rvt_albedo_sampler, region.direction.xy + inner, 0.0);
+    // Mirrors `level_material.wesl`: `(0.5·n·d + 0.5) / w` is 1 at the
+    // baked normal and follows the shading normal elsewhere.
+    let d = normalize(direction.xyz * 2.0 - 1.0);
+    let scale = (0.5 * dot(n, d) + 0.5) / max(direction.w, 0.05);
+    return vec4<f32>(color.rgb * scale, color.a);
+}
+
+fn baked_region_contains(i: u32, xz: vec2<f32>) -> bool {
+    let world = dev.baked.regions[i].world;
+    return all(xz >= world.xy) && all(xz <= world.zw);
+}
+
+// The last region covering `xz` wins, faded in from its edge over
+// `patch_fade` against whatever lies beneath.
+fn baked_light_at(xz: vec2<f32>, n: vec3<f32>) -> BakedSample {
+    let count = dev.baked.count;
+    if count == 0u || !baked_region_contains(0u, xz) {
+        return no_baked_light();
+    }
+    var result = baked_region_sample(0u, xz, n);
+    for (var i = 1u; i < count; i++) {
+        if !baked_region_contains(i, xz) {
+            continue;
+        }
+        let world = dev.baked.regions[i].world;
+        let edge = min(min(xz.x - world.x, world.z - xz.x), min(xz.y - world.y, world.w - xz.y));
+        let weight = smoothstep(0.0, dev.baked.patch_fade, edge);
+        result = mix(result, baked_region_sample(i, xz, n), weight);
+    }
+    return BakedSample(result.rgb * dev.baked.exposure, result.a, true);
 }
 
 // The ground's sun shadow, from the field that shadows meshes, read a little
@@ -537,7 +633,7 @@ fn fragment(
         var out: FragmentOutput;
         @if(!PREPASS_PIPELINE) {
         // Sun visibility 1.0: there's no valid bake to shadow with.
-        out.color = terrain_apply_lighting(clay_pbr, 1.0);
+        out.color = terrain_apply_lighting(clay_pbr, 1.0, no_baked_light());
         out.color = main_pass_post_lighting_processing(clay_pbr, out.color);
         }
         return out;
@@ -549,7 +645,9 @@ fn fragment(
     let rvt_a = textureSample(rvt_albedo_texture, rvt_albedo_sampler, uv);
     let rvt_n = textureSample(rvt_normal_texture, rvt_albedo_sampler, uv);
     let base_normal = oct_decode(rvt_n.rg);
-    let sun_vis = ground_sun_visibility(in.world_position.xyz, base_normal, uv);
+    // Baked light needs the shading normal, so it's sampled after the detail
+    // overlay below; until then the shadow field's sun visibility stands.
+    var sun_vis = ground_sun_visibility(in.world_position.xyz, base_normal, uv);
 
     let cam_dist = distance(view.world_position, in.world_position.xyz);
 
@@ -654,6 +752,10 @@ fn fragment(
     pbr_input.material.metallic = 0.0;
     // The detail AO darkens only ambient/indirect, never the direct sun.
     pbr_input.diffuse_occlusion = vec3<f32>(ao);
+    let baked = baked_light_at(in.world_position.xz, pbr_input.N);
+    if baked.found {
+        sun_vis = baked.sun_visibility;
+    }
 
     @if(PREPASS_PIPELINE)
     let out = deferred_output(in_modified, pbr_input);
@@ -667,7 +769,7 @@ fn fragment(
     } else if dev.debug_view == 2u {
         out.color = vec4<f32>(vec3<f32>(sun_vis), 1.0);
     } else {
-        out.color = terrain_apply_lighting(pbr_input, sun_vis);
+        out.color = terrain_apply_lighting(pbr_input, sun_vis, baked);
         out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     }
 

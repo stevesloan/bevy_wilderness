@@ -1,5 +1,6 @@
 use bevy::{asset::embedded_asset, pbr::ExtendedMaterial, prelude::*, shader::load_shader_library};
 
+mod baked_light;
 mod clipmap;
 #[cfg(feature = "dev-controls")]
 mod dev_controls;
@@ -14,6 +15,7 @@ mod rvt;
 mod sun_shadow;
 mod texture;
 
+pub use baked_light::{BakedLightRegion, MAX_BAKED_LIGHT_REGIONS, TerrainBakedLight};
 pub use clipmap::{
     CavityRule, Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer,
 };
@@ -81,6 +83,7 @@ impl Plugin for ClipmapPlugin {
                     update_grids,
                     clipmap::sync_holes,
                     clipmap::sync_sun_shadow_params,
+                    clipmap::sync_baked_light,
                     init_rvt,
                     drive_rvt_bake,
                     quality::apply_terrain_quality,

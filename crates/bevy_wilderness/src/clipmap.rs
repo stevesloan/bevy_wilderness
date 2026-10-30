@@ -355,6 +355,7 @@ pub(crate) fn init_clipmaps(
                     rvt_albedo: rvt_albedo.clone(),
                     rvt_normal: rvt_normal.clone(),
                     sun_shadow_field: rvt_sun_shadow.clone(),
+                    baked_light: Handle::default(),
                     dev: {
                         let (holes, hole_count) = HoleBuffer::pack(&clipmap.holes);
                         DevParams {
@@ -729,6 +730,42 @@ pub(crate) fn sync_sun_shadow_params(
             }
             if let Some(mut material) = materials.get_mut(handle) {
                 material.extension.dev.sun_shadow = sun_shadow.params;
+            }
+        }
+    }
+}
+
+/// Push the clipmap's [`TerrainBakedLight`](crate::TerrainBakedLight) into both
+/// materials, or clear it once the host removes it. Every frame, but writes
+/// only on a difference.
+pub(crate) fn sync_baked_light(
+    clipmaps: Query<(&ClipmapMaterials, Option<&crate::TerrainBakedLight>)>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (mats, baked) in &clipmaps {
+        let (atlas, params) = baked.map_or_else(
+            || {
+                (
+                    Handle::default(),
+                    crate::baked_light::BakedLightParams::default(),
+                )
+            },
+            |baked| {
+                (
+                    baked.atlas.clone(),
+                    crate::baked_light::BakedLightParams::from_baked(baked),
+                )
+            },
+        );
+        for handle in [&mats.solid, &mats.wireframe] {
+            if materials.get(handle).is_some_and(|m| {
+                m.extension.baked_light == atlas && m.extension.dev.baked == params
+            }) {
+                continue;
+            }
+            if let Some(mut material) = materials.get_mut(handle) {
+                material.extension.baked_light = atlas.clone();
+                material.extension.dev.baked = params;
             }
         }
     }

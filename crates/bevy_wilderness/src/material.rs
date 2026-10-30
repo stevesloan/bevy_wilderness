@@ -42,6 +42,9 @@ pub(crate) struct DevParams {
     /// params by `sync_sun_shadow_params`. First: a struct member of a uniform
     /// must sit at a 16-byte offset.
     pub(crate) sun_shadow: crate::SunShadowParams,
+    /// The clipmap's [`TerrainBakedLight`](crate::TerrainBakedLight), if any;
+    /// kept current by `sync_baked_light`.
+    pub(crate) baked: crate::baked_light::BakedLightParams,
     /// Debug channel isolation: 0 lit, 1 cavity, 2 sun visibility.
     pub(crate) debug_view: u32,
     /// Stamp preview center, world XZ meters.
@@ -67,6 +70,7 @@ impl Default for DevParams {
     fn default() -> Self {
         Self {
             sun_shadow: crate::SunShadowParams::unbaked(),
+            baked: crate::baked_light::BakedLightParams::default(),
             debug_view: 0,
             stamp_center: Vec2::ZERO,
             stamp_half_size: Vec2::ZERO,
@@ -127,6 +131,10 @@ pub(crate) struct GridMaterial {
     /// which shadows the ground as it does meshes.
     #[texture(132)]
     pub(crate) sun_shadow_field: Handle<Image>,
+    /// [`TerrainBakedLight::atlas`](crate::TerrainBakedLight::atlas), or the
+    /// placeholder image while there's none (never sampled then).
+    #[texture(133)]
+    pub(crate) baked_light: Handle<Image>,
     /// Dev/experiment and editing scalars packed into one uniform — see
     /// [`DevParams`]. Frees two binding slots vs. separate
     /// uniforms; the freed 112/113 stay clear as ceiling headroom.

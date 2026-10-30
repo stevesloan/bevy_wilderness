@@ -70,6 +70,17 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 `ClipmapReady` is inserted on the entity when the bake finishes.
 `TerrainSunShadow` is inserted for game materials (§7).
 
+**Baked lighting (optional).** Insert a `TerrainBakedLight` on the clipmap to
+light it from an offline bake the host made: one `Rgba16Float` atlas and up to
+`MAX_BAKED_LIGHT_REGIONS` (8) `BakedLightRegion`s, the first covering the whole
+terrain and the rest denser patches (the last covering a point wins, faded in
+over `patch_fade` at its edge). Each region is two tiles: colour (RGB
+irradiance / π in scene light units, A sun visibility) and the dominant
+direction (RGB `d·0.5+0.5`, A the rebalance against the baked normal). While
+present it replaces the environment map's diffuse, the flat ambient and the
+field's ground shadow (§8); remove it when the terrain no longer matches the
+bake (an edit) and the terrain lights itself again. The crate never bakes it.
+
 **Resources.** `TerrainQuality` (performance profile, §8), `TerrainFog` (the
 fog *look*), `InlineFog` (active inline-fog params for your own shaders).
 
@@ -137,7 +148,7 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | 102 / 103 | heightmap / its sampler (103 is shared by overlay and stamp) |
 | 108 | `texel_size` |
 | 109 | `minmax` |
-| 110 | `DevParams`: debug view, stamp transform, `HoleBuffer` (48 × vec4), `hole_count`, ring half-width, `SunShadowParams` |
+| 110 | `DevParams`: `SunShadowParams`, baked-light regions, debug view, stamp transform, `HoleBuffer` (48 × vec4), `hole_count`, ring half-width |
 | 111 | `flags` (u32, below) |
 | 114 | inline `HeightFogParams` |
 | 115 / 116 | `editing`: edit overlay, stamp heightfield |
@@ -146,6 +157,7 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | 125 / 126 / 127 / 130 | detail albedo / sampler / normal / ORM arrays |
 | 129 | `DetailParams` |
 | 132 | sun shadow-ceiling field (§7), sampled with 122 |
+| 133 | `TerrainBakedLight` atlas, sampled with 122; its regions ride in `DevParams` |
 
 `flags`: bit 0 wireframe · 1 unused · 2 single-layer detail ·
 3 looping · 4 clay · 5 stamp preview · 6 stamp mask-weighted.
@@ -270,10 +282,17 @@ There are **no realtime shadow passes in normal rendering** — terrain is
      specular suppressed on rough ground (dry terrain shouldn't look wet at
      sunset);
    - clustered point and spot lights with their own shadows (not the field);
+     where baked light covers the ground, a light without
+     `affects_lightmapped_mesh_diffuse` leaves its diffuse to the bake, as
+     Bevy does for lightmapped meshes;
+   - **baked light**, when a `TerrainBakedLight` covers the point: its
+     irradiance re-aimed at the shading normal replaces the environment map's
+     diffuse and the flat ambient, its sun visibility replaces the field's,
+     and environment reflections are scaled by how much sky it holds;
    - environment map diffuse along the shading normal, with colored
-     multi-bounce AO and specular occlusion from the detail AO. There's no
-     sky occlusion: gullies take open-sky light until a baked lighting input
-     replaces this term. The baked cavity is shape,
+     multi-bounce AO and specular occlusion from the detail AO, where there's
+     no baked light. Then there's no sky occlusion: gullies take open-sky
+     light. The baked cavity is shape,
      not occlusion (an open hollow is concave yet sees the sky), so it drives
      material placement rather than darkening;
    - flat ambient; inline height fog when on the Low fog tier.
