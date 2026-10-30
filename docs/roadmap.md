@@ -61,9 +61,9 @@ of rules.
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
 | Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
 | Close-up relief | Tessellation / Nanite displacement / displacement decals | none | P2 (desktop) |
-| Terrain shadow | Heightfield/baked for terrain + CSM for dynamic | baked sun-vis + height-correct shadow-ceiling field for meshes | ok |
+| Terrain shadow | Heightfield/baked for terrain + CSM for dynamic | height-correct shadow-ceiling field for terrain and meshes | ok |
 | Static objects → terrain shadow | Baked into lighting | not yet | P2 |
-| Terrain GI | Baked sky + bounce, probe volumes for dynamics | macro AO + bent normal (monochrome) | P2 |
+| Terrain GI | Baked sky + bounce, probe volumes for dynamics | none (open-sky ambient); baked input planned | P2 |
 | Object ↔ terrain blending | RVT sampled by meshes at ground contact (UE) | not exposed | P2 |
 | Vegetation / ground cover | GPU procedural placement (Horizon Zero Dawn), GPU grass (Ghost of Tsushima) | **none** | P2 — biggest visual gap |
 | Fog / atmosphere | Height fog + aerial perspective | analytic height fog, two tiers; Bevy atmosphere in the example | ok |
@@ -78,7 +78,7 @@ of rules.
 | "No realtime shadows of any kind" | **Revised** | Keep for terrain (it never casts per frame). Too strict for dynamic objects on desktop: allow Bevy CSM for characters/props near the camera on the desktop tier; the Frame tier uses blob shadows or one short cascade, decided by profiling. |
 | Static-object shadows as a separate crate | **Revised** | The part that matters most — buildings shadowing *terrain* — needs this crate's bake, so it belongs here as an occluder-registration hook (§5 P2). Object-on-object shadows stay the game's (Bevy CSM on desktop, baked/blob on Frame). |
 | Full GI system: DDGI probes, per-building volumes, vertex-baked bounce | **Narrowed** | The terrain half (colored sky + one sun bounce baked into the RVT) is cheap and high-value — keep. Leak-free probe volumes for interiors are a game/engine-level system, not terrain; drop from this roadmap. |
-| Sky/contact AO channel revival | **Folded in** | Ambient gather already bakes AO + bent normal. Contact AO under objects comes with occluder registration. |
+| Sky/contact AO channel revival | **Superseded** | The ambient gather is removed; sky occlusion comes from a baked lighting input. Contact AO under objects comes with occluder registration. |
 | Triplanar on steep slopes (stretch) | **Promoted** | Cliffs are where heightfield terrain looks cheapest; slope-gated **biplanar** (only cliffs pay) on the desktop tier, cliff meshes for hero rock. |
 | Toroidal ring RVT for flatscreen density | **Replaced** | Superseded by mip-chained RVT + a streamed/adaptive virtual texture when worlds outgrow one RVT (P3). Don't revive the ring. |
 | Parallax / POM | **Kept, desktop only** | Plus a denser near grid for real displacement (§5 P2). |
@@ -170,13 +170,14 @@ of rules.
   meshes mid-range and impostors far. Density and distance are tier knobs.
   Probably its own crate (`bevy_wilderness_foliage`) consuming the terrain's
   public data: `Heightfield`, material ids, the shadow field.
-- **Terrain GI.** Extend the ambient gather from monochrome sky occlusion to
-  colored sky irradiance + a single sun bounce (light reflected off sunlit
-  slopes into shadowed valleys), baked into the RVT. Zero runtime cost; the
+- **Terrain GI.** An optional baked lighting input (colored sky irradiance,
+  bounce off sunlit slopes into shadowed valleys, sun visibility with static
+  structures in it) that replaces the open-sky ambient and the field's ground
+  shadow. Baked outside the crate, by the host; zero runtime cost; the
   biggest step from "lit" to "grounded".
 - **Static occluders shadow the terrain.** A registration hook: static meshes
   (buildings, rock formations, trees as proxies) are rendered from the sun
-  during the bake into the sun-vis channel and the shadow-ceiling field, with
+  during the bake into the shadow-ceiling field, with
   contact AO under them. Height-correct for flyers via the field.
 - **Object–terrain blending.** Expose the RVT (albedo, normal) so rocks,
   buildings and props sample it near their ground contact and blend into the

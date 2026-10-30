@@ -15,14 +15,14 @@ import bevy_pbr::render::forward_io::VertexOutput;
 @group(constants::MATERIAL_BIND_GROUP) @binding(10) var normal_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(11) var orm_array: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(12) var orm_sampler: sampler;
-// 0 = albedo target (rgb albedo, a sun-visibility); 1 = normal target (rg
-// octahedral world normal, b roughness, a = packed top-2 material ids + blend);
-// 2 = ambient gather; 3 = sun shadow-ceiling field (see `shadow_ceiling`).
+// 0 = albedo target (rgb albedo, a cavity); 1 = normal target (rg octahedral
+// world normal, b roughness, a = packed top-2 material ids + blend); 3 = sun
+// shadow-ceiling field (see `shadow_ceiling`).
 @group(constants::MATERIAL_BIND_GROUP) @binding(13) var<uniform> output_mode: u32;
 // Normalized direction toward the fixed sun.
 @group(constants::MATERIAL_BIND_GROUP) @binding(14) var<uniform> sun_direction: vec3<f32>;
-// 1 = looping terrain: read the heightmap toroidally so the shadow/AO marches
-// wrap across tile edges (baked shadows tile seamlessly); 0 = finite (clamp).
+// 1 = looping terrain: read the heightmap toroidally so the shadow march and
+// the cavity ring wrap across tile edges; 0 = finite (clamp).
 @group(constants::MATERIAL_BIND_GROUP) @binding(15) var<uniform> looping: u32;
 
 struct TerrainParams {
@@ -68,8 +68,8 @@ fn heightmap_uv(world_xz: vec2<f32>) -> vec2<f32> {
     return world_xz / (texture_size * texel_size) + 0.5;
 }
 
-// Fetch one heightmap texel, wrapping toroidally when looping so the shadow/AO
-// marches read the tiled heightmap; otherwise clamp to the edge.
+// Fetch one heightmap texel, wrapping toroidally when looping so the shadow
+// march and cavity ring read the tiled heightmap; otherwise clamp to the edge.
 fn load_height_texel(p: vec2<i32>, size: vec2<i32>, lod: i32) -> f32 {
     var idx = clamp(p, vec2(0), size - 1);
     if looping != 0u {
@@ -114,58 +114,8 @@ fn terrain_height(world_xz: vec2<f32>) -> f32 {
     return h * (minmax.y - minmax.x) + minmax.x;
 }
 
-// Terrain self-shadow: soft-march the heightmap toward the sun. 0 = shadowed,
-// 1 = lit. Baked once (static terrain, fixed sun), so the march is affordable.
-fn sun_visibility(world_xz: vec2<f32>) -> f32 {
-    const STEPS = 96;
-    const MAX_DIST = 6000.0;
-    const SOFTNESS = 20.0;      // lower = softer penumbra
-    const GROWTH = 1.12;        // geometric growth -> long reach without huge step count
-    let NORMAL_BIAS = texel_size * 1.0;   // lift the ray off the surface to avoid acne
-    let STEP0 = texel_size * 1.0;         // fine near-field step (resolves steep sun-facing slopes)
-    // Bias the start along the surface normal so sun-facing slopes don't
-    // self-shadow.
-    let origin = vec3<f32>(world_xz.x, terrain_height(world_xz), world_xz.y)
-        + geo_normal(world_xz) * NORMAL_BIAS;
-    var vis = 1.0;
-    var step = STEP0;
-    var t = STEP0;
-    for (var i = 0; i < STEPS; i++) {
-        if t > MAX_DIST {
-            break;
-        }
-        let p = origin + sun_direction * t;
-        if p.y > minmax.y {
-            break; // above the highest terrain -> can't be occluded
-        }
-        // Soft shadow: penumbra widens with distance to the occluder.
-        let clearance = p.y - terrain_height(p.xz);
-        vis = min(vis, clamp(SOFTNESS * clearance / t, 0.0, 1.0));
-        if vis <= 0.001 {
-            break;
-        }
-        step *= GROWTH;
-        t += step;
-    }
-    return vis;
-}
-
-// Cosine-weighted sky visible above elevation `h` within one azimuth's vertical
-// plane, where `a`/`b` are the surface normal's components along the azimuth and
-// along up — so the normal's cosine at elevation θ is `a*cos(θ) + b*sin(θ)`.
-// Closed form of ∫_h^{π/2} (a·cosθ + b·sinθ)·cosθ dθ; the trailing cosθ is the
-// solid-angle Jacobian. Everything the gather integrates is measured about the
-// surface normal through this, not about world up — an unoccluded plane must
-// gather the same sky however it is tilted, or every slope in the terrain reads
-// as partly occluded and shades toward the same flat tone.
-fn cos_arc(a: f32, b: f32, h: f32) -> f32 {
-    const QUARTER_PI = 0.7853981634;
-    return a * (QUARTER_PI - h * 0.5 - sin(2.0 * h) * 0.25)
-         + b * (0.5 - sin(h) * sin(h) * 0.5);
-}
-
-// Terrain curvature at `world_xz` (height `origin_h`). Shared by the ambient
-// gather (stored in the AO target's alpha) and the splat's cavity bands.
+// Terrain curvature at `world_xz` (height `origin_h`). Drives the splat's
+// cavity bands and is stored in the albedo target's alpha.
 fn cavity_at(world_xz: vec2<f32>, origin_h: f32) -> f32 {
     // Cavity: concave (gullies, hollows) vs convex (ridges, knolls). <0.5
     // concave, >0.5 convex, 0.5 flat. Measured as the *depression angle* — how
@@ -185,73 +135,6 @@ fn cavity_at(world_xz: vec2<f32>, origin_h: f32) -> f32 {
     }
     let depression = (ring / f32(CAVITY_RING_TAPS) - origin_h) / r;
     return clamp(0.5 - 0.5 * depression / CAVITY_SATURATION, 0.0, 1.0);
-}
-
-// Macro ambient occlusion + bent normal + curvature, gathered from the
-// heightfield. Horizon-based: for each azimuth, march outward and track the
-// highest occluding horizon angle; the open sky above it drives AO and the
-// average unoccluded direction (the bent normal). Curvature comes from
-// `cavity_at`. All sun-independent and baked once (mode 2) —
-// never per-frame. This is the single heaviest bake pass; DIRS/STEPS are the
-// cost knobs (raise DIRS for smoother bent normals if the bake completes
-// comfortably; lower both, or drop RVT_SIZE, if the driver times the bake out).
-fn ambient_gather(world_xz: vec2<f32>) -> vec4<f32> {
-    const DIRS = 8;          // azimuth samples (bent-normal smoothness)
-    const STEPS = 12;        // march samples per azimuth (occlusion reach)
-    const MAX_R = 400.0;     // occlusion search radius, world units (local by nature)
-    const R0 = 4.0;
-    const GROWTH = 1.25;     // geometric step growth -> reach without step count
-    const TAU = 6.2831853;
-    const HALF_PI = 1.5707963;
-
-    let origin_h = terrain_height(world_xz);
-    let n = geo_normal(world_xz);
-    var ao_num = 0.0;
-    var ao_den = 0.0;
-    var bent = vec3<f32>(0.0);
-    for (var d = 0; d < DIRS; d++) {
-        let az = TAU * f32(d) / f32(DIRS);
-        let dir = vec2<f32>(cos(az), sin(az));
-        // The normal resolved into this azimuth's plane: `a` along `dir`, `b` up.
-        let a = dot(vec2<f32>(n.x, n.z), dir);
-        let b = n.y;
-        // The surface occludes its own lower hemisphere, so the march starts at
-        // the tangent plane rather than the horizontal — downhill azimuths see
-        // below the horizon, uphill ones start already partly closed.
-        let h_self = atan2(b, a) - HALF_PI;
-        // Highest horizon tangent (rise/run) seen along this azimuth.
-        var max_tan = -a / b;                   // == tan(h_self); b > 0 for a heightfield
-        var t = R0;
-        var step = R0;
-        for (var s = 0; s < STEPS; s++) {
-            if t > MAX_R {
-                break;
-            }
-            let dh = terrain_height(world_xz + dir * t) - origin_h;
-            max_tan = max(max_tan, dh / t);
-            step *= GROWTH;
-            t += step;
-        }
-        let horizon = atan(max_tan);
-        let vis = cos_arc(a, b, horizon);
-        ao_num += vis;
-        // Normalizing against the unoccluded tangent-plane arc is what makes an
-        // open slope bake 1.0 whatever its steepness; only real occluders darken.
-        ao_den += cos_arc(a, b, h_self);
-        // Average unoccluded direction: aim at the middle of the open wedge.
-        let mid = 0.5 * (horizon + HALF_PI);
-        bent += vec3<f32>(dir.x * cos(mid), sin(mid), dir.y * cos(mid)) * max(vis, 0.0);
-    }
-    // Recovers the surface normal on open ground (within the DIRS quadrature) and
-    // only tilts where something actually blocks the sky.
-    let ao = clamp(ao_num / max(ao_den, 1e-5), 0.0, 1.0);
-    let bent_n = normalize(bent + n * 1e-3);
-
-    let cavity = cavity_at(world_xz, origin_h);
-
-    // R = AO, GB = bent normal world X/Z (Y reconstructed in the main pass),
-    // A = cavity.
-    return vec4<f32>(ao, bent_n.x * 0.5 + 0.5, bent_n.z * 0.5 + 0.5, cavity);
 }
 
 // --- Stochastic hex tiling (Mikkelsen) ---
@@ -422,9 +305,14 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>) -> SplatResult {
 //
 // Returns `vec2(ceiling, occluder_distance)`.
 fn shadow_ceiling(world_xz: vec2<f32>) -> vec2<f32> {
-    const STEPS = 128;
+    // Geometric growth reaches 6 km in ~210 steps. Each step must stay short
+    // enough not to jump an occluder: at 1.12 (~50 steps) a ridge between two
+    // samples went unseen and the ceiling came out low in ~10% of columns,
+    // leaking sun into the ground's shadow near its edges and onto meshes in
+    // it. Checked against a 1 m march on a 4096² heightmap: 1.02 leaves <0.1%.
+    const STEPS = 256;
     const MAX_DIST = 6000.0;
-    const GROWTH = 1.12;        // geometric growth -> long reach without huge step count
+    const GROWTH = 1.02;
     let STEP0 = texel_size * 1.0;
 
     // The column's own ground is the floor of the ceiling: at t = 0 the terrain
@@ -483,10 +371,7 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let world_xz = in.world_position.xz;
-    // Modes 2 and 3 skip the splat entirely — only the heightfield.
-    if output_mode == 2u {
-        return ambient_gather(world_xz);
-    }
+    // The shadow field skips the splat entirely — only the heightfield.
     if output_mode == 3u {
         let shadow = shadow_ceiling(world_xz);
         // R is biased by `minmax.x - 1` so it is always >= 1: the bake's
@@ -496,7 +381,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let splat = splat_terrain(world_xz, geo_normal(world_xz));
     if output_mode == 0u {
-        return vec4<f32>(splat.color, sun_visibility(world_xz));
+        return vec4<f32>(splat.color, cavity_at(world_xz, terrain_height(world_xz)));
     }
     return vec4<f32>(oct_encode(splat.normal), splat.roughness, splat.material_id);
 }

@@ -152,11 +152,10 @@ fn setup(
     }));
     // Performance profile, set once from device detection. Desktop-grade values
     // (== TerrainQuality::default()); a headset dials them down (FogTier::Low,
-    // 2048² RVT, no ambient gather, single detail layer).
+    // 2048² RVT, single detail layer).
     commands.insert_resource(TerrainQuality {
         fog: FogTier::High,
         rvt_size: 8192,
-        ambient_gather: true,
         detail_layers: 2,
         sun_shadow_size: 2048,
     });

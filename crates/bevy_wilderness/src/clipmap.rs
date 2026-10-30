@@ -318,11 +318,6 @@ pub(crate) fn init_clipmaps(
 
         let rvt_albedo = make_rvt_target(size, size, TextureFormat::Rgba8UnormSrgb);
         let rvt_normal = make_rvt_target(size, size, TextureFormat::Rgba8Unorm);
-        // Macro AO (R) + bent normal world X/Z (GB) + cavity (A). Linear. When the
-        // ambient gather is disabled it's a 4×4 stub — the binding stays valid but
-        // the full-size target (and its bake + sample) are skipped.
-        let ao_size = if quality.ambient_gather { size } else { 4 };
-        let rvt_ao = make_rvt_target(ao_size, ao_size, TextureFormat::Rgba8Unorm);
         // Sun shadow ceiling (R, biased) + occluder distance (G). `Rgba16Float`
         // rather than the `Rg16Float` the data wants: it is bevy's own HDR
         // target format, so the 3d pipeline renders to it without any
@@ -347,10 +342,9 @@ pub(crate) fn init_clipmaps(
         });
 
         // Quality bits packed into `flags` alongside the per-material wireframe bit
-        // (bit1 = ambient gather, bit2 = single-layer detail, bit3 = looping).
-        let quality_bits = ((quality.ambient_gather as u32) << 1)
-            | ((quality.detail_layers <= 1) as u32) << 2
-            | (clipmap.looping as u32) << 3;
+        // (bit2 = single-layer detail, bit3 = looping).
+        let quality_bits =
+            ((quality.detail_layers <= 1) as u32) << 2 | (clipmap.looping as u32) << 3;
         // One material per clipmap, shared by every LOD grid (identical across
         // levels). `wireframe` is the only per-material variant.
         let mut make_material = |wireframe: u32| {
@@ -360,7 +354,7 @@ pub(crate) fn init_clipmaps(
                     heightmap: clipmap.heightmap.clone(),
                     rvt_albedo: rvt_albedo.clone(),
                     rvt_normal: rvt_normal.clone(),
-                    rvt_ao: rvt_ao.clone(),
+                    sun_shadow_field: rvt_sun_shadow.clone(),
                     dev: {
                         let (holes, hole_count) = HoleBuffer::pack(&clipmap.holes);
                         DevParams {
@@ -403,7 +397,6 @@ pub(crate) fn init_clipmaps(
             ClipmapRvt {
                 albedo: rvt_albedo,
                 normal: rvt_normal,
-                ao: rvt_ao,
                 sun_shadow: rvt_sun_shadow,
                 initialized: false,
                 ever_baked: false,
@@ -711,6 +704,31 @@ pub(crate) fn sync_holes(
             if let Some(mut material) = materials.get_mut(handle) {
                 material.extension.dev.holes = holes;
                 material.extension.dev.hole_count = hole_count;
+            }
+        }
+    }
+}
+
+/// Copy the clipmap's [`TerrainSunShadow`](crate::TerrainSunShadow) params into
+/// both materials, so the ground reads its own shadow from the field as soon
+/// as the bake marks it valid.
+pub(crate) fn sync_sun_shadow_params(
+    clipmaps: Query<
+        (&crate::TerrainSunShadow, &ClipmapMaterials),
+        Changed<crate::TerrainSunShadow>,
+    >,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (sun_shadow, mats) in &clipmaps {
+        for handle in [&mats.solid, &mats.wireframe] {
+            if materials
+                .get(handle)
+                .is_some_and(|m| m.extension.dev.sun_shadow == sun_shadow.params)
+            {
+                continue;
+            }
+            if let Some(mut material) = materials.get_mut(handle) {
+                material.extension.dev.sun_shadow = sun_shadow.params;
             }
         }
     }

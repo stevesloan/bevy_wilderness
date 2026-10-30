@@ -80,6 +80,7 @@ impl Plugin for ClipmapPlugin {
                 (
                     update_grids,
                     clipmap::sync_holes,
+                    clipmap::sync_sun_shadow_params,
                     init_rvt,
                     drive_rvt_bake,
                     quality::apply_terrain_quality,
@@ -103,16 +104,9 @@ impl Plugin for ClipmapPlugin {
             ),
         );
 
-        // Demo A/B keybinds for the AO/bent-normal experiment (B/N/V). Off by
-        // default so the library ships no input systems; enable `dev-controls`.
+        // Demo debug-view keybind (V). Off by default so the library ships no
+        // input systems; enable `dev-controls`.
         #[cfg(feature = "dev-controls")]
-        app.add_systems(
-            Update,
-            (
-                dev_controls::debug_cycle_view,
-                dev_controls::toggle_ao,
-                dev_controls::toggle_bent,
-            ),
-        );
+        app.add_systems(Update, dev_controls::debug_cycle_view);
     }
 }

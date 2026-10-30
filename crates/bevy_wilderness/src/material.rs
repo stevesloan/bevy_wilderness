@@ -31,18 +31,18 @@ impl From<&GridMaterial> for GridMaterialKey {
 /// Dev/experiment + editing scalars packed into one uniform so `GridMaterial`
 /// stays under the bind-group ceiling (see its banner — the ceiling is uniform
 /// binding *slots*, so growing this struct is the sanctioned way to pass new
-/// scalars). `ao_strength`/`bent_strength` toggle the two halves of the
-/// ambient bake (B / N keys); `debug_view` cycles the channel isolation
-/// (V key). The `stamp_*` fields are the stamp preview's transform, read
+/// scalars). `debug_view` cycles the channel isolation (V key);
+/// `sun_shadow` is the shadow field's parameters, for the ground's own sun
+/// shadow. The `stamp_*` fields are the stamp preview's transform, read
 /// by the vertex shader while flags bit5 is set; zeroed and ignored
 /// otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
 pub(crate) struct DevParams {
-    /// Macro AO strength: 0 off, 1 full.
-    pub(crate) ao_strength: f32,
-    /// Bent-normal strength: 0 off, 1 full.
-    pub(crate) bent_strength: f32,
-    /// Debug channel isolation: 0 lit, 1 macro AO, 2 bent normal, 3 cavity.
+    /// Kept equal to the clipmap's [`TerrainSunShadow`](crate::TerrainSunShadow)
+    /// params by `sync_sun_shadow_params`. First: a struct member of a uniform
+    /// must sit at a 16-byte offset.
+    pub(crate) sun_shadow: crate::SunShadowParams,
+    /// Debug channel isolation: 0 lit, 1 cavity, 2 sun visibility.
     pub(crate) debug_view: u32,
     /// Stamp preview center, world XZ meters.
     pub(crate) stamp_center: Vec2,
@@ -66,8 +66,7 @@ pub(crate) struct DevParams {
 impl Default for DevParams {
     fn default() -> Self {
         Self {
-            ao_strength: 1.0,
-            bent_strength: 1.0,
+            sun_shadow: crate::SunShadowParams::unbaked(),
             debug_view: 0,
             stamp_center: Vec2::ZERO,
             stamp_half_size: Vec2::ZERO,
@@ -117,16 +116,19 @@ pub(crate) struct GridMaterial {
     #[texture(102)]
     #[sampler(103)]
     pub(crate) heightmap: Handle<Image>,
-    // The three RVT targets share one sampler (122) — all sampled linearly at `uv`.
+    // The RVT targets and the shadow field share one sampler (122), all
+    // sampled linearly.
     #[texture(121)]
     #[sampler(122)]
     pub(crate) rvt_albedo: Handle<Image>,
     #[texture(123)]
     pub(crate) rvt_normal: Handle<Image>,
+    /// The sun shadow-ceiling field ([`TerrainSunShadow`](crate::TerrainSunShadow)),
+    /// which shadows the ground as it does meshes.
     #[texture(132)]
-    pub(crate) rvt_ao: Handle<Image>,
-    /// Dev/experiment scalars (macro-AO / bent-normal strength, debug view) packed
-    /// into one uniform — see [`DevParams`]. Frees two binding slots vs. separate
+    pub(crate) sun_shadow_field: Handle<Image>,
+    /// Dev/experiment and editing scalars packed into one uniform — see
+    /// [`DevParams`]. Frees two binding slots vs. separate
     /// uniforms; the freed 112/113 stay clear as ceiling headroom.
     #[uniform(110)]
     pub(crate) dev: DevParams,
@@ -166,7 +168,7 @@ pub(crate) struct GridMaterial {
     pub(crate) texel_size: f32,
     #[uniform(109)]
     pub(crate) minmax: Vec2,
-    /// Packed flags: bit0 wireframe, bit1 ambient gather, bit2 single-layer detail,
+    /// Packed flags: bit0 wireframe, bit1 unused, bit2 single-layer detail,
     /// bit3 looping, bit4 clay display mode (`editing`). Quality knobs ride
     /// here rather than adding uniforms (this material is at the bind-group binding
     /// limit — extra uniforms silently break its pipeline).

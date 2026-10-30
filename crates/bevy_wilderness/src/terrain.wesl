@@ -1,6 +1,7 @@
 import bevy_pbr::render::mesh_functions;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
+import bevy_wilderness::sun_shadow::{SunShadowParams, sun_visibility_at, MIN_PENUMBRA};
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
@@ -49,24 +50,23 @@ import bevy_pbr::deferred::functions::deferred_output;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var<uniform> texel_size: f32;
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var<uniform> minmax: vec2<f32>;
 // Packed flags (this material is at the bind-group binding limit, so quality
-// knobs ride here instead of new uniforms): bit0 = wireframe, bit1 = ambient
-// gather (sample RVT-AO), bit2 = single-layer detail.
+// knobs ride here instead of new uniforms): bit0 = wireframe, bit1 unused,
+// bit2 = single-layer detail, bit3 = looping.
 @group(constants::MATERIAL_BIND_GROUP) @binding(111) var<uniform> flags: u32;
 @group(constants::MATERIAL_BIND_GROUP) @binding(121) var rvt_albedo_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(122) var rvt_albedo_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(123) var rvt_normal_texture: texture_2d<f32>;
-// Baked macro AO (R) + bent normal world X/Z (GB) + cavity (A).
-@group(constants::MATERIAL_BIND_GROUP) @binding(132) var rvt_ao_texture: texture_2d<f32>;
-// rvt_normal/rvt_ao share rvt_albedo_sampler (122) — all sampled linearly at uv.
+// The sun shadow-ceiling field (see `sun_shadow.wesl`), which shadows the
+// ground as it does meshes. Its params ride in `dev.sun_shadow`.
+@group(constants::MATERIAL_BIND_GROUP) @binding(132) var sun_shadow_field: texture_2d<f32>;
+// rvt_normal and the field share rvt_albedo_sampler (122), all sampled linearly.
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
-// freed for ceiling headroom). ao/bent strength: 0 = off, 1 = full, each
-// A/B'd on its own. debug_view: 0 = lit terrain, 1 = macro AO, 2 = bent
-// normal, 3 = cavity — nonzero outputs the raw baked channel unlit. The
-// stamp_* fields are the stamp preview transform, read in `fn vertex`
-// while flags bit5 is set (must match the Rust `DevParams` field-for-field).
+// freed for ceiling headroom). debug_view: 0 = lit terrain, 1 = cavity,
+// 2 = sun visibility — nonzero outputs the raw value unlit. The stamp_*
+// fields are the stamp preview transform, read in `fn vertex` while flags
+// bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
-    ao_strength: f32,
-    bent_strength: f32,
+    sun_shadow: SunShadowParams,
     debug_view: u32,
     stamp_center: vec2<f32>,
     stamp_half_size: vec2<f32>,
@@ -330,12 +330,12 @@ fn oct_decode(f: vec2<f32>) -> vec3<f32> {
 // pipelines end at `fn vertex` above.
 @if(WILDERNESS_SHADE) {
 
-// Terrain PBR lighting with baked sun-visibility injected on the directional sun.
+// Terrain PBR lighting with the ground's sun visibility injected on the directional sun.
 // Compact fork of `apply_pbr_lighting`: base layer only, directional + clustered
 // point/spot lights + ambient + environment map (no clearcoat / transmission /
 // anisotropy — the terrain doesn't use them). `sun_vis` (0..1) attenuates only the
 // direct sun, so shadowed valleys still receive sky/ambient light; point and spot
-// lights are unaffected by it (it's the sun's baked occlusion, not theirs).
+// lights are unaffected by it (it's the sun's occlusion, not theirs).
 // Filament GTAO multi-bounce: turns a scalar visibility into a colored occlusion
 // that approximates light bouncing back out of the cavity, so occluded albedo
 // stays saturated (warm rock stays warm) instead of darkening toward gray.
@@ -353,11 +353,7 @@ fn specular_occlusion_from_ao(n_dot_v: f32, ao: f32, roughness: f32) -> f32 {
     return saturate(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
 }
 
-// `bent_N` is the baked average-unoccluded direction; it feeds only the analytic
-// ambient (the sky/diffuse term), so a valley floor draws sky light from the strip
-// it can actually see rather than the whole hemisphere. Direct/specular still use
-// the shading normal `in.N`.
-fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f32>) -> vec4<f32> {
+fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32) -> vec4<f32> {
     let base_color = in.material.base_color;
     let metallic = in.material.metallic;
     let perceptual_roughness = in.material.perceptual_roughness;
@@ -455,16 +451,10 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
     // Indirect: environment map (the physical-sky IBL) + flat ambient.
     var indirect = vec3<f32>(0.0);
     @if(ENVIRONMENT_MAP) {
-    // The bent normal drives the diffuse irradiance sample direction: an occluded
-    // point (a valley floor) gathers sky only from the direction it can actually
-    // see, instead of the full hemisphere about its geometric normal. Free — the
-    // env map is already sampled; this only changes the lookup direction, and it
-    // is the whole reason the bent normal is baked. `bent_N` == `in.N` when the
-    // effect is toggled off, so this reduces to the original behavior.
-    li.layers[LAYER_BASE].N = bent_N;
     let env = environment_map::environment_map_light(&li, &ranges, false);
-    // Colored multi-bounce diffuse occlusion + AO-derived specular occlusion, so
-    // the sky IBL is occluded physically rather than uniformly darkened.
+    // Colored multi-bounce diffuse occlusion + AO-derived specular occlusion
+    // from the detail AO, so the sky IBL is occluded physically rather than
+    // uniformly darkened.
     let ao_scalar = in.diffuse_occlusion.r;
     let diffuse_occ = gtao_multi_bounce(ao_scalar, diffuse_color);
     let spec_occ = specular_occlusion_from_ao(NdotV, ao_scalar, roughness);
@@ -481,6 +471,25 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, bent_N: vec3<f3
         color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz);
     }
     return vec4<f32>(color, base_color.a);
+}
+
+// The ground's sun shadow, from the field that shadows meshes, read a little
+// above the surface: a lit column's ceiling is its own ground, so at the surface
+// the field reads half shadow, and on a slope the bilinear ceiling sits higher
+// still, by up to a field texel times the slope. `uv` is the RVT's, which the
+// field shares (both cover the terrain), wrapping with the same sampler.
+fn ground_sun_visibility(world: vec3<f32>, normal: vec3<f32>, uv: vec2<f32>) -> f32 {
+    if dev.sun_shadow.valid < 0.5 {
+        return 1.0;
+    }
+    let looping = (flags & 8u) != 0u;
+    if !looping && (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
+        return 1.0;
+    }
+    let field_texel = 1.0 / (dev.sun_shadow.inv_world_size * f32(textureDimensions(sun_shadow_field).x));
+    let slope = sqrt(max(1.0 - normal.y * normal.y, 0.0)) / max(normal.y, 0.25);
+    let lift = 2.0 * MIN_PENUMBRA + field_texel * slope;
+    return sun_visibility_at(sun_shadow_field, rvt_albedo_sampler, dev.sun_shadow, uv, world.y + lift);
 }
 
 @fragment
@@ -528,35 +537,19 @@ fn fragment(
         var out: FragmentOutput;
         @if(!PREPASS_PIPELINE) {
         // Sun visibility 1.0: there's no valid bake to shadow with.
-        out.color = terrain_apply_lighting(clay_pbr, 1.0, n);
+        out.color = terrain_apply_lighting(clay_pbr, 1.0);
         out.color = main_pass_post_lighting_processing(clay_pbr, out.color);
         }
         return out;
     }
 
     // Sample the baked RVT instead of blending the splat per-fragment:
-    // albedo + baked sun-visibility (alpha); octahedral world normal + roughness
-    // + packed material ids (alpha, read NEAREST below).
+    // albedo + cavity (alpha); octahedral world normal + roughness + packed
+    // material ids (alpha, read NEAREST below).
     let rvt_a = textureSample(rvt_albedo_texture, rvt_albedo_sampler, uv);
     let rvt_n = textureSample(rvt_normal_texture, rvt_albedo_sampler, uv);
     let base_normal = oct_decode(rvt_n.rg);
-    // Macro AO (R) + bent normal world X/Z (GB, Y reconstructed) + cavity (A).
-    // Skipped when the ambient gather is disabled (VR): the sample and the RVT-AO
-    // target are dropped, falling back to unoccluded ambient + the geometric normal.
-    var rvt_ao_s = vec4<f32>(1.0, 0.5, 0.5, 0.5);
-    var macro_ao = 1.0;
-    var baked_bent_normal = base_normal;
-    if (flags & 2u) != 0u {
-        rvt_ao_s = textureSample(rvt_ao_texture, rvt_albedo_sampler, uv);
-        // The horizon AO is the physical sky visibility (4 m–400 m), so it
-        // alone occludes the ambient. Cavity (A) is shape, not occlusion — an
-        // open hollow is concave yet sees the sky — so it isn't applied here;
-        // it's for material response (sediment / moisture in gullies).
-        macro_ao = mix(1.0, rvt_ao_s.r, dev.ao_strength);
-        let bent_xz = rvt_ao_s.gb * 2.0 - 1.0;
-        let bent_y = sqrt(max(0.0, 1.0 - dot(bent_xz, bent_xz)));
-        baked_bent_normal = vec3<f32>(bent_xz.x, bent_y, bent_xz.y);
-    }
+    let sun_vis = ground_sun_visibility(in.world_position.xyz, base_normal, uv);
 
     let cam_dist = distance(view.world_position, in.world_position.xyz);
 
@@ -659,27 +652,22 @@ fn fragment(
     pbr_input.material.base_color = vec4<f32>(albedo, 1.0);
     pbr_input.material.perceptual_roughness = rough;
     pbr_input.material.metallic = 0.0;
-    // Macro AO folds into diffuse occlusion, so it darkens only ambient/indirect
-    // (never the direct sun). Bent normal blends in from the shading normal by its
-    // own strength; with both strengths 0 this reproduces the pre-experiment look.
-    pbr_input.diffuse_occlusion = vec3<f32>(ao * macro_ao);
-    let bent_normal = normalize(mix(world_normal, baked_bent_normal, dev.bent_strength));
+    // The detail AO darkens only ambient/indirect, never the direct sun.
+    pbr_input.diffuse_occlusion = vec3<f32>(ao);
 
     @if(PREPASS_PIPELINE)
     let out = deferred_output(in_modified, pbr_input);
     @if(!PREPASS_PIPELINE)
     var out: FragmentOutput;
-    // Debug: output a single baked channel unlit so the tonemapper shows it as a
-    // literal value (grayscale for AO/cavity, encoded RGB for the bent normal).
+    // Debug: output one value unlit so the tonemapper shows it as a literal
+    // grayscale value.
     @if(!PREPASS_PIPELINE)
     if dev.debug_view == 1u {
-        out.color = vec4<f32>(vec3<f32>(rvt_ao_s.r), 1.0);
+        out.color = vec4<f32>(vec3<f32>(rvt_a.a), 1.0);
     } else if dev.debug_view == 2u {
-        out.color = vec4<f32>(baked_bent_normal * 0.5 + 0.5, 1.0);
-    } else if dev.debug_view == 3u {
-        out.color = vec4<f32>(vec3<f32>(rvt_ao_s.a), 1.0);
+        out.color = vec4<f32>(vec3<f32>(sun_vis), 1.0);
     } else {
-        out.color = terrain_apply_lighting(pbr_input, rvt_a.a, bent_normal);
+        out.color = terrain_apply_lighting(pbr_input, sun_vis);
         out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     }
 

@@ -21,8 +21,8 @@ attacks each separately:
   frame, so there is no mesh generation, and editing the heightmap deforms the
   terrain on the next frame.
 - **Shading: a baked, bake-once Runtime Virtual Texture (RVT).** Material
-  splatting, terrain self-shadow, ambient occlusion and bent normals are
-  rendered **once** into full-terrain textures. The per-frame pass reads ~2
+  splatting, cavity and the terrain's sun-shadow field are rendered **once**
+  into full-terrain textures. The per-frame pass reads ~2
   texels instead of blending layers, so shading cost is independent of
   material complexity. Close-up detail comes from a separate, distance-faded
   **detail overlay**, not from RVT density.
@@ -82,8 +82,7 @@ fog *look*), `InlineFog` (active inline-fog params for your own shaders).
 - `editing` — the editable-terrain API: `RebakeRequested`, `Heightfield`,
   `ClipmapStamp`, the overlay/stamp bindings, clay mode. Default consumers pay
   nothing for it.
-- `dev-controls` — V cycles debug views (AO / bent normal / cavity),
-  B / N toggle AO / bent-normal strength.
+- `dev-controls` — V cycles debug views (cavity / sun visibility).
 
 ## 4. Geometry — clipmap rings
 
@@ -138,7 +137,7 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | 102 / 103 | heightmap / its sampler (103 is shared by overlay and stamp) |
 | 108 | `texel_size` |
 | 109 | `minmax` |
-| 110 | `DevParams`: AO/bent strength, debug view, stamp transform, `HoleBuffer` (48 × vec4), `hole_count` |
+| 110 | `DevParams`: debug view, stamp transform, `HoleBuffer` (48 × vec4), `hole_count`, ring half-width, `SunShadowParams` |
 | 111 | `flags` (u32, below) |
 | 114 | inline `HeightFogParams` |
 | 115 / 116 | `editing`: edit overlay, stamp heightfield |
@@ -146,9 +145,9 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | 123 | RVT normal |
 | 125 / 126 / 127 / 130 | detail albedo / sampler / normal / ORM arrays |
 | 129 | `DetailParams` |
-| 132 | RVT AO |
+| 132 | sun shadow-ceiling field (§7), sampled with 122 |
 
-`flags`: bit 0 wireframe · 1 ambient gather on · 2 single-layer detail ·
+`flags`: bit 0 wireframe · 1 unused · 2 single-layer detail ·
 3 looping · 4 clay · 5 stamp preview · 6 stamp mask-weighted.
 
 > ⚠️ **Binding ceiling.** The material sits at the per-stage limit for uniform
@@ -172,9 +171,8 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 
 | Target | Format | Size | Channels |
 | ------ | ------ | ---- | -------- |
-| albedo | `Rgba8UnormSrgb` | `rvt_size`² | rgb albedo · a sun visibility |
+| albedo | `Rgba8UnormSrgb` | `rvt_size`² | rgb albedo · a cavity |
 | normal | `Rgba8Unorm` | `rvt_size`² | rg octahedral world normal · b roughness · a packed material ids |
-| ao | `Rgba8Unorm` | `rvt_size`² (4×4 stub when gather is off) | r macro AO · gb bent normal XZ · a cavity |
 | sun shadow | `Rgba16Float` | `sun_shadow_size`² | r shadow ceiling (biased) · g distance to occluder |
 
 Targets have a **single mip level** (see roadmap: RVT mips). Looping terrain
@@ -200,18 +198,15 @@ on looping terrain so marches cross the seam.
   Normals are reoriented onto the geometric normal (central differences).
   The **top two layers** and their blend are packed into the normal target's
   alpha byte (`i0 + 4·i1 + 16·q`) for the detail overlay.
-- **Sun visibility** (`sun_visibility`, albedo alpha). Soft heightfield
-  ray-march toward the sun: 96 geometrically growing steps out to 6 km, origin
-  pushed off the surface, penumbra from clearance / distance.
-- **Ambient gather** (`ambient_gather`, AO target). Horizon-based over 8
-  azimuths × 12 steps out to 400 m: macro AO integrated about the surface
-  normal (an unoccluded slope bakes to 1), the visibility-weighted **bent
-  normal**, and a **cavity** term (`cavity_at`, shared with the splat): the depression angle of an 8-tap ring at
-  r = max(2 texels, 16 m), ±15° mapped to 0..1 (0.5 flat) — resolution- and
-  height-range-independent. Off on low quality.
+- **Cavity** (`cavity_at`, albedo alpha, and the splat's cavity bands): the
+  depression angle of an 8-tap ring at r = max(2 texels, 16 m), ±15° mapped
+  to 0..1 (0.5 flat) — resolution- and height-range-independent. Shading reads
+  it only in debug view 1; it's there for material response.
 - **Shadow ceiling** (`shadow_ceiling`, sun-shadow target). For each column,
   the height below which the terrain shadows it (and the occluder distance for
-  penumbra width) — §7.
+  penumbra width) — §7. A march toward the sun out to 6 km whose steps grow by
+  2% (~210 samples): coarser growth steps over ridges, so the ceiling comes out
+  low and sun leaks into the shadow near its edges.
 
 ### 6.3 Lifecycle (`rvt.rs`)
 
@@ -238,8 +233,15 @@ Old shading stays on screen until the new bake lands.
 There are **no realtime shadow passes in normal rendering** — terrain is
 `NotShadowCaster`, and terrain shadowing is baked against a fixed sun:
 
-- **On the terrain:** baked sun visibility (RVT albedo alpha) multiplies only
-  the direct sun term, so shadowed valleys keep sky light.
+- **On the terrain:** the same shadow-ceiling field as meshes (below), sampled
+  at the ground's own height, multiplies only the direct sun term, so
+  shadowed valleys keep sky light and ground and players always agree. It's
+  read a little above the surface: a lit column's ceiling is its own ground,
+  so the surface itself reads half shadow, and on a slope the bilinear
+  ceiling sits higher still, by up to a field texel times the slope. The
+  field is coarser than the RVT; its penumbra widens with occluder distance,
+  which hides that at range. Raise `sun_shadow_size` if near ridges read too
+  soft.
 - **On your meshes — the shadow-ceiling field.** `TerrainSunShadow.field`
   stores, per world column, the height of the terrain's shadow ceiling. A
   fragment at height `y` is lit when `y` clears the ceiling, so the query is
@@ -252,8 +254,8 @@ There are **no realtime shadow passes in normal rendering** — terrain is
 
 ## 8. Main pass shading (`terrain.wesl::fragment`)
 
-1. **RVT fetch.** Albedo + sun-vis, octahedral normal + roughness, and (if the
-   ambient gather is on) AO + bent normal.
+1. **RVT fetch.** Albedo + cavity, octahedral normal + roughness; the ground's
+   sun visibility from the shadow field (§7).
 2. **Detail overlay**, faded by camera distance (`DetailConfig.near/far`).
    Skipped entirely past `far` (derivatives hoisted out of the branch). Reads
    the packed material ids **NEAREST** (a packed byte can't be filtered) with a
@@ -264,12 +266,14 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    coarsest mip) so it adds variation without double-darkening the RVT albedo.
 3. **Lighting** — `terrain_apply_lighting`, a trimmed fork of Bevy's
    `apply_pbr_lighting` (base layer only):
-   - directional lights × CSM shadow (if any) × **baked sun-vis**, with grazing
+   - directional lights × CSM shadow (if any) × **field sun visibility**, with grazing
      specular suppressed on rough ground (dry terrain shouldn't look wet at
      sunset);
-   - clustered point and spot lights with their own shadows (not sun-vis);
-   - environment map diffuse looked up along the **bent normal**, with colored
-     multi-bounce AO and specular occlusion from AO. The baked cavity is shape,
+   - clustered point and spot lights with their own shadows (not the field);
+   - environment map diffuse along the shading normal, with colored
+     multi-bounce AO and specular occlusion from the detail AO. There's no
+     sky occlusion: gullies take open-sky light until a baked lighting input
+     replaces this term. The baked cavity is shape,
      not occlusion (an open hollow is concave yet sees the sky), so it drives
      material placement rather than darkening;
    - flat ambient; inline height fog when on the Low fog tier.
@@ -279,8 +283,7 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    ranges; terrain does not receive rect lights).
 4. Deferred builds write `deferred_output` instead of lighting.
 
-Debug views (`dev-controls`): 1 macro AO, 2 bent normal, 3 cavity — raw,
-unlit.
+Debug views (`dev-controls`): 1 cavity, 2 sun visibility — raw, unlit.
 
 **Clay mode** (`editing`). While shading is stale (`clipmap.clay`, or never
 baked) the fragment ignores the RVT and renders grey clay with derivative
@@ -299,8 +302,7 @@ standalone VR.
 | Field | Default | Effect | Applies |
 | ----- | ------- | ------ | ------- |
 | `fog` | `High` | fullscreen fog pass vs inline fog | live |
-| `rvt_size` | 8192 | albedo / normal / AO target size | spawn or re-bake |
-| `ambient_gather` | true | bake + sample AO / bent normal | spawn or re-bake |
+| `rvt_size` | 8192 | albedo / normal target size | spawn or re-bake |
 | `detail_layers` | 2 | 1 = skip the second material's detail samples | spawn or re-bake |
 | `sun_shadow_size` | 2048 | shadow-ceiling field size | spawn or re-bake |
 
@@ -333,10 +335,10 @@ Requires a CPU-resident R16Unorm image; does not wrap for looping terrain.
 | ---- | ---- |
 | Every frame, CPU | ring snapping (writes only on snap), change-gated quality/fog/holes sync |
 | Every frame, GPU vertex | 4 heightmap loads (+ hole loop, + stamp in editing) |
-| Every frame, GPU fragment, far | 2–3 RVT samples + lighting |
+| Every frame, GPU fragment, far | 2 RVT samples + 1 field sample + lighting |
 | Every frame, GPU fragment, near | + 1 id load + 4 detail samples (8 when blending two materials) |
 | Every frame, High fog | one fullscreen pass |
-| Once per bake | 4 full-terrain render passes (hex-tiled splat ×2, gather, shadow ceiling), ~2 frames each |
+| Once per bake | 3 full-terrain render passes (hex-tiled splat ×2, shadow ceiling), ~2 frames each |
 
 ## 11. Invariants and gotchas
 
@@ -364,6 +366,11 @@ Recorded so they aren't rebuilt without new information:
 - **FFT horizon map** for terrain shadow: removed — redundant with a fixed sun.
 - **Sky-occlusion channel** in a separate shadow texture: nearly invisible on
   open terrain; superseded by the ambient gather.
+- **Ambient gather** (horizon macro AO + bent normal, its own RVT target) and
+  the **ground's own sun march** (RVT albedo alpha): removed. The gather was
+  the bake's heaviest pass and is to be replaced by baked lighting; the march
+  disagreed with the shadow field that shades meshes, so ground and players
+  could disagree about shade.
 - **Painted control map** and **macro variation map**: removed — placement is
   procedural (user-generated terrain), and hex tiling + 8K RVT carry vistas.
 - **Erosion** (CPU droplets, then a GPU pipe model): removed from the editor —

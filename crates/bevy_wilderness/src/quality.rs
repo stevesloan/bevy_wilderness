@@ -33,7 +33,7 @@ pub enum FogTier {
 /// Terrain performance profile — set **once at startup** from device detection
 /// (dial the knobs down for a standalone headset, up for desktop). Only
 /// [`fog`](Self::fog) applies live; the bake-time fields
-/// (`rvt_size`, `ambient_gather`, `detail_layers`, `sun_shadow_size`) are read
+/// (`rvt_size`, `detail_layers`, `sun_shadow_size`) are read
 /// when a clipmap bakes —
 /// changing them after has no effect (it would need a rebake). [`default`]
 /// (Self::default) is desktop-grade.
@@ -41,13 +41,9 @@ pub enum FogTier {
 pub struct TerrainQuality {
     /// Fog method (live-switchable). See [`FogTier`].
     pub fog: FogTier,
-    /// RVT bake resolution (square). The dominant VRAM cost — three targets of
-    /// `size²·4` bytes each (8192² ≈ 768 MB total; 4096² ≈ 192 MB).
+    /// RVT bake resolution (square). The dominant VRAM cost — two targets of
+    /// `size²·4` bytes each (8192² ≈ 512 MB total; 4096² ≈ 128 MB).
     pub rvt_size: u32,
-    /// Bake + sample the macro-AO / bent-normal / cavity channel. Off drops a
-    /// whole RVT target (VRAM + a slow bake gather) and a per-fragment sample; the
-    /// effect is subtle on open terrain, so it's the first thing to cut for VR.
-    pub ambient_gather: bool,
     /// Near-detail overlay: blend the top `1` (cheapest, ~3 fewer samples) or `2`
     /// (smoothest boundaries) materials per fragment.
     pub detail_layers: u8,
@@ -55,19 +51,19 @@ pub struct TerrainQuality {
     /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Sized
     /// separately from [`rvt_size`](Self::rvt_size) and much smaller: it holds a
     /// height, not surface detail, and terrain shadow edges are metres wide, so
-    /// resolution buys little. `size²·8` bytes.
+    /// resolution buys little. `size²·8` bytes. It also shadows the terrain
+    /// itself, so raise it if near ridges cast too soft a shadow on the ground.
     pub sun_shadow_size: u32,
 }
 
 impl Default for TerrainQuality {
-    /// Desktop-grade: fullscreen fog, 8192² RVT, ambient gather, top-2 detail.
-    /// Dial these down for standalone VR / low-end (e.g. `FogTier::Low`, 2048²
-    /// RVT, no ambient gather, single-layer detail).
+    /// Desktop-grade: fullscreen fog, 8192² RVT, top-2 detail. Dial these down
+    /// for standalone VR / low-end (e.g. `FogTier::Low`, 2048² RVT,
+    /// single-layer detail).
     fn default() -> Self {
         Self {
             fog: FogTier::High,
             rvt_size: 8192,
-            ambient_gather: true,
             detail_layers: 2,
             sun_shadow_size: 2048,
         }

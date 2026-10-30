@@ -399,14 +399,12 @@ fn setup(
     }));
     // Quality profile tuned for integrated GPUs (a real app sets this from
     // device detection). The desktop-grade profile (FogTier::High, 8192,
-    // ambient_gather, 2 detail layers) samples three 8192² RVT targets
-    // (~800 MB) per fragment plus a fullscreen fog pass — bandwidth an iGPU
+    // 2 detail layers) samples two 8192² RVT targets (~512 MB) per fragment plus a fullscreen fog pass — bandwidth an iGPU
     // doesn't have. 4096² quarters the RVT memory, inline fog drops the
     // fullscreen pass, and top-1 detail saves ~3 texture samples per fragment.
     commands.insert_resource(TerrainQuality {
         fog: FogTier::Low,
         rvt_size: 4096,
-        ambient_gather: true,
         detail_layers: 1,
         sun_shadow_size: 1024,
     });

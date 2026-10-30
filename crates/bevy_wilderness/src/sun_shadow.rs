@@ -32,7 +32,7 @@ pub struct TerrainSunShadow {
 
 /// GPU form of the field's parameters, matching the WGSL `SunShadowParams` in
 /// `sun_shadow.wesl`.
-#[derive(Component, ShaderType, Clone, Reflect, Debug)]
+#[derive(Component, ShaderType, Clone, Copy, PartialEq, Reflect, Debug)]
 pub struct SunShadowParams {
     /// World XZ → UV scale; the field covers the origin-centered clipmap.
     pub inv_world_size: f32,

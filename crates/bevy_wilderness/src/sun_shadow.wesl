@@ -40,12 +40,29 @@ fn sun_visibility(
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
         return 1.0;
     }
+    return sun_visibility_at(field, field_sampler, params, uv, world_pos.y);
+}
+
+// `sun_visibility` at field coordinate `uv` and world height `height`, for a
+// caller that maps world to field itself (looping terrain wraps it). Assumes
+// `params.valid`.
+fn sun_visibility_at(
+    field: texture_2d<f32>,
+    field_sampler: sampler,
+    params: SunShadowParams,
+    uv: vec2<f32>,
+    height: f32,
+) -> f32 {
     let field_sample = textureSampleLevel(field, field_sampler, uv, 0.0);
     let ceiling = field_sample.r + params.height_bias;
     let occluder_distance = field_sample.g;
     // Bilinear across a texel already softens the edge; the penumbra widens it to
     // the physical size, and the `max` keeps a near-field occluder from
     // collapsing to a hard step.
-    let penumbra = max(occluder_distance * params.penumbra_per_metre, 0.25);
-    return smoothstep(-penumbra, penumbra, world_pos.y - ceiling);
+    let penumbra = max(occluder_distance * params.penumbra_per_metre, MIN_PENUMBRA);
+    return smoothstep(-penumbra, penumbra, height - ceiling);
 }
+
+// Narrowest penumbra half-width (m). A point this far above the ceiling is in
+// full sun.
+const MIN_PENUMBRA: f32 = 0.25;

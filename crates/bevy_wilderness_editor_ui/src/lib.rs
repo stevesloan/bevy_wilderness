@@ -629,23 +629,19 @@ impl TerrainUi<'_, '_> {
                 .response
                 .on_hover_text("Baked material resolution — the dominant VRAM/bake cost");
         });
-        ui.checkbox(&mut staged.ambient_gather, "ambient gather")
-            .on_hover_text("Bake + sample the macro-AO / bent-normal / cavity channel");
         ui.horizontal(|ui| {
             ui.label("detail layers");
             ui.selectable_value(&mut staged.detail_layers, 1, "1");
             ui.selectable_value(&mut staged.detail_layers, 2, "2");
         });
-        let dirty = staged.rvt_size != current.rvt_size
-            || staged.ambient_gather != current.ambient_gather
-            || staged.detail_layers != current.detail_layers;
+        let dirty =
+            staged.rvt_size != current.rvt_size || staged.detail_layers != current.detail_layers;
         *self.staged_quality = dirty.then_some(staged);
         if ui
             .add_enabled(dirty, egui::Button::new("Apply + rebake"))
             .clicked()
         {
             self.quality.rvt_size = staged.rvt_size;
-            self.quality.ambient_gather = staged.ambient_gather;
             self.quality.detail_layers = staged.detail_layers;
             *self.staged_quality = None;
             for (entity, _) in &self.terrains {
