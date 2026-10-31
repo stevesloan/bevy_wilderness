@@ -502,7 +502,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
     // Inline height fog (VR tier); no-op when density == 0 (flatscreen uses the
     // fullscreen post-process instead). Terrain-only but virtually free.
     if fog.density > 0.0 {
-        color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz);
+        color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz, view.exposure);
     }
     return vec4<f32>(color, base_color.a);
 }

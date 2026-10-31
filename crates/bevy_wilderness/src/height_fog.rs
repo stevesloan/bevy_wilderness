@@ -57,7 +57,9 @@ use bevy::{
 /// values drive the inline terrain tier via [`HeightFogParams`].
 #[derive(Component, Clone)]
 pub struct HeightFog {
-    /// Mist color, linear, in the exposure-applied HDR range (~0..1).
+    /// The light the mist scatters toward the eye, linear, in cd/m² as the
+    /// scene's lights are: the camera's exposure applies to it like anything
+    /// else.
     pub color: Color,
     /// Base density at `base_height`. 0 disables the effect.
     pub density: f32,
@@ -68,16 +70,34 @@ pub struct HeightFog {
     pub falloff: f32,
     /// Distance at which fog saturates; also the distance used for sky pixels.
     pub max_distance: f32,
+    /// `density`'s share per channel. Equal shares fade distance toward
+    /// `color` alone; blue highest also lets it drift blue, as air does.
+    pub extinction: Vec3,
+    /// Metres from the eye with no fog in them.
+    pub start: f32,
+    /// Added to `color` looking straight at the sun, cd/m²: light scatters
+    /// mostly onward, so mist brightens toward the sun. Black for none.
+    pub sun_color: Color,
+    /// Unit, toward the sun.
+    pub sun_direction: Vec3,
+    /// How tightly that glow gathers around the sun.
+    pub sun_exponent: f32,
 }
 
 impl Default for HeightFog {
     fn default() -> Self {
         Self {
-            color: Color::linear_rgb(0.5, 0.58, 0.7),
+            // Mist at `Exposure::SUNLIGHT`.
+            color: Color::linear_rgb(19_700.0, 22_800.0, 27_500.0),
             density: 0.0008,
             base_height: 0.0,
             falloff: 0.0128,
             max_distance: 30000.0,
+            extinction: Vec3::ONE,
+            start: 0.0,
+            sun_color: Color::BLACK,
+            sun_direction: Vec3::Y,
+            sun_exponent: 8.0,
         }
     }
 }
@@ -89,10 +109,14 @@ impl Default for HeightFog {
 pub struct HeightFogParams {
     color: Vec3,
     density: f32,
+    extinction: Vec3,
     base_height: f32,
+    sun_color: Vec3,
     falloff: f32,
+    sun_direction: Vec3,
     max_distance: f32,
-    _pad: f32,
+    start: f32,
+    sun_exponent: f32,
 }
 
 impl HeightFogParams {
@@ -108,10 +132,14 @@ impl HeightFogParams {
         Self {
             color: Vec3::ZERO,
             density: 0.0,
+            extinction: Vec3::ONE,
             base_height: 0.0,
+            sun_color: Vec3::ZERO,
             falloff: 0.0,
+            sun_direction: Vec3::Y,
             max_distance: 1.0,
-            _pad: 0.0,
+            start: 0.0,
+            sun_exponent: 1.0,
         }
     }
 }
@@ -121,10 +149,14 @@ impl From<&HeightFog> for HeightFogParams {
         Self {
             color: fog.color.to_linear().to_vec3(),
             density: fog.density,
+            extinction: fog.extinction,
             base_height: fog.base_height,
+            sun_color: fog.sun_color.to_linear().to_vec3(),
             falloff: fog.falloff,
+            sun_direction: fog.sun_direction,
             max_distance: fog.max_distance,
-            _pad: 0.0,
+            start: fog.start,
+            sun_exponent: fog.sun_exponent,
         }
     }
 }

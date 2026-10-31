@@ -30,6 +30,6 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         world_pos = wp_h.xyz / wp_h.w;
     }
 
-    let fogged = apply_height_fog(fog, scene.rgb, view.world_position, world_pos);
+    let fogged = apply_height_fog(fog, scene.rgb, view.world_position, world_pos, view.exposure);
     return vec4<f32>(fogged, scene.a);
 }

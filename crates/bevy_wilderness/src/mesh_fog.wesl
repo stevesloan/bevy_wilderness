@@ -18,7 +18,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     out.color = apply_pbr_lighting(pbr_input);
     if fog.density > 0.0 {
         out.color = vec4<f32>(
-            apply_height_fog(fog, out.color.rgb, view.world_position, in.world_position.xyz),
+            apply_height_fog(fog, out.color.rgb, view.world_position, in.world_position.xyz, view.exposure),
             out.color.a,
         );
     }
