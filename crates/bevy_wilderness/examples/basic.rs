@@ -11,11 +11,9 @@ use bevy::{
     prelude::*,
 };
 
-use bevy::pbr::ExtendedMaterial;
 use bevy_wilderness::{
-    load_terrain_array, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog,
-    CavityRule, HeightFogExtension, HeightFogPlugin, SlopeRule, TerrainFog, TerrainLayer,
-    TerrainQuality,
+    load_terrain_array, CavityRule, Clipmap, ClipmapPlugin, DetailConfig, HeightFog, SlopeRule,
+    TerrainFog, TerrainLayer, TerrainQuality,
 };
 
 fn main() {
@@ -23,11 +21,8 @@ fn main() {
     app.add_plugins(DefaultPlugins)
         .add_plugins(FreeCameraPlugin)
         .add_plugins(ClipmapPlugin)
-        // Installs the fullscreen fog path (`High` tier). The inline path (`Low`
-        // tier) is always in the crate; the tier resource picks which is realized.
-        .add_plugins(HeightFogPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_sun_color, toggle_tier, spawn_character));
+        .add_systems(Update, update_sun_color);
     // Exercises the editable-terrain API (run with `--features editing`).
     #[cfg(feature = "editing")]
     app.add_systems(Update, rebake_on_r);
@@ -59,56 +54,6 @@ fn rebake_on_r(
             .insert(bevy_wilderness::RebakeRequested);
     }
     info!("sun moved 0.5 rad; terrain re-bake requested");
-}
-
-/// Press C to drop a "character" (capsule) ~20 m in front of the camera. It uses
-/// `ExtendedMaterial<StandardMaterial, HeightFogExtension>`, so the crate keeps its
-/// fog in sync with the tier — fly down into a misty valley and spawn one to see it
-/// sit *in* the fog (on the Low tier it would be a crisp cutout without the
-/// extension; on High the fullscreen pass fogs it anyway).
-fn spawn_character(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut fog_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, HeightFogExtension>>>,
-    camera: Query<&GlobalTransform, With<FreeCamera>>,
-    mut mesh: Local<Option<Handle<Mesh>>>,
-) {
-    if !keys.just_pressed(KeyCode::KeyC) {
-        return;
-    }
-    let Ok(cam) = camera.single() else {
-        return;
-    };
-    let capsule = mesh
-        .get_or_insert_with(|| meshes.add(Capsule3d::new(1.0, 3.0)))
-        .clone();
-    let material = fog_materials.add(ExtendedMaterial {
-        base: StandardMaterial {
-            base_color: Color::srgb(0.9, 0.15, 0.15),
-            perceptual_roughness: 0.6,
-            ..default()
-        },
-        extension: HeightFogExtension::default(),
-    });
-    commands.spawn((
-        Mesh3d(capsule),
-        MeshMaterial3d(material),
-        Transform::from_translation(cam.translation() + cam.forward().as_vec3() * 20.0),
-    ));
-}
-
-/// Press T to flip the fog tier. A real app would set the quality profile once at
-/// startup from device detection (XR session present → dial the knobs down), not on
-/// a keypress. (Only the fog tier is live-switchable; the bake-time knobs aren't.)
-fn toggle_tier(keys: Res<ButtonInput<KeyCode>>, mut quality: ResMut<TerrainQuality>) {
-    if keys.just_pressed(KeyCode::KeyT) {
-        quality.fog = match quality.fog {
-            FogTier::High => FogTier::Low,
-            FogTier::Low => FogTier::High,
-        };
-        info!("fog tier: {:?}", quality.fog);
-    }
 }
 
 /// Physically-derived sun color from its elevation: the Rayleigh transmittance of
@@ -151,10 +96,9 @@ fn setup(
         ..default()
     }));
     // Performance profile, set once from device detection. Desktop-grade values
-    // (== TerrainQuality::default()); a headset dials them down (FogTier::Low,
+    // (== TerrainQuality::default()); a headset dials them down (
     // 2048² RVT, single detail layer).
     commands.insert_resource(TerrainQuality {
-        fog: FogTier::High,
         rvt_size: 8192,
         detail_layers: 2,
         sun_shadow_size: 2048,
@@ -206,9 +150,6 @@ fn setup(
             // the sun). See the T toggle for the auto-exposure caveat.
             Exposure::SUNLIGHT,
             // Fog params, driven by the crate from the active tier; placeholders here.
-            HeightFog::default(),
-            // FogTier::High needs MSAA off (single-sampled depth). MSAA is ours to
-            // set, not the crate's; FogTier::Low is MSAA-friendly inline fog.
             Msaa::Off,
             Transform::from_xyz(0.0, 150.0, 0.0)
                 .looking_at(Vec3::new(0.0, 150.0, -1000.0), Vec3::Y),

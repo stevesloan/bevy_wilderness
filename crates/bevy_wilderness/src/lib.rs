@@ -9,7 +9,6 @@ mod heightfield;
 mod holes;
 mod material;
 mod mesh;
-mod mesh_fog;
 mod quality;
 mod rvt;
 mod sun_shadow;
@@ -21,14 +20,13 @@ pub use clipmap::{
 };
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};
-pub use height_fog::{HeightFog, HeightFogParams, HeightFogPlugin};
+pub use height_fog::{HeightFog, HeightFogParams};
 pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
 /// that must stay in sync with the shaders (docs/architecture.md).
 #[cfg(feature = "editing")]
 pub use heightfield::Heightfield;
-pub use mesh_fog::HeightFogExtension;
-pub use quality::{FogTier, InlineFog, TerrainFog, TerrainQuality};
+pub use quality::{InlineFog, TerrainFog, TerrainQuality};
 pub use sun_shadow::{SunShadowParams, TerrainSunShadow};
 pub use texture::{build_terrain_array, load_terrain_array};
 
@@ -40,23 +38,18 @@ pub struct ClipmapPlugin;
 
 impl Plugin for ClipmapPlugin {
     fn build(&self, app: &mut App) {
-        // Shared fog math, imported by terrain.wesl (inline VR fog) and the
-        // height_fog.wesl post-process (flatscreen fog).
+        // Imported by terrain.wesl and by any material of yours.
         load_shader_library!(app, "fog_functions.wesl");
         // Sampling for the baked sun shadow-ceiling field, imported by game
         // materials that want terrain shadow on their own meshes.
         load_shader_library!(app, "sun_shadow.wesl");
         embedded_asset!(app, "terrain.wesl");
         embedded_asset!(app, "bake.wesl");
-        embedded_asset!(app, "mesh_fog.wesl");
 
         app.add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, GridMaterial>,
         >::default())
             .add_plugins(MaterialPlugin::<BakeMaterial>::default())
-            .add_plugins(MaterialPlugin::<
-                ExtendedMaterial<StandardMaterial, HeightFogExtension>,
-            >::default())
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
@@ -86,8 +79,7 @@ impl Plugin for ClipmapPlugin {
                     clipmap::sync_baked_light,
                     init_rvt,
                     drive_rvt_bake,
-                    quality::apply_terrain_quality,
-                    quality::fog_new_mesh_materials,
+                    quality::apply_terrain_fog,
                     warn_unbaked_terrain,
                     warn_late_quality,
                 ),

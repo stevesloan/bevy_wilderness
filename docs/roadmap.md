@@ -66,7 +66,7 @@ of rules.
 | Terrain GI | Baked sky + bounce, probe volumes for dynamics | none (open-sky ambient); baked input planned | P2 |
 | Object ↔ terrain blending | RVT sampled by meshes at ground contact (UE) | not exposed | P2 |
 | Vegetation / ground cover | GPU procedural placement (Horizon Zero Dawn), GPU grass (Ghost of Tsushima) | **none** | P2 — biggest visual gap |
-| Fog / atmosphere | Height fog + aerial perspective | analytic height fog, two tiers; Bevy atmosphere in the example | ok |
+| Fog / atmosphere | Height fog + aerial perspective | analytic height fog, inline on every tier; Bevy atmosphere in the example | ok |
 | World size | Streamed heightmaps + VT pages | single resident heightmap + RVT (~8 km at 1 m/texel) | P3 |
 | Time of day | Dynamic sun with cached/amortized shadow | fixed sun, baked | P3 |
 
@@ -137,7 +137,6 @@ of rules.
   | `ambient_gather` | on (it's baked; costs one sample) | on |
   | `detail_layers` | 1 | 2 |
   | detail fade distance | short | long |
-  | fog | `Low` (inline) | `High` (fullscreen) |
   | AA | MSAA 4×, forward | TAA or MSAA, deferred ok |
   | biplanar cliffs / POM / dense near grid | off | on |
   | ground cover density & distance | low | high |

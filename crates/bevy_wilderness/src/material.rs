@@ -140,9 +140,7 @@ pub(crate) struct GridMaterial {
     /// uniforms; the freed 112/113 stay clear as ceiling headroom.
     #[uniform(110)]
     pub(crate) dev: DevParams,
-    /// Inline height fog (`Low` tier): `density > 0` fogs in the terrain shader —
-    /// free, terrain-only. `disabled()` skips it (`High` uses
-    /// [`HeightFogPlugin`](crate::HeightFogPlugin)).
+    /// Height fog; `disabled()` skips it.
     #[uniform(114)]
     pub(crate) fog: HeightFogParams,
     // The three detail arrays share one sampler (126) — same tiling/aniso config.

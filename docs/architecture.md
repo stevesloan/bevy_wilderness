@@ -41,8 +41,8 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 | `material.rs` | `GridMaterial` (the terrain material extension), pipeline key, `specialize` |
 | `terrain.wesl` | Main pass: vertex displacement, holes, stamp preview; fragment shading + lighting fork |
 | `rvt.rs` / `bake.wesl` | Bake material, sentinel-gated bake lifecycle, re-bake |
-| `quality.rs` | `TerrainQuality`, `FogTier`, `TerrainFog`, `InlineFog` |
-| `height_fog.rs` / `.wesl`, `fog_functions.wesl`, `mesh_fog.rs` / `.wesl` | Height fog: shared math, fullscreen pass, inline mesh fog |
+| `quality.rs` | `TerrainQuality`, `TerrainFog`, `InlineFog` |
+| `height_fog.rs`, `fog_functions.wesl` | Height fog: its parameters and shared math |
 | `sun_shadow.rs` / `.wesl` | Baked sun shadow-ceiling field for *your* meshes |
 | `holes.rs` | Terrain holes (tunnels, caves, basements) |
 | `heightfield.rs` | CPU height queries |
@@ -51,8 +51,7 @@ scale from a standalone headset to a desktop GPU (see roadmap §2).
 
 ## 3. Public API
 
-**Plugins.** `ClipmapPlugin` (everything terrain), `HeightFogPlugin`
-(fullscreen fog post-process; add it yourself for `FogTier::High`).
+**Plugins.** `ClipmapPlugin` (everything terrain, height fog included).
 
 **The terrain.** Spawn an entity with `Clipmap`:
 

@@ -11,7 +11,8 @@ use bevy::{
 use crate::holes::{HoleBuffer, HoleShape};
 use crate::material::{DetailParams, DevParams, GridMaterial};
 use crate::mesh::{ClipmapPart, ClipmapParts, build_clipmap_parts};
-use crate::quality::{TerrainFog, TerrainQuality, inline_fog_params};
+use crate::height_fog::HeightFogParams;
+use crate::quality::{TerrainFog, TerrainQuality};
 use crate::rvt::ClipmapRvt;
 use crate::texture::looping_rvt_sampler;
 
@@ -300,7 +301,7 @@ pub(crate) fn init_clipmaps(
 ) {
     // Born with the current inline fog so terrain spawned after startup (when
     // `apply_terrain_quality` won't re-fire) still matches the active tier.
-    let initial_fog = inline_fog_params(&fog, quality.fog);
+    let initial_fog = HeightFogParams::from(&fog.0);
     let size = quality.rvt_size;
     for (entity, clipmap) in clipmaps {
         let parts = build_clipmap_parts(&mut meshes, clipmap.half_width);

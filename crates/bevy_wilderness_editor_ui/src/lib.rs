@@ -23,7 +23,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
     ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
-    ExportRequested, FogTier, HeightmapExported, LoadRequested, NewTerrainRequested,
+    ExportRequested, HeightmapExported, LoadRequested, NewTerrainRequested,
     PointerBlocked, RebakeRequested, RebakeSettings, RedoRequest, SculptMode, SeamOverlay,
     StampData, StampSettings, TerrainGesture, TerrainLoaded, TerrainQuality, ToolId, UndoBuffer,
     UndoHistory, UndoRequest, WorldImportRequested, WorldImportRun, WorldImportSettings,
@@ -605,17 +605,6 @@ impl TerrainUi<'_, '_> {
         ui.separator();
         ui.label("Quality");
         let current = *self.quality;
-        ui.horizontal(|ui| {
-            ui.label("fog");
-            let mut fog = current.fog;
-            ui.selectable_value(&mut fog, FogTier::Low, "inline")
-                .on_hover_text("terrain-only fog, no extra pass (iGPU/VR-friendly)");
-            ui.selectable_value(&mut fog, FogTier::High, "fullscreen")
-                .on_hover_text("fogs the sky too; needs Msaa::Off on the camera");
-            if fog != current.fog {
-                self.quality.fog = fog; // live, no rebake needed
-            }
-        });
         let mut staged = self.staged_quality.unwrap_or(current);
         ui.horizontal(|ui| {
             ui.label("RVT");

@@ -1,7 +1,5 @@
-// Shared analytic exponential height fog (Crytek/Wenzel). Imported by both the
-// fullscreen post-process (`height_fog.wesl`, flatscreen tier, fogs the sky too)
-// and the terrain shader (`terrain.wesl`, VR tier, inline / virtually free but
-// terrain-only), so the two tiers match.
+// Analytic exponential height fog (Crytek/Wenzel). Imported by the terrain shader
+// and by any material that fogs itself, in the lit colour before tonemapping.
 struct HeightFog {
     color: vec3<f32>,         // light the fog scatters toward the eye, cd/m²
     density: f32,             // base density at base_height; 0 disables

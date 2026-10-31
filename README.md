@@ -23,7 +23,7 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 - **Procedural multi-layer material** — splat blending placed by slope/height bands.
 - **Baked shading (RVT)** — albedo, normals, roughness, self-shadow, macro AO /
   bent normal / cavity, plus a near-range detail overlay.
-- **Height fog** with High/Low quality tiers (flatscreen + standalone VR).
+- **Height fog**, one inline path (flatscreen + standalone VR).
 - **Toroidal looping** — optionally tile the heightmap for seamless infinite terrain.
 - **Editable-terrain API** (`editing` feature) — a `RebakeRequested` re-bake
   trigger and the CPU `Heightfield` query, the hooks the terrain editor builds on.
@@ -97,13 +97,12 @@ terrain (world footprint is unchanged).
 
 ## Height fog
 
-Exponential height fog with two rendering tiers — `FogTier::High` (fullscreen
-post-process, fogs the sky too) and `FogTier::Low` (inline, virtually free, for
-standalone VR) — so one binary serves flatscreen and VR. Add `HeightFogPlugin`,
-set the `TerrainFog` (look) and `TerrainQuality` (performance profile, `Low`/
-`Medium`/`High`) resources, and use `HeightFogExtension` (or the
-`bevy_wilderness::fog_functions` shader include + `InlineFog`) to fog your own meshes.
-See [`examples/basic.rs`](crates/bevy_wilderness/examples/basic.rs).
+Analytic exponential height fog, per pixel in the terrain's shader, with no pass of
+its own, so it's the same on flatscreen and standalone VR and leaves MSAA free. Set
+the `TerrainFog` resource for its look. To fog your own materials, import
+`bevy_wilderness::fog_functions`, keep a `HeightFogParams` uniform on `InlineFog`, and
+call `apply_height_fog` before tonemapping. Fog colour is in cd/m², so the camera's
+exposure applies to it like any other light.
 
 ## Compatible Bevy versions
 

@@ -27,8 +27,7 @@ import bevy_pbr::render::{
 @if(WILDERNESS_SHADE && ENVIRONMENT_MAP)
 import bevy_pbr::light_probe::environment_map;
 
-// Shared with the fullscreen fog post-process, so the VR (inline) and flatscreen
-// (post-process) fog tiers use the exact same fog.
+// Shared with every other material that fogs itself.
 @if(WILDERNESS_SHADE)
 import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog};
 
@@ -108,7 +107,7 @@ struct HoleBuffer {
 // triangles. Tune in-headset; 3 bounds the visible hole to ~1.7× authored.
 const HOLE_MIN_CELLS: f32 = 3.0;
 @group(constants::MATERIAL_BIND_GROUP) @binding(110) var<uniform> dev: DevParams;
-// Inline height fog params (VR tier). density == 0 skips it. Shading-only:
+// Height fog params. density == 0 skips it. Shading-only:
 // the HeightFog type comes from the gated fog_functions import above.
 @if(WILDERNESS_SHADE)
 @group(constants::MATERIAL_BIND_GROUP) @binding(114) var<uniform> fog: HeightFog;
@@ -499,8 +498,6 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
 
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
-    // Inline height fog (VR tier); no-op when density == 0 (flatscreen uses the
-    // fullscreen post-process instead). Terrain-only but virtually free.
     if fog.density > 0.0 {
         color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz, view.exposure);
     }

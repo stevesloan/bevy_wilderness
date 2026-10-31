@@ -76,7 +76,7 @@ pub use world::{
 // The manual-bake trigger, bake-completion marker (docs/editor.md), and the
 // quality profile a UI's quality section edits, re-exported so a UI crate can
 // drive bakes without depending on the renderer.
-pub use bevy_wilderness::{ClipmapReady, FogTier, RebakeRequested, TerrainQuality};
+pub use bevy_wilderness::{ClipmapReady, RebakeRequested, TerrainQuality};
 
 /// The editor's `Update` phases. Host tool systems go in
 /// [`Tools`](EditorSet::Tools), between the shared pick and the flush:

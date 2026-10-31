@@ -74,8 +74,7 @@ use bevy::{
 };
 
 use bevy_wilderness::{
-    CavityRule, Clipmap, ClipmapPlugin, DetailConfig, FogTier, HeightFog, HeightFogPlugin,
-    SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
+    CavityRule, Clipmap, ClipmapPlugin, DetailConfig, HeightFog, SlopeRule, TerrainFog, TerrainLayer, TerrainQuality, load_terrain_array,
 };
 use bevy_wilderness_editor::{
     ActiveTool, BrushSettings, Editable, EditableTerrain, EditorSet, EditorTools, RedoRequest,
@@ -152,7 +151,6 @@ fn main() {
         }))
         .add_plugins(FreeCameraPlugin)
         .add_plugins(ClipmapPlugin)
-        .add_plugins(HeightFogPlugin)
         .add_plugins(TerrainEditorPlugin)
         .add_plugins(TerrainEditorUiPlugin::default())
         .add_systems(Startup, (setup, register_place_tool))
@@ -398,12 +396,11 @@ fn setup(
         ..default()
     }));
     // Quality profile tuned for integrated GPUs (a real app sets this from
-    // device detection). The desktop-grade profile (FogTier::High, 8192,
-    // 2 detail layers) samples two 8192² RVT targets (~512 MB) per fragment plus a fullscreen fog pass — bandwidth an iGPU
+    // device detection). The desktop-grade profile (8192, 2 detail layers)
+    // samples two 8192² RVT targets (~512 MB) per fragment plus a fullscreen fog pass — bandwidth an iGPU
     // doesn't have. 4096² quarters the RVT memory, inline fog drops the
     // fullscreen pass, and top-1 detail saves ~3 texture samples per fragment.
     commands.insert_resource(TerrainQuality {
-        fog: FogTier::Low,
         rvt_size: 4096,
         detail_layers: 1,
         sun_shadow_size: 1024,
@@ -441,7 +438,6 @@ fn setup(
                 ..default()
             },
             Exposure::SUNLIGHT,
-            HeightFog::default(),
             Msaa::Off,
             Transform::from_xyz(0.0, 150.0, 0.0)
                 .looking_at(Vec3::new(0.0, 150.0, -1000.0), Vec3::Y),
