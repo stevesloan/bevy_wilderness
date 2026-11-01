@@ -18,9 +18,9 @@ pub struct HeightFog {
     /// scene's lights are: the camera's exposure applies to it like anything
     /// else.
     pub color: Color,
-    /// Base density at `base_height`. 0 disables the effect.
+    /// Mist's density at `base_height`. 0 for none.
     pub density: f32,
-    /// World-Y the mist layer sits at.
+    /// World-Y both layers are measured from.
     pub base_height: f32,
     /// 1/m: how fast density drops with altitude (bigger = a thinner layer that
     /// pools in deep valleys; smaller = mist climbs higher up the slopes).
@@ -28,17 +28,31 @@ pub struct HeightFog {
     /// Distance at which fog saturates; also the distance used for sky pixels.
     pub max_distance: f32,
     /// `density`'s share per channel. Equal shares fade distance toward
-    /// `color` alone; blue highest also lets it drift blue, as air does.
+    /// `color` alone, as water droplets do; blue highest also lets it drift
+    /// blue, as air does.
     pub extinction: Vec3,
     /// Metres from the eye with no fog in them.
     pub start: f32,
-    /// Added to `color` looking straight at the sun, cd/m²: light scatters
-    /// mostly onward, so mist brightens toward the sun. Black for none.
+    /// The sunlight reaching the fog, lux. Light scatters mostly onward, so fog
+    /// brightens toward the sun; `color` and `haze_color` carry what it scatters
+    /// evenly. Black for none.
     pub sun_color: Color,
     /// Unit, toward the sun.
     pub sun_direction: Vec3,
-    /// How tightly that glow gathers around the sun.
-    pub sun_exponent: f32,
+    /// Henyey-Greenstein's g: how much of that sunlight goes straight on, from
+    /// 0, evenly, toward 1. Droplets and aerosols sit around 0.8.
+    pub sun_forward: f32,
+    /// Haze's density at `base_height`, a second layer for distance at every
+    /// altitude, which a `falloff` steep enough to pool in valleys can't give.
+    /// 0 for none.
+    pub haze_density: f32,
+    /// 1/m, as `falloff`, for the haze. 0 is even through the air.
+    pub haze_falloff: f32,
+    /// The light the haze scatters toward the eye, as `color`: the sky's horizon,
+    /// so distant terrain fades into it.
+    pub haze_color: Color,
+    /// `haze_density`'s share per channel, as `extinction`.
+    pub haze_extinction: Vec3,
 }
 
 impl Default for HeightFog {
@@ -54,7 +68,11 @@ impl Default for HeightFog {
             start: 0.0,
             sun_color: Color::BLACK,
             sun_direction: Vec3::Y,
-            sun_exponent: 8.0,
+            sun_forward: 0.8,
+            haze_density: 0.0,
+            haze_falloff: 0.0,
+            haze_color: Color::linear_rgb(19_700.0, 22_800.0, 27_500.0),
+            haze_extinction: Vec3::ONE,
         }
     }
 }
@@ -70,8 +88,12 @@ pub struct HeightFogParams {
     falloff: f32,
     sun_direction: Vec3,
     max_distance: f32,
+    haze_color: Vec3,
+    haze_density: f32,
+    haze_extinction: Vec3,
+    haze_falloff: f32,
     start: f32,
-    sun_exponent: f32,
+    sun_forward: f32,
 }
 
 impl HeightFogParams {
@@ -86,8 +108,12 @@ impl HeightFogParams {
             falloff: 0.0,
             sun_direction: Vec3::Y,
             max_distance: 1.0,
+            haze_color: Vec3::ZERO,
+            haze_density: 0.0,
+            haze_extinction: Vec3::ONE,
+            haze_falloff: 0.0,
             start: 0.0,
-            sun_exponent: 1.0,
+            sun_forward: 0.0,
         }
     }
 }
@@ -103,8 +129,12 @@ impl From<&HeightFog> for HeightFogParams {
             falloff: fog.falloff,
             sun_direction: fog.sun_direction,
             max_distance: fog.max_distance,
+            haze_color: fog.haze_color.to_linear().to_vec3(),
+            haze_density: fog.haze_density,
+            haze_extinction: fog.haze_extinction,
+            haze_falloff: fog.haze_falloff,
             start: fog.start,
-            sun_exponent: fog.sun_exponent,
+            sun_forward: fog.sun_forward,
         }
     }
 }

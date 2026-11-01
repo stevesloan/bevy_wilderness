@@ -498,7 +498,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
 
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
-    if fog.density > 0.0 {
+    if fog.density + fog.haze_density > 0.0 {
         color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz, view.exposure);
     }
     return vec4<f32>(color, base_color.a);
