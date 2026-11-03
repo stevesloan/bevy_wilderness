@@ -96,13 +96,9 @@ fn setup(
         ..default()
     }));
     // Performance profile, set once from device detection. Desktop-grade values
-    // (== TerrainQuality::default()); a headset dials them down (
-    // 2048² RVT, single detail layer).
-    commands.insert_resource(TerrainQuality {
-        rvt_size: 8192,
-        detail_layers: 2,
-        sun_shadow_size: 2048,
-    });
+    // (== TerrainQuality::default()); a headset dials them down (a coarser
+    // finest texel, single detail layer).
+    commands.insert_resource(TerrainQuality::default());
 
     // The atmosphere renders its planet limb as a hard brown line at eye level
     // (ground_albedo can't brighten it — grazing transmittance extinguishes it).

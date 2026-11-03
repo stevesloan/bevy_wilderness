@@ -23,14 +23,15 @@ across a vista — from **one asset and one material**, scaling between:
 | Priorities | stability (no shimmer, no popping), bandwidth, sample count | detail, draw distance, lighting richness |
 
 The terrain is a reusable crate for the game Totem: landscapes are
-**user-generated**, so nothing may depend on hand-painted per-map data —
-placement, shading and lighting must derive from the heightmap and a small set
-of rules.
+**user-generated**, so every level must look right from the heightmap and a
+small set of rules alone. Per-map data the editor produces — painted layer
+weights, masks generated from the heightmap — refines that, never replaces it.
 
 ## 2. Principles (AAA practice, applied)
 
 1. **Bake static, sample cheap.** Anything that doesn't change at runtime is
-   computed once (at load or in the editor) and read with a few fetches. This
+   computed once — in the editor, or per page as the camera first needs it —
+   and read with a few fetches. This
    is the virtual-texture lineage — Frostbite's procedural virtual texturing,
    Far Cry's adaptive virtual textures, Unreal's Runtime Virtual Texturing — and
    it is why one material can serve both tiers.
@@ -55,8 +56,8 @@ of rules.
 | Capability | AAA practice | bevy_wilderness | Gap |
 | ---------- | ------------ | --------------- | --- |
 | Geometry LOD | Quadtree/CDLOD or clipmaps, GPU-driven, **geomorphed** transitions | Geometry clipmaps, stitched and geomorphed; coarse rings sample the full-res heightmap | P0 (prefilter) |
-| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, baked at load, **no mips, uncompressed** | P0 / P1 (offline bake) |
-| Material placement | Procedural rules (slope, height, curvature/flow masks) + height blending | Slope / height / cavity bands + height blending (4 layers) | ok |
+| Shading cache | Virtual texture (procedural, streamed, compressed, mipped) | Static full-terrain RVT, baked at load, **no mips, uncompressed** | P1 (sparse virtual texture) |
+| Material placement | Procedural rules (slope, height, curvature/flow masks) + painted weights + height blending, 8–16 layers | Slope / height / cavity bands + height blending (4 layers) | P2 (material layer) |
 | Tiling | Stochastic/hex tiling, macro-micro detail | Hex tiling in bake + distance-faded detail overlay, top-2 blend | ok |
 | Specular aliasing | Toksvig / LEAN-style roughness from normal variance; geometric specular AA | none | P0 |
 | Cliffs | Biplanar/triplanar on steep slopes, cliff meshes (FC5 generates them procedurally) | planar only; cliffs stretch | P2 |
@@ -67,7 +68,7 @@ of rules.
 | Object ↔ terrain blending | RVT sampled by meshes at ground contact (UE) | not exposed | P2 |
 | Vegetation / ground cover | GPU procedural placement (Horizon Zero Dawn), GPU grass (Ghost of Tsushima) | **none** | P2 — biggest visual gap |
 | Fog / atmosphere | Height fog + aerial perspective | analytic height fog, inline on every tier; Bevy atmosphere in the example | ok |
-| World size | Streamed heightmaps + VT pages | single resident heightmap + RVT (~8 km at 1 m/texel) | P3 |
+| World size | Streamed heightmaps + VT pages | single resident heightmap + RVT (~8 km at 1 m/texel) | P1 (VT pages) / P3 (heightmap streaming) |
 | Time of day | Dynamic sun with cached/amortized shadow | fixed sun, baked | P3 |
 
 ## 4. Review of earlier plans
@@ -80,7 +81,9 @@ of rules.
 | Full GI system: DDGI probes, per-building volumes, vertex-baked bounce | **Narrowed** | The terrain half (colored sky + one sun bounce baked into the RVT) is cheap and high-value — keep. Leak-free probe volumes for interiors are a game/engine-level system, not terrain; drop from this roadmap. |
 | Sky/contact AO channel revival | **Superseded** | The ambient gather is removed; sky occlusion comes from a baked lighting input. Contact AO under objects comes with occluder registration. |
 | Triplanar on steep slopes (stretch) | **Promoted** | Cliffs are where heightfield terrain looks cheapest; slope-gated **biplanar** (only cliffs pay) on the desktop tier, cliff meshes for hero rock. |
-| Toroidal ring RVT for flatscreen density | **Replaced** | Superseded by mip-chained RVT + a streamed/adaptive virtual texture when worlds outgrow one RVT (P3). Don't revive the ring. |
+| Toroidal ring RVT for flatscreen density | **Replaced** | Superseded by the sparse virtual texture (§5 P1), which gives near density at every distance. Don't revive the ring. |
+| Offline-baked RVT shipped with the level | **Dropped** | About 720 MB per level at 8192² with mips, for data the client derives from the heightmap and a few small maps. The sparse virtual texture composites pages on demand instead; nothing ships but inputs. |
+| Mip-chained whole-world RVT | **Superseded** | Fixed the shimmer but not the memory, near density or shipping; the sparse virtual texture's levels are its mips. |
 | Parallax / POM | **Kept, desktop only** | Plus a denser near grid for real displacement (§5 P2). |
 | `TerrainQualityKey` + crate feature flags (`hextile`, `rvt`, …) | **Revised** | Runtime presets on `TerrainQuality` instead; compile-time flags would fork the material. |
 | Stream source data for planet-scale | **Kept, P3** | Only when Totem needs worlds > ~8 km. |
@@ -93,17 +96,9 @@ of rules.
 
 ### P0 — Stability and correctness (small, high value, both tiers)
 
-- **Mip-chain the RVT.** Targets are single-level today, so distant terrain
-  samples an 8192² texture with no mips: shimmer (worst in VR), texture
-  cache thrash (worst on mobile), and material boundaries that alias into a
-  hard line at distance instead of averaging into a soft transition.
-  Bevy 0.20's `MipGenerationJobs` downsampler doesn't fit: it can't write
-  sRGB targets, and box-averaging corrupts the packed material ids. Preferred:
-  **bake each mip level directly** (one bake camera per level into a mip
-  view) — the bake's `textureSampleGrad` then prefilters the source arrays
-  correctly at every level, and ids stay valid. ~⅓ extra bake time. With the
-  offline bake (P1) the mips can be built at export instead, with per-channel
-  filters (renormalized normals, majority ids).
+- ~~**Mip-chain the RVT.**~~ Folded into the sparse virtual texture (P1):
+  each of its levels is composited with derivatives at that level's texel size,
+  so the levels are a correctly prefiltered mip chain and ids stay valid.
 - ~~**Geomorph LOD transitions.**~~ Done: vertices blend toward the coarser
   ring's surface across each ring's outer band.
 - **Prefilter coarse rings.** Rings coarser than the heightmap texel sample it
@@ -112,7 +107,7 @@ of rules.
   chain (kept in sync with editor edits) and sample the mip matching each
   ring's cell size.
 - **Specular anti-aliasing.** Raise roughness from normal variance (Toksvig-
-  style, from the length of the filtered normal) in the RVT mips and detail
+  style, from the length of the filtered normal) in the VT levels and detail
   normals, plus a geometric term from screen-space normal derivatives (Valve's
   VR rendering talk). Kills sparkle on rough ground.
 - **Unbaked fallback for non-editing builds.** Clay exists only with
@@ -127,13 +122,46 @@ of rules.
 
 ### P1 — Scaling: one terrain, two tiers
 
+- **Sparse virtual texture** in place of the whole-world RVT. The whole-world
+  target has to hold 8 km at the near texel density, so it's too coarse up
+  close (1 m/texel at 8192²), too big for standalone memory, and too big to
+  ship. A virtual texture holds only what the camera sees, at the density it
+  sees it — the Unreal RVT / Far Cry adaptive VT model:
+
+  - **Levels.** Finest texel size is a quality knob (0.5 m desktop, 2 m
+    standalone to start); each coarser level halves it, down to one that covers
+    the world in a few pages and is always resident, so nothing is unshaded.
+  - **Pages** of 256² plus a border for filtering, in a fixed atlas per target
+    (4096² desktop ≈ 130 MB for albedo + normal; 2048² standalone ≈ 32 MB).
+    Same channels as today's targets.
+  - **Residency on the CPU,** from the head position: per level, the pages
+    within a radius doubling per level — the clipmap's ring shape, so no GPU
+    feedback pass. LRU-cached; revisits are free. Looping terrain wraps page
+    coordinates.
+  - **Composite per page** with `bake.wesl` as it is, derivatives set to the
+    level's texel size, so coarse levels are true averages of the rules rather
+    than point samples. A per-frame page budget (a tier knob), coarse first.
+  - **Sampling.** Indirection per level (or a quadtree texture); level chosen
+    by distance, blended across a band as the geometry rings are; explicit
+    derivatives on atlas reads.
+  - **Editing** invalidates the pages under a dirty rect: no whole-terrain
+    re-bake, and the editor's sculpting path is the runtime path.
+  - **Removes** the whole-world bake at load, `rvt_size`, and the mip item.
+    The sun shadow field stays whole-world; it's small.
+  - **Risks:** page and level seams; pop as fine pages land (sharpening only,
+    since coarse is the fine page's average; fade if VR shows it); grazing-angle
+    undersampling; composite cost on standalone, unmeasured.
+  - **First step:** prototype in the example — residency, per-page composite,
+    indirection — and measure composite time per page on both tiers.
+
 - **Named presets.** `TerrainQuality::standalone()` / `::desktop()` (and
   `::low()`), tuned by profiling. Starting point:
 
   | Knob | Standalone (Frame) | Desktop |
   | ---- | ------------------ | ------- |
-  | `rvt_size` | 4096² | 8192² |
-  | RVT compression | ASTC / ETC2 | BC1 / BC5 |
+  | VT finest texel | 2 m | 0.5 m |
+  | VT atlas | 2048² | 4096² |
+  | VT pages composited per frame | few | many |
   | `ambient_gather` | on (it's baked; costs one sample) | on |
   | `detail_layers` | 1 | 2 |
   | detail fade distance | short | long |
@@ -142,13 +170,13 @@ of rules.
   | ground cover density & distance | low | high |
   | dynamic-object shadows | blob / one cascade | CSM |
 
-- **Texture memory and compression.** Uncompressed RGBA8 8192² RVT targets are
-  ~270 MB each (~1 GB for three with mips). Compress the RVT once after baking
-  (GPU block compression — BC on desktop; ASTC on Adreno, where Qualcomm
-  recommends ASTC first and ETC2 as fallback). Ship layer/detail arrays as
-  KTX2 with both BC and ASTC variants, chosen at load by device capability.
+- **Texture memory and compression.** The VT atlas fixes the shading cache's
+  memory per tier; compressing pages on the GPU as they're composited is a
+  later option, not a need. Ship layer/detail arrays as KTX2 with both BC and
+  ASTC variants (Qualcomm recommends ASTC first, ETC2 as fallback), chosen at
+  load by device capability.
 - **VR rendering path.** Forward + MSAA; clipmap `target` = the HMD head, not
-  an eye; verify multiview (both eyes share rings, RVT and fields — they are
+  an eye; verify multiview (both eyes share rings, VT pages and fields — they are
   view-independent by design). Geomorphing measures its band from
   `view.world_position`, i.e. per eye (~3 cm apart, sub-millimetre height
   difference); pass the head position instead so both eyes morph identically. If the Frame's runtime exposes eye-tracked
@@ -157,11 +185,18 @@ of rules.
 - **CPU sun-visibility query.** A CPU twin of the shadow-ceiling field for
   gameplay (is the player in shade?) and per-object material params.
 - **Device profiling gate.** Before freezing presets, profile on a Frame:
-  ms per pass, RVT memory, samples per near fragment against the ~16-texture
+  ms per pass, VT composite time per page, samples per near fragment against the ~16-texture
   ceiling, and thermal throttling over a 20-minute session.
 
 ### P2 — Visual pillars
 
+- **Material layer** — most of what reads as real up close. Up to 16 layers
+  (per-layer params leave their `Vec4` lanes); placement from today's rules,
+  plus **painted weight maps** from the editor (small, a few m/texel, four
+  layers per RGBA) and **heightmap masks** (flow, wetness, wear, deposition)
+  as new rule kinds, all composited into VT pages; height blending across every
+  layer; a low-frequency macro tint so tiling never shows from the air. Scanned
+  PBR sets at 4K desktop / 1K ASTC standalone.
 - **Ground cover and scatter** (biggest gap). GPU procedural placement driven
   by the same slope/height bands and baked material ids (the Horizon Zero
   Dawn model: deterministic, data-driven, regenerated around the player), with
@@ -178,9 +213,10 @@ of rules.
   (buildings, rock formations, trees as proxies) are rendered from the sun
   during the bake into the shadow-ceiling field, with
   contact AO under them. Height-correct for flyers via the field.
-- **Object–terrain blending.** Expose the RVT (albedo, normal) so rocks,
+- **Object–terrain blending.** Expose the VT (albedo, normal) so rocks,
   buildings and props sample it near their ground contact and blend into the
-  terrain seamlessly (Unreal's RVT mesh blending). Cheap: the RVT exists.
+  terrain seamlessly (Unreal's RVT mesh blending). Cheap: the pages exist
+  wherever an object is near the camera.
 - **Curvature-driven material response.** Use the baked cavity as a material
   mask, not an occlusion term. *Placement is done* (`CavityRule`; the example
   puts gravel sediment in gullies). Remaining: a darker, smoother "damp"
@@ -189,8 +225,9 @@ of rules.
   applied to ambient occlusion and removed: measured on the example map it
   darkened deep gullies to ~40 % where the physically based horizon AO gave
   ~83 %, and 71 % of its darkening landed where the AO saw ≥ 90 % open sky.
-- **Cliffs.** Slope-gated biplanar mapping in the main pass detail overlay
-  (desktop; flat ground stays single-planar), and authored/procedural cliff
+- **Cliffs.** Slope-gated biplanar mapping in the VT composite (every tier —
+  each page is composited once) and in the near detail overlay (desktop;
+  flat ground stays single-planar), and authored/procedural cliff
   meshes for hero rock (Far Cry 5's procedural cliff pipeline uses slope as
   its input).
 - **Close-up relief (desktop).** wgpu has no tessellation shaders, so: a finer
@@ -201,9 +238,8 @@ of rules.
 
 ### P3 — Scale and dynamics
 
-- **Bigger worlds.** Tiled heightmap streaming + an adaptive/streamed virtual
-  texture (Far Cry 4's sector-based adaptive VT) once Totem needs worlds
-  beyond ~8 km.
+- **Bigger worlds.** Tiled heightmap streaming once Totem needs worlds beyond
+  ~8 km. The sparse virtual texture (P1) already pages the shading.
 - **Time of day.** Amortized re-bake of sun-vis and the shadow field as the
   sun moves (budgeted strips per frame), never live per-pixel marching.
 - **Lighting fork.** Replace `terrain_apply_lighting` with stock Bevy lighting

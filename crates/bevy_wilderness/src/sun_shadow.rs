@@ -24,7 +24,8 @@ use bevy::{prelude::*, render::render_resource::ShaderType};
 pub struct TerrainSunShadow {
     /// The field itself: R = shadow ceiling (biased by
     /// [`SunShadowParams::height_bias`]), G = distance to the occluder casting
-    /// it. Valid to bind before the bake finishes — it reads as full sun.
+    /// it, B = the column's own ground (biased the same). Valid to bind before
+    /// the bake finishes — it reads as full sun.
     pub field: Handle<Image>,
     /// Everything the shader needs besides the texture.
     pub params: SunShadowParams,

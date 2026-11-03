@@ -64,6 +64,8 @@ pub(crate) struct DevParams {
     /// `Clipmap::half_width` in cells — each ring's extent in its own cells,
     /// for the vertex shader's geomorph band.
     pub(crate) ring_half_cells: f32,
+    /// The texture clipmap's levels, kept current by `vt::update_vt`.
+    pub(crate) vt: crate::vt::VtParams,
 }
 
 impl Default for DevParams {
@@ -79,6 +81,7 @@ impl Default for DevParams {
             holes: HoleBuffer::default(),
             hole_count: 0,
             ring_half_cells: 128.0,
+            vt: crate::vt::VtParams::default(),
         }
     }
 }
@@ -112,21 +115,21 @@ impl DetailParams {
 /// the pipeline **silently**: no error, terrain just stopped drawing) and the ~16
 /// sampled-texture limit on mobile/VR GPUs. **Don't add bindings.** Reuse one: pack
 /// scalars into the `flags` u32 (bit flags) or a spare `vec4`, and share a sampler
-/// rather than adding one (the RVT and detail textures each share a single sampler
-/// below). Quality knobs ride in `flags` for exactly this reason.
+/// rather than adding one (the clipmap and detail textures each share a single
+/// sampler below). Quality knobs ride in `flags` for exactly this reason.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(GridMaterialKey)]
 pub(crate) struct GridMaterial {
     #[texture(102)]
     #[sampler(103)]
     pub(crate) heightmap: Handle<Image>,
-    // The RVT targets and the shadow field share one sampler (122), all
-    // sampled linearly.
-    #[texture(121)]
+    // The texture clipmap's arrays, the shadow field and the baked light share
+    // the clipmap's sampler (122): linear, repeating.
+    #[texture(121, dimension = "2d_array")]
     #[sampler(122)]
-    pub(crate) rvt_albedo: Handle<Image>,
-    #[texture(123)]
-    pub(crate) rvt_normal: Handle<Image>,
+    pub(crate) vt_albedo: Handle<Image>,
+    #[texture(123, dimension = "2d_array")]
+    pub(crate) vt_normal: Handle<Image>,
     /// The sun shadow-ceiling field ([`TerrainSunShadow`](crate::TerrainSunShadow)),
     /// which shadows the ground as it does meshes.
     #[texture(132)]

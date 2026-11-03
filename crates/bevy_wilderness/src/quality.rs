@@ -12,33 +12,40 @@ pub struct TerrainFog(pub HeightFog);
 /// Terrain performance profile — set **once at startup** from device detection
 /// (dial the knobs down for a standalone headset, up for desktop). Only
 /// [`fog`](Self::fog) applies live; the bake-time fields
-/// (`rvt_size`, `detail_layers`, `sun_shadow_size`) are read
-/// when a clipmap bakes —
-/// changing them after has no effect (it would need a rebake). [`default`]
+/// (`detail_layers`, `sun_shadow_size`) are read when a clipmap bakes —
+/// changing them after has no effect (it would need a rebake). The texture
+/// clipmap's fields (`vt_*`) rebuild it when changed. [`default`]
 /// (Self::default) is desktop-grade.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct TerrainQuality {
-    /// RVT bake resolution (square). The dominant VRAM cost — two targets of
-    /// `size²·4` bytes each (8192² ≈ 512 MB total; 4096² ≈ 128 MB).
-    pub rvt_size: u32,
+    /// Texels per side of each texture-clipmap level. Two arrays of
+    /// `size²·4` bytes per level (1024² with five levels ≈ 40 MB).
+    pub vt_size: u32,
+    /// Texel size of the finest level, metres. Each level outward doubles it,
+    /// until one level covers the whole world.
+    pub vt_finest_texel: f32,
+    /// Texels composited per frame as the target moves. Moving into new
+    /// ground costs this at most; a still target costs nothing.
+    pub vt_texels_per_frame: u32,
     /// Near-detail overlay: blend the top `1` (cheapest, ~3 fewer samples) or `2`
     /// (smoothest boundaries) materials per fragment.
     pub detail_layers: u8,
     /// Resolution (square) of the sun shadow-ceiling field that shadows *meshes*
-    /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Sized
-    /// separately from [`rvt_size`](Self::rvt_size) and much smaller: it holds a
-    /// height, not surface detail, and terrain shadow edges are metres wide, so
+    /// standing in terrain shadow (see `bevy_wilderness::sun_shadow`). Much
+    /// coarser than the surface: it holds a height, not surface detail, and terrain shadow edges are metres wide, so
     /// resolution buys little. `size²·8` bytes. It also shadows the terrain
     /// itself, so raise it if near ridges cast too soft a shadow on the ground.
     pub sun_shadow_size: u32,
 }
 
 impl Default for TerrainQuality {
-    /// Desktop-grade: 8192² RVT, top-2 detail. Dial these down for standalone VR
-    /// and low-end GPUs (e.g. 2048² RVT, single-layer detail).
+    /// Desktop-grade: 0.5 m finest texel, top-2 detail. Dial these down for
+    /// standalone VR and low-end GPUs (e.g. 2 m, single-layer detail).
     fn default() -> Self {
         Self {
-            rvt_size: 8192,
+            vt_size: 1024,
+            vt_finest_texel: 0.5,
+            vt_texels_per_frame: 1 << 19,
             detail_layers: 2,
             sun_shadow_size: 2048,
         }

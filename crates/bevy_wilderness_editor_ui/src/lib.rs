@@ -597,40 +597,41 @@ impl TerrainUi<'_, '_> {
         }
     }
 
-    /// Terrain performance profile. Fog applies live; the bake-time knobs (RVT
-    /// size, ambient gather, detail layers) stage locally until "Apply +
-    /// rebake" writes them and queues the rebake that makes them real
-    /// (`process_rebake_requests` resizes the RVT targets to match).
+    /// Terrain performance profile. Fog and the texture clipmap's density apply
+    /// live; detail layers stage locally until "Apply + rebake" writes them and
+    /// queues the rebake that makes them real.
     pub fn quality_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.label("Quality");
         let current = *self.quality;
         let mut staged = self.staged_quality.unwrap_or(current);
         ui.horizontal(|ui| {
-            ui.label("RVT");
-            egui::ComboBox::from_id_salt("quality_rvt_size")
-                .selected_text(format!("{}²", staged.rvt_size))
+            ui.label("finest texel");
+            let mut texel = self.quality.vt_finest_texel;
+            egui::ComboBox::from_id_salt("quality_vt_finest_texel")
+                .selected_text(format!("{texel} m"))
                 .show_ui(ui, |ui| {
-                    for size in [2048u32, 4096, 8192] {
-                        ui.selectable_value(&mut staged.rvt_size, size, format!("{size}²"));
+                    for option in [0.25f32, 0.5, 1.0, 2.0] {
+                        ui.selectable_value(&mut texel, option, format!("{option} m"));
                     }
                 })
                 .response
-                .on_hover_text("Baked material resolution — the dominant VRAM/bake cost");
+                .on_hover_text("Surface density near the camera; coarser levels double outward");
+            if texel != self.quality.vt_finest_texel {
+                self.quality.vt_finest_texel = texel;
+            }
         });
         ui.horizontal(|ui| {
             ui.label("detail layers");
             ui.selectable_value(&mut staged.detail_layers, 1, "1");
             ui.selectable_value(&mut staged.detail_layers, 2, "2");
         });
-        let dirty =
-            staged.rvt_size != current.rvt_size || staged.detail_layers != current.detail_layers;
+        let dirty = staged.detail_layers != current.detail_layers;
         *self.staged_quality = dirty.then_some(staged);
         if ui
             .add_enabled(dirty, egui::Button::new("Apply + rebake"))
             .clicked()
         {
-            self.quality.rvt_size = staged.rvt_size;
             self.quality.detail_layers = staged.detail_layers;
             *self.staged_quality = None;
             for (entity, _) in &self.terrains {

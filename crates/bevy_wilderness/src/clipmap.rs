@@ -302,13 +302,12 @@ pub(crate) fn init_clipmaps(
     // Born with the current inline fog so terrain spawned after startup (when
     // `apply_terrain_quality` won't re-fire) still matches the active tier.
     let initial_fog = HeightFogParams::from(&fog.0);
-    let size = quality.rvt_size;
     for (entity, clipmap) in clipmaps {
         let parts = build_clipmap_parts(&mut meshes, clipmap.half_width);
 
-        // A looping clipmap tiles the RVT toroidally, so its targets sample with a
-        // Repeat address mode; finite terrain keeps the default clamp. Built once
-        // and applied to every RVT target below.
+        let vt = crate::vt::ClipmapVt::new(&mut images);
+        // A looping clipmap tiles the shadow field toroidally, so it samples with
+        // a Repeat address mode; finite terrain keeps the default clamp.
         let mut make_rvt_target = |w: u32, h: u32, format: TextureFormat| {
             let mut image = Image::new_target_texture(w, h, format, None);
             if clipmap.looping {
@@ -317,8 +316,6 @@ pub(crate) fn init_clipmaps(
             images.add(image)
         };
 
-        let rvt_albedo = make_rvt_target(size, size, TextureFormat::Rgba8UnormSrgb);
-        let rvt_normal = make_rvt_target(size, size, TextureFormat::Rgba8Unorm);
         // Sun shadow ceiling (R, biased) + occluder distance (G). `Rgba16Float`
         // rather than the `Rg16Float` the data wants: it is bevy's own HDR
         // target format, so the 3d pipeline renders to it without any
@@ -353,8 +350,8 @@ pub(crate) fn init_clipmaps(
                 base: StandardMaterial::default(),
                 extension: GridMaterial {
                     heightmap: clipmap.heightmap.clone(),
-                    rvt_albedo: rvt_albedo.clone(),
-                    rvt_normal: rvt_normal.clone(),
+                    vt_albedo: vt.albedo.clone(),
+                    vt_normal: vt.normal.clone(),
                     sun_shadow_field: rvt_sun_shadow.clone(),
                     baked_light: Handle::default(),
                     dev: {
@@ -396,11 +393,11 @@ pub(crate) fn init_clipmaps(
                 field: rvt_sun_shadow.clone(),
                 params: crate::SunShadowParams::unbaked(),
             },
+            vt,
             ClipmapRvt {
-                albedo: rvt_albedo,
-                normal: rvt_normal,
                 sun_shadow: rvt_sun_shadow,
                 initialized: false,
+                shadow_done: false,
                 ever_baked: false,
                 pending_bakes: 0,
                 quality: *quality,

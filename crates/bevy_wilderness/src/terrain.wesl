@@ -1,7 +1,7 @@
 import bevy_pbr::render::mesh_functions;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
-import bevy_wilderness::sun_shadow::{SunShadowParams, sun_visibility_at, MIN_PENUMBRA};
+import bevy_wilderness::sun_shadow::{SunShadowParams, ground_sun_visibility_at, MIN_PENUMBRA};
 
 // Fragment-shading machinery, gated to the pipelines that shade (the forward
 // fragment and the deferred g-buffer fragment). Depth-only pipelines — the
@@ -52,9 +52,12 @@ import bevy_pbr::deferred::functions::deferred_output;
 // knobs ride here instead of new uniforms): bit0 = wireframe, bit1 unused,
 // bit2 = single-layer detail, bit3 = looping.
 @group(constants::MATERIAL_BIND_GROUP) @binding(111) var<uniform> flags: u32;
-@group(constants::MATERIAL_BIND_GROUP) @binding(121) var rvt_albedo_texture: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(122) var rvt_albedo_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(123) var rvt_normal_texture: texture_2d<f32>;
+// The texture clipmap (`vt.rs`): one layer per level, finest first, the last
+// covering the whole world. Albedo + cavity; octahedral normal + roughness +
+// packed material ids.
+@group(constants::MATERIAL_BIND_GROUP) @binding(121) var vt_albedo_texture: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(122) var vt_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(123) var vt_normal_texture: texture_2d_array<f32>;
 // The sun shadow-ceiling field (see `sun_shadow.wesl`), which shadows the
 // ground as it does meshes. Its params ride in `dev.sun_shadow`.
 @group(constants::MATERIAL_BIND_GROUP) @binding(132) var sun_shadow_field: texture_2d<f32>;
@@ -76,7 +79,8 @@ struct BakedLight {
     patch_fade: f32,
     regions: array<BakedRegion, 8>,
 }
-// rvt_normal and the field share rvt_albedo_sampler (122), all sampled linearly.
+// The clipmap, the field and the baked light share vt_sampler (122): linear,
+// repeating, no mips.
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
 // freed for ceiling headroom). debug_view: 0 = lit terrain, 1 = cavity,
 // 2 = sun visibility — nonzero outputs the raw value unlit. The stamp_*
@@ -95,6 +99,20 @@ struct DevParams {
     // Clipmap half-width in cells: each ring spans half_width × its cell size
     // from its center. Drives the geomorph band.
     ring_half_cells: f32,
+    vt: VtParams,
+}
+// Matches `VtLevelGpu`.
+struct VtLevel {
+    // Visible world rect: min x, min z, max x, max z. Empty when min > max.
+    rect: vec4<f32>,
+    // Texel size, coverage, fade band at the rect's edge (all metres), unused.
+    info: vec4<f32>,
+}
+// Matches `VtParams`.
+struct VtParams {
+    levels: array<VtLevel, 8>,
+    count: u32,
+    size: u32,
 }
 // Terrain holes, two vec4 per shape (packed by Rust `HoleBuffer::pack`):
 //   [0] = center.xy, basis.xy      (basis = rect local +X; unused for circles)
@@ -532,8 +550,8 @@ fn baked_region_sample(i: u32, xz: vec2<f32>, n: vec3<f32>) -> vec4<f32> {
     let half_texel = 0.5 / vec2<f32>(textureDimensions(baked_light_atlas));
     let size = region.color.zw - region.color.xy;
     let inner = clamp(local * size, half_texel, size - half_texel);
-    let color = textureSampleLevel(baked_light_atlas, rvt_albedo_sampler, region.color.xy + inner, 0.0);
-    let direction = textureSampleLevel(baked_light_atlas, rvt_albedo_sampler, region.direction.xy + inner, 0.0);
+    let color = textureSampleLevel(baked_light_atlas, vt_sampler, region.color.xy + inner, 0.0);
+    let direction = textureSampleLevel(baked_light_atlas, vt_sampler, region.direction.xy + inner, 0.0);
     // Mirrors `level_material.wesl`: `(0.5·n·d + 0.5) / w` is 1 at the
     // baked normal and follows the shading normal elsewhere.
     let d = normalize(direction.xyz * 2.0 - 1.0);
@@ -566,12 +584,76 @@ fn baked_light_at(xz: vec2<f32>, n: vec3<f32>) -> BakedSample {
     return BakedSample(result.rgb * dev.baked.exposure, result.a, true);
 }
 
-// The ground's sun shadow, from the field that shadows meshes, read a little
-// above the surface: a lit column's ceiling is its own ground, so at the surface
-// the field reads half shadow, and on a slope the bilinear ceiling sits higher
-// still, by up to a field texel times the slope. `uv` is the RVT's, which the
-// field shares (both cover the terrain), wrapping with the same sampler.
-fn ground_sun_visibility(world: vec3<f32>, normal: vec3<f32>, uv: vec2<f32>) -> f32 {
+// Texel footprint (metres) that picks a clipmap level: the minor axis, widened
+// toward the major axis by at most VT_MAX_ANISO, so ground seen at a grazing
+// angle keeps some sharpness at the cost of a little aliasing along the view.
+const VT_MAX_ANISO: f32 = 4.0;
+
+fn vt_footprint(xz: vec2<f32>) -> f32 {
+    let a = length(dpdx(xz));
+    let b = length(dpdy(xz));
+    return max(min(a, b), max(a, b) / VT_MAX_ANISO);
+}
+
+struct VtSample {
+    albedo: vec4<f32>,
+    normal: vec3<f32>,
+    roughness: f32,
+    // The finest level that covers this point, for the material-id read.
+    id_level: u32,
+}
+
+// Composites the clipmap's levels finest to coarsest. A level contributes where
+// it's visible (fading out over its edge band) and fine enough to resolve the
+// footprint without aliasing (fading out between one and two texels per
+// footprint); what it leaves falls to the next. The last level takes the rest.
+// One level in the common case, two across a transition.
+fn vt_sample(xz: vec2<f32>, footprint: f32) -> VtSample {
+    let looping = (flags & 8u) != 0u;
+    var remaining = 1.0;
+    var albedo = vec4<f32>(0.0);
+    var normal = vec3<f32>(0.0);
+    var rough = 0.0;
+    var id_level = dev.vt.count - 1u;
+    var id_found = false;
+    for (var i = 0u; i < dev.vt.count; i++) {
+        let level = dev.vt.levels[i];
+        let last = i + 1u == dev.vt.count;
+        let r = level.rect;
+        let edge = min(min(xz.x - r.x, r.z - xz.x), min(xz.y - r.y, r.w - xz.y));
+        let cover = clamp(edge / level.info.z, 0.0, 1.0);
+        if !id_found && cover >= 0.5 {
+            id_level = i;
+            id_found = true;
+        }
+        let resolves = clamp(2.0 - footprint / level.info.x, 0.0, 1.0);
+        let accept = select(cover * resolves, 1.0, last);
+        if accept <= 0.0 {
+            continue;
+        }
+        var uv = xz / level.info.y + 0.5;
+        if last && !looping {
+            uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
+        }
+        let a = textureSampleLevel(vt_albedo_texture, vt_sampler, uv, i, 0.0);
+        let n = textureSampleLevel(vt_normal_texture, vt_sampler, uv, i, 0.0);
+        let w = remaining * accept;
+        albedo += a * w;
+        normal += oct_decode(n.rg) * w;
+        rough += n.b * w;
+        remaining -= w;
+        if remaining <= 1e-3 {
+            break;
+        }
+    }
+    return VtSample(albedo, normalize(normal), rough, id_level);
+}
+
+// The ground's sun shadow, from the field that shadows meshes, tested at the
+// ground height the field recorded rather than the rendered one, which the
+// distant LODs lower at peaks. `uv` is the world's, which the field covers,
+// wrapping with the clipmap's sampler.
+fn ground_sun_visibility(uv: vec2<f32>) -> f32 {
     if dev.sun_shadow.valid < 0.5 {
         return 1.0;
     }
@@ -579,10 +661,7 @@ fn ground_sun_visibility(world: vec3<f32>, normal: vec3<f32>, uv: vec2<f32>) -> 
     if !looping && (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
         return 1.0;
     }
-    let field_texel = 1.0 / (dev.sun_shadow.inv_world_size * f32(textureDimensions(sun_shadow_field).x));
-    let slope = sqrt(max(1.0 - normal.y * normal.y, 0.0)) / max(normal.y, 0.25);
-    let lift = 2.0 * MIN_PENUMBRA + field_texel * slope;
-    return sun_visibility_at(sun_shadow_field, rvt_albedo_sampler, dev.sun_shadow, uv, world.y + lift);
+    return ground_sun_visibility_at(sun_shadow_field, vt_sampler, dev.sun_shadow, uv, 2.0 * MIN_PENUMBRA);
 }
 
 @fragment
@@ -597,6 +676,9 @@ fn fragment(
     }
 
     var in_modified = in;
+    // Derivatives before any branch: the clay early-out below is uniform, but
+    // the clipmap's level loop isn't.
+    let footprint = vt_footprint(in.world_position.xz);
 
     let texture_size = vec2<f32>(textureDimensions(heightmap_texture));
     let world_size = texture_size * texel_size;
@@ -636,15 +718,12 @@ fn fragment(
         return out;
     }
 
-    // Sample the baked RVT instead of blending the splat per-fragment:
-    // albedo + cavity (alpha); octahedral world normal + roughness + packed
-    // material ids (alpha, read NEAREST below).
-    let rvt_a = textureSample(rvt_albedo_texture, rvt_albedo_sampler, uv);
-    let rvt_n = textureSample(rvt_normal_texture, rvt_albedo_sampler, uv);
-    let base_normal = oct_decode(rvt_n.rg);
+    // The splat, composited into the clipmap instead of blended per fragment.
+    let vt = vt_sample(in.world_position.xz, footprint);
+    let base_normal = vt.normal;
     // Baked light needs the shading normal, so it's sampled after the detail
     // overlay below; until then the shadow field's sun visibility stands.
-    var sun_vis = ground_sun_visibility(in.world_position.xyz, base_normal, uv);
+    var sun_vis = ground_sun_visibility(uv);
 
     let cam_dist = distance(view.world_position, in.world_position.xyz);
 
@@ -657,17 +736,16 @@ fn fragment(
     let ddy = dpdy(dtile);
 
     var world_normal = base_normal;
-    var albedo = rvt_a.rgb;
-    var rough = rvt_n.b;
+    var albedo = vt.albedo.rgb;
+    var rough = vt.roughness;
     var ao = 1.0;
     if detail_fade > 0.001 {
         // Two dominant material ids + their blend, packed (2+2+4 bits) into the
-        // RVT's metallic slot. `mblend` (0..0.5) lerps the two materials' detail
-        // normals. Read it NEAREST (textureLoad) — the packed byte can't be
-        // linearly filtered, or the bilinear sweep through id/weight combos shows
-        // as banding strips. Only the detail branch consumes it, so the load (a
-        // guaranteed full-res cache miss at distance) is paid only near the camera.
-        let rvt_dims = vec2<f32>(textureDimensions(rvt_normal_texture));
+        // clipmap normal's alpha. `mblend` (0..0.5) lerps the two materials'
+        // detail normals. Read it NEAREST (textureLoad) — the packed byte can't
+        // be linearly filtered, or the bilinear sweep through id/weight combos
+        // shows as banding strips — from the finest level covering this point.
+        //
         // Jitter the sample point by ±0.5 texel using a world-locked hash before
         // the NEAREST read. Rounding a coordinate offset by uniform noise picks
         // each neighbouring texel with probability equal to the fractional
@@ -676,15 +754,16 @@ fn fragment(
         // texture hides. The high-frequency hash keeps cells sub-texel so
         // adjacent fragments decorrelate and average toward the true blend.
         let jitter = hash22(in.world_position.xz) - 0.5;
-        // Wrap the NEAREST read toroidally when looping so the packed material id
-        // has no seam at the tile edge; otherwise clamp to the RVT bounds.
-        let rvt_idim = vec2<i32>(rvt_dims);
-        let mid_raw = vec2<i32>(floor(uv * rvt_dims + jitter));
-        var mid_idx = clamp(mid_raw, vec2(0), rvt_idim - 1);
-        if (flags & 8u) != 0u {
-            mid_idx = ((mid_raw % rvt_idim) + rvt_idim) % rvt_idim;
+        let id_level = dev.vt.levels[vt.id_level];
+        let vt_size = i32(dev.vt.size);
+        let mid_raw = vec2<i32>(floor(in.world_position.xz / id_level.info.x + jitter)) + vt_size / 2;
+        // Every level wraps toroidally; only the finite whole-world level
+        // clamps, so an edge texel doesn't read the far side of the world.
+        var mid_idx = ((mid_raw % vt_size) + vt_size) % vt_size;
+        if (flags & 8u) == 0u && vt.id_level + 1u == dev.vt.count {
+            mid_idx = clamp(mid_raw, vec2(0), vec2(vt_size - 1));
         }
-        let mid = u32(textureLoad(rvt_normal_texture, mid_idx, 0).a * 255.0 + 0.5);
+        let mid = u32(textureLoad(vt_normal_texture, mid_idx, vt.id_level, 0).a * 255.0 + 0.5);
         let id0 = mid & 3u;
         let id1 = (mid >> 2u) & 3u;
         let mblend = f32((mid >> 4u) & 15u) / 15.0 * 0.5;
@@ -729,7 +808,7 @@ fn fragment(
         let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
         let grain = min(dot(da, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
         albedo *= mix(1.0, grain, detail.albedo_strength * detail_fade);
-        rough = mix(rvt_n.b, dorm.g, detail_fade);
+        rough = mix(vt.roughness, dorm.g, detail_fade);
         ao = mix(1.0, dorm.r, detail_fade);
     }
     in_modified.world_normal = world_normal;
@@ -762,7 +841,7 @@ fn fragment(
     // grayscale value.
     @if(!PREPASS_PIPELINE)
     if dev.debug_view == 1u {
-        out.color = vec4<f32>(vec3<f32>(rvt_a.a), 1.0);
+        out.color = vec4<f32>(vec3<f32>(vt.albedo.a), 1.0);
     } else if dev.debug_view == 2u {
         out.color = vec4<f32>(vec3<f32>(sun_vis), 1.0);
     } else {

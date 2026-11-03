@@ -13,6 +13,8 @@ mod quality;
 mod rvt;
 mod sun_shadow;
 mod texture;
+mod vt;
+mod vt_render;
 
 pub use baked_light::{BakedLightRegion, MAX_BAKED_LIGHT_REGIONS, TerrainBakedLight};
 pub use clipmap::{
@@ -45,11 +47,13 @@ impl Plugin for ClipmapPlugin {
         load_shader_library!(app, "sun_shadow.wesl");
         embedded_asset!(app, "terrain.wesl");
         embedded_asset!(app, "bake.wesl");
+        embedded_asset!(app, "vt_composite.wesl");
 
         app.add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, GridMaterial>,
         >::default())
             .add_plugins(MaterialPlugin::<BakeMaterial>::default())
+            .add_plugins(vt_render::VtRenderPlugin)
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
@@ -79,6 +83,10 @@ impl Plugin for ClipmapPlugin {
                     clipmap::sync_baked_light,
                     init_rvt,
                     drive_rvt_bake,
+                    // After `drive_rvt_bake` and before `mark_clipmap_ready`, so a
+                    // rebake's re-armed flags are seen in the frame they change.
+                    vt::update_vt.after(drive_rvt_bake),
+                    vt::mark_clipmap_ready.after(vt::update_vt),
                     quality::apply_terrain_fog,
                     warn_unbaked_terrain,
                     warn_late_quality,

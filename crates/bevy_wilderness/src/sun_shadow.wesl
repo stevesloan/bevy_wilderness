@@ -63,6 +63,24 @@ fn sun_visibility_at(
     return smoothstep(-penumbra, penumbra, height - ceiling);
 }
 
+// `sun_visibility_at` for the terrain's own surface. Tests the column's ground
+// as the field recorded it (B) rather than a rendered height: distant terrain
+// LODs sit below the true surface at peaks, under a lit column's ceiling (its
+// own ground), and would read as shadowed. Both heights come from the same
+// fetch and filter, so a lit column is exactly at its ceiling, and `lift` takes
+// it from the penumbra's midpoint into full sun.
+fn ground_sun_visibility_at(
+    field: texture_2d<f32>,
+    field_sampler: sampler,
+    params: SunShadowParams,
+    uv: vec2<f32>,
+    lift: f32,
+) -> f32 {
+    let field_sample = textureSampleLevel(field, field_sampler, uv, 0.0);
+    let penumbra = max(field_sample.g * params.penumbra_per_metre, MIN_PENUMBRA);
+    return smoothstep(-penumbra, penumbra, field_sample.b - field_sample.r + lift);
+}
+
 // Narrowest penumbra half-width (m). A point this far above the ceiling is in
 // full sun.
 const MIN_PENUMBRA: f32 = 0.25;

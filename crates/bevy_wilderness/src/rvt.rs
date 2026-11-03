@@ -6,112 +6,32 @@ use bevy::{
     prelude::*,
     render::{
         gpu_readback::{Readback, ReadbackComplete},
-        render_resource::{AsBindGroup, ShaderType, TextureFormat, TextureUsages},
+        render_resource::{AsBindGroup, TextureFormat, TextureUsages},
     },
     shader::ShaderRef,
 };
 
 #[cfg(feature = "editing")]
 use crate::RebakeRequested;
-use crate::{Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, TerrainQuality};
+use crate::{Clipmap, ClipmapReady, TerrainQuality};
 
-/// Render layers isolating the RVT bake cameras/quads from the main view.
-const RVT_ALBEDO_LAYER: usize = 1;
-const RVT_NORMAL_LAYER: usize = 2;
-/// Sun shadow-ceiling field (bake mode 3). See [`crate::TerrainSunShadow`].
+/// Render layer isolating the sun shadow-ceiling field's bake camera and quad
+/// from the main view. See [`crate::TerrainSunShadow`].
 const RVT_SUN_SHADOW_LAYER: usize = 4;
 /// Layer offset for the tiny sentinel targets that detect bake readiness. Must
 /// exceed the number of bake targets so sentinel layers can't collide with a
 /// target's base layer.
 const RVT_SENTINEL_LAYER_OFFSET: usize = 4;
 
-/// Per-layer parameters packed for the GPU. `Vec4` lanes index the layers.
-#[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
-struct TerrainParams {
-    tiling_scale: Vec4,
-    height_blend: Vec4,
-    roughness: Vec4,
-    normal_strength: Vec4,
-    /// Slope band per layer (radians): appears between `slope_min` and `slope_max`,
-    /// ramping over `slope_blend` at each edge. No rule = wide-open band (all slopes).
-    slope_min: Vec4,
-    slope_max: Vec4,
-    slope_blend: Vec4,
-    /// World-height band per layer (meters): same shape as the slope band.
-    height_min: Vec4,
-    height_max: Vec4,
-    height_range_blend: Vec4,
-    /// Curvature band per layer (baked cavity scale, 0.5 = flat).
-    cavity_min: Vec4,
-    cavity_max: Vec4,
-    cavity_blend: Vec4,
-    layer_count: u32,
-}
-
-impl TerrainParams {
-    fn from_clipmap(clipmap: &Clipmap) -> Self {
-        let mut tiling_scale = [1.0f32; MAX_TERRAIN_LAYERS];
-        let mut height_blend = [0.0f32; MAX_TERRAIN_LAYERS];
-        let mut roughness = [1.0f32; MAX_TERRAIN_LAYERS];
-        let mut normal_strength = [1.0f32; MAX_TERRAIN_LAYERS];
-        // No-rule defaults: a band so wide the ramps never fire (weight factor 1).
-        let mut slope_min = [-10.0f32; MAX_TERRAIN_LAYERS];
-        let mut slope_max = [10.0f32; MAX_TERRAIN_LAYERS];
-        let mut slope_blend = [0.01f32; MAX_TERRAIN_LAYERS];
-        let mut height_min = [-1.0e9f32; MAX_TERRAIN_LAYERS];
-        let mut height_max = [1.0e9f32; MAX_TERRAIN_LAYERS];
-        let mut height_range_blend = [1.0f32; MAX_TERRAIN_LAYERS];
-        let mut cavity_min = [-10.0f32; MAX_TERRAIN_LAYERS];
-        let mut cavity_max = [10.0f32; MAX_TERRAIN_LAYERS];
-        let mut cavity_blend = [0.01f32; MAX_TERRAIN_LAYERS];
-        for (i, layer) in clipmap.layers.iter().take(MAX_TERRAIN_LAYERS).enumerate() {
-            tiling_scale[i] = layer.tiling_scale.max(1e-3);
-            height_blend[i] = layer.height_blend;
-            roughness[i] = layer.roughness;
-            normal_strength[i] = layer.normal_strength;
-            if let Some(slope) = &layer.slope {
-                slope_min[i] = slope.min_deg.to_radians();
-                slope_max[i] = slope.max_deg.to_radians();
-                slope_blend[i] = slope.blend_deg.to_radians().max(1e-3);
-            }
-            if let Some(h) = &layer.height {
-                height_min[i] = h.min;
-                height_max[i] = h.max;
-                height_range_blend[i] = h.blend.max(1e-3);
-            }
-            if let Some(c) = &layer.cavity {
-                cavity_min[i] = c.min;
-                cavity_max[i] = c.max;
-                cavity_blend[i] = c.blend.max(1e-3);
-            }
-        }
-        Self {
-            tiling_scale: Vec4::from_array(tiling_scale),
-            height_blend: Vec4::from_array(height_blend),
-            roughness: Vec4::from_array(roughness),
-            normal_strength: Vec4::from_array(normal_strength),
-            slope_min: Vec4::from_array(slope_min),
-            slope_max: Vec4::from_array(slope_max),
-            slope_blend: Vec4::from_array(slope_blend),
-            height_min: Vec4::from_array(height_min),
-            height_max: Vec4::from_array(height_max),
-            height_range_blend: Vec4::from_array(height_range_blend),
-            cavity_min: Vec4::from_array(cavity_min),
-            cavity_max: Vec4::from_array(cavity_max),
-            cavity_blend: Vec4::from_array(cavity_blend),
-            layer_count: clipmap.layers.len().min(MAX_TERRAIN_LAYERS) as u32,
-        }
-    }
-}
-
-/// RVT (runtime virtual texture) state for a clipmap: the baked material texture
-/// the main pass samples instead of blending the splat per-fragment.
+/// Bake state for a clipmap's sun shadow-ceiling field, the one whole-world
+/// target still baked at load. The surface itself is composited per level by
+/// the texture clipmap (`vt.rs`).
 #[derive(Component)]
 pub(crate) struct ClipmapRvt {
-    pub(crate) albedo: Handle<Image>,
-    pub(crate) normal: Handle<Image>,
     pub(crate) sun_shadow: Handle<Image>,
     pub(crate) initialized: bool,
+    /// The shadow field's latest bake has finished.
+    pub(crate) shadow_done: bool,
     /// Whether any bake has ever *completed* for this clipmap. Never reset —
     /// unlike `initialized`, which re-arms per re-bake — so it distinguishes
     /// "never shaded" (the clay fallback) from "re-baking with the
@@ -164,18 +84,17 @@ pub(crate) fn drive_rvt_bake(
             state.frames -= 1;
         } else if camera.is_active {
             camera.is_active = false;
-            // This target is baked. When the clipmap's last one finishes, mark
-            // it ready. Guarded by `is_active`, so this fires exactly once per
-            // camera. `try_insert` in case the clipmap despawned this frame.
+            // This target is baked; `vt::mark_clipmap_ready` inserts
+            // `ClipmapReady` once the clipmap's surface is composited too.
+            // Guarded by `is_active`, so this fires exactly once per camera.
             if let Ok(mut rvt) = rvts.get_mut(state.clipmap) {
                 rvt.pending_bakes = rvt.pending_bakes.saturating_sub(1);
                 if rvt.pending_bakes == 0 {
-                    rvt.ever_baked = true;
+                    rvt.shadow_done = true;
                     // Only now is the shadow field drawn rather than undefined.
                     if let Ok(mut sun_shadow) = sun_shadows.get_mut(state.clipmap) {
                         sun_shadow.params.mark_baked();
                     }
-                    commands.entity(state.clipmap).try_insert(ClipmapReady);
                 }
             }
             // Free the now-idle bake camera and its full-coverage quad (which
@@ -187,19 +106,16 @@ pub(crate) fn drive_rvt_bake(
     }
 }
 
-/// Handles [`RebakeRequested`] (`editing` feature): re-arm the clipmap's bake so
-/// `init_rvt` re-runs the full sentinel-gated pipeline next frame — same path as
-/// the initial bake, so it stays correct as that evolves. The initial bake's
-/// teardown already despawns every bake entity (`drive_rvt_bake`), so re-spawning
-/// is a clean slate, and the RVT targets keep their old content until the new
-/// bake overwrites them (no unbaked chrome-mirror flash).
+/// Handles [`RebakeRequested`] (`editing` feature): re-arm the shadow field's bake
+/// so `init_rvt` re-runs the sentinel-gated pipeline next frame — same path as
+/// the initial bake — and have the texture clipmap recomposite every level. Both
+/// keep their old content on screen until the new lands.
 ///
 /// If the live [`TerrainQuality`] bake-time fields drifted from the spawn
-/// snapshot (an editor's quality panel), the request also applies them: the RVT
-/// targets are resized **in place** — same handles, so every material binding
-/// stays valid — the material's packed quality bits are re-derived, and the
-/// snapshot updated so the bake agrees. Resizing blanks the targets, so the
-/// terrain goes clay until the new bake lands rather than sampling garbage.
+/// snapshot (an editor's quality panel), the request also applies them: the
+/// shadow field is resized **in place** — same handle, so every material binding
+/// stays valid — and the material's packed quality bits are re-derived. Resizing
+/// blanks the field, so the ground takes full sun until it rebakes.
 ///
 /// Requests are deferred (component kept) while the clipmap hasn't finished its
 /// current bake — processing one mid-flight would reset `pending_bakes` under the
@@ -219,16 +135,16 @@ pub(crate) fn process_rebake_requests(
             &mut ClipmapRvt,
             &crate::clipmap::ClipmapMaterials,
             &mut crate::TerrainSunShadow,
+            &mut crate::vt::ClipmapVt,
         ),
         With<RebakeRequested>,
     >,
 ) {
-    for (entity, mut clipmap, mut rvt, clipmap_materials, mut sun_shadow) in &mut clipmaps {
+    for (entity, clipmap, mut rvt, clipmap_materials, mut sun_shadow, mut vt) in &mut clipmaps {
         if !rvt.initialized || rvt.pending_bakes > 0 {
             continue;
         }
-        let drifted = quality.rvt_size != rvt.quality.rvt_size
-            || quality.detail_layers != rvt.quality.detail_layers
+        let drifted = quality.detail_layers != rvt.quality.detail_layers
             || quality.sun_shadow_size != rvt.quality.sun_shadow_size;
         if drifted {
             let mut resize = |handle: &Handle<Image>, size: u32, format: TextureFormat| {
@@ -240,9 +156,6 @@ pub(crate) fn process_rebake_requests(
                     *image = target;
                 }
             };
-            let size = quality.rvt_size;
-            resize(&rvt.albedo, size, TextureFormat::Rgba8UnormSrgb);
-            resize(&rvt.normal, size, TextureFormat::Rgba8Unorm);
             let sun_shadow_size = quality.sun_shadow_size.max(1);
             resize(&rvt.sun_shadow, sun_shadow_size, TextureFormat::Rgba16Float);
             // Resizing blanks the target, so the old field is gone: back to full
@@ -256,11 +169,10 @@ pub(crate) fn process_rebake_requests(
                 }
             }
             rvt.quality = *quality;
-            // The blanked targets have nothing to show; clay until the bake
-            // lands (`clear_clay_on_bake` lifts it on `ClipmapReady`).
-            clipmap.clay = true;
         }
         rvt.initialized = false;
+        rvt.shadow_done = false;
+        vt.refresh = true;
         // Re-arm the stall diagnostic for this bake.
         rvt.stall_secs = 0.0;
         rvt.stall_warned = false;
@@ -308,9 +220,10 @@ pub(crate) fn warn_unbaked_terrain(
     }
 }
 
-/// Warns if a [`TerrainQuality`] bake-time field (`rvt_size` / `detail_layers` /
+/// Warns if a [`TerrainQuality`] bake-time field (`detail_layers` /
 /// `sun_shadow_size`) is changed after the terrain has baked — those only apply at
-/// spawn (a rebake), so the change silently does nothing. Only `fog` applies live.
+/// spawn (a rebake), so the change silently does nothing. The texture clipmap's
+/// fields rebuild it live.
 pub(crate) fn warn_late_quality(
     quality: Res<TerrainQuality>,
     clipmaps: Query<(Entity, &ClipmapRvt)>,
@@ -331,13 +244,12 @@ pub(crate) fn warn_late_quality(
         let _ = entity;
         let baked = &rvt.quality;
         if rvt.initialized
-            && (baked.rvt_size != quality.rvt_size
-                || baked.detail_layers != quality.detail_layers
+            && (baked.detail_layers != quality.detail_layers
                 || baked.sun_shadow_size != quality.sun_shadow_size)
         {
             *warned = true;
             warn!(
-                "bevy_wilderness: a TerrainQuality bake-time field (rvt_size / detail_layers / \
+                "bevy_wilderness: a TerrainQuality bake-time field (detail_layers / \
                  sun_shadow_size) changed after the terrain baked — no effect \
                  without a rebake; only `fog` applies live"
             );
@@ -346,8 +258,8 @@ pub(crate) fn warn_late_quality(
     }
 }
 
-/// Material that bakes the terrain splat into the RVT. Runs the same source data
-/// as `GridMaterial` but outputs raw channels unlit; see `bake.wesl`.
+/// Material that bakes the sun shadow-ceiling field from the heightfield; see
+/// `bake.wesl`.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub(crate) struct BakeMaterial {
     #[texture(0)]
@@ -357,19 +269,6 @@ pub(crate) struct BakeMaterial {
     texel_size: f32,
     #[uniform(3)]
     minmax: Vec2,
-    #[texture(4, dimension = "2d_array")]
-    #[sampler(5)]
-    albedo_array: Handle<Image>,
-    #[uniform(8)]
-    params: TerrainParams,
-    #[texture(9, dimension = "2d_array")]
-    #[sampler(10)]
-    normal_array: Handle<Image>,
-    #[texture(11, dimension = "2d_array")]
-    #[sampler(12)]
-    orm_array: Handle<Image>,
-    #[uniform(13)]
-    output_mode: u32,
     #[uniform(14)]
     sun_direction: Vec3,
     // 1 = read the heightmap toroidally so the shadow/AO marches wrap across tile
@@ -391,7 +290,7 @@ impl Material for BakeMaterial {
 }
 
 /// Once the heightmap is loaded, spawn the top-down bake camera and quad that
-/// render the splat into the clipmap's RVT texture (full-terrain coverage).
+/// render the sun shadow-ceiling field (full-terrain coverage).
 pub(crate) fn init_rvt(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -423,20 +322,14 @@ pub(crate) fn init_rvt(
         sun_shadow.params = crate::SunShadowParams::pending(world_size, clipmap.min);
         sun_shadow.params.valid = was_valid;
         rvt.initialized = true;
-        // Albedo, normal/ORM and the sun-shadow field. All must finish before
-        // the clipmap is ready — kept in sync with the targets below.
-        rvt.pending_bakes = 3;
+        // Kept in sync with the targets below.
+        rvt.pending_bakes = 1;
 
-        let mut make_bake = |mode: u32| {
+        let mut make_bake = || {
             bake_materials.add(BakeMaterial {
                 heightmap: clipmap.heightmap.clone(),
                 texel_size: clipmap.texel_size,
                 minmax: Vec2::new(clipmap.min, clipmap.max),
-                albedo_array: clipmap.albedo_array.clone(),
-                params: TerrainParams::from_clipmap(clipmap),
-                normal_array: clipmap.normal_array.clone(),
-                orm_array: clipmap.orm_array.clone(),
-                output_mode: mode,
                 sun_direction,
                 looping: clipmap.looping as u32,
             })
@@ -461,40 +354,22 @@ pub(crate) fn init_rvt(
         let camera_transform =
             Transform::from_xyz(0.0, 10000.0, 0.0).looking_at(Vec3::ZERO, Vec3::NEG_Z);
 
-        // Three bake targets: albedo (mode 0), normal/ORM (mode 1) and the
-        // sun-shadow field (mode 3). Bevy's camera-to-image is single-target, so each is its own quad + camera on
-        // its own render layer, rendered before the main view.
+        // The bake target gets its own quad and camera on its own render layer,
+        // rendered before the main view.
         //
         // Each bake camera starts inactive behind a sentinel: the same material
         // rendered to a tiny readback target. The first non-black readback
         // proves the bake pipeline is compiled and the source textures are on
         // the GPU — only then does the expensive full-res bake render (frame
         // counts are machine-dependent and get it wrong either way).
-        let targets = [
-            (
-                0u32,
-                rvt.albedo.clone(),
-                TextureFormat::Rgba8UnormSrgb,
-                RVT_ALBEDO_LAYER,
-                -3isize,
-            ),
-            (
-                1u32,
-                rvt.normal.clone(),
-                TextureFormat::Rgba8Unorm,
-                RVT_NORMAL_LAYER,
-                -2isize,
-            ),
-            (
-                3u32,
-                rvt.sun_shadow.clone(),
-                TextureFormat::Rgba16Float,
-                RVT_SUN_SHADOW_LAYER,
-                -4isize,
-            ),
-        ];
-        for (mode, target, format, layer, order) in targets {
-            let material = make_bake(mode);
+        let targets = [(
+            rvt.sun_shadow.clone(),
+            TextureFormat::Rgba16Float,
+            RVT_SUN_SHADOW_LAYER,
+            -4isize,
+        )];
+        for (target, format, layer, order) in targets {
+            let material = make_bake();
             let sentinel_layer = layer + RVT_SENTINEL_LAYER_OFFSET;
 
             // All bake entities are parented to the clipmap so despawning it
