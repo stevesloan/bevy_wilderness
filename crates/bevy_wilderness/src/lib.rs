@@ -110,6 +110,6 @@ impl Plugin for ClipmapPlugin {
         // Demo debug-view keybind (V). Off by default so the library ships no
         // input systems; enable `dev-controls`.
         #[cfg(feature = "dev-controls")]
-        app.add_systems(Update, dev_controls::debug_cycle_view);
+        app.add_systems(Update, (dev_controls::debug_cycle_view, vt::log_vt_stats));
     }
 }

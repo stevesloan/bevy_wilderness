@@ -19,6 +19,9 @@ use bevy_wilderness::{
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins)
+        // GPU timing for the terrain clipmap's composite, logged by
+        // `dev-controls` once a second while it composites.
+        .add_plugins(bevy::render::diagnostic::RenderDiagnosticsPlugin)
         .add_plugins(FreeCameraPlugin)
         .add_plugins(ClipmapPlugin)
         .add_systems(Startup, setup)

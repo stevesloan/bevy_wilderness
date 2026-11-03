@@ -204,6 +204,72 @@ pub(crate) struct VtOutbox {
 #[derive(Resource, Clone, Default)]
 pub(crate) struct VtDone(pub(crate) Arc<Mutex<Vec<u64>>>);
 
+/// Composite work since the last report, written by the render world.
+#[derive(Default)]
+pub(crate) struct VtStatsWindow {
+    /// Frames that composited anything.
+    pub(crate) frames: u32,
+    pub(crate) texels: u64,
+    pub(crate) max_texels: u64,
+    /// Texels still queued at the last compositing frame.
+    pub(crate) queued: u64,
+}
+
+#[derive(Resource, Clone, Default)]
+pub(crate) struct VtStats(pub(crate) Arc<Mutex<VtStatsWindow>>);
+
+/// The render diagnostic span around the composite passes.
+pub(crate) const VT_COMPOSITE_SPAN: &str = "terrain_vt_composite";
+
+/// Logs composite cost once a second while the clipmap is compositing: texels,
+/// and GPU time per compositing frame when the app has
+/// `RenderDiagnosticsPlugin` and the device has timestamp queries.
+#[cfg(feature = "dev-controls")]
+pub(crate) fn log_vt_stats(
+    stats: Res<VtStats>,
+    store: Option<Res<bevy::diagnostic::DiagnosticsStore>>,
+    mut last: Local<Option<std::time::Instant>>,
+) {
+    let now = std::time::Instant::now();
+    let since = *last.get_or_insert(now);
+    if now.duration_since(since).as_secs_f32() < 1.0 {
+        return;
+    }
+    *last = Some(now);
+    let window = std::mem::take(&mut *stats.0.lock().unwrap());
+    if window.frames == 0 {
+        return;
+    }
+    let path = bevy::diagnostic::DiagnosticPath::new(format!(
+        "render/{VT_COMPOSITE_SPAN}/elapsed_gpu"
+    ));
+    let gpu: Vec<f64> = store
+        .as_ref()
+        .and_then(|store| store.get(&path))
+        .map(|diagnostic| {
+            diagnostic
+                .measurements()
+                .filter(|m| m.time >= since)
+                .map(|m| m.value)
+                .collect()
+        })
+        .unwrap_or_default();
+    let gpu = if gpu.is_empty() {
+        "GPU time unavailable".to_string()
+    } else {
+        let max = gpu.iter().cloned().fold(0.0, f64::max);
+        let avg = gpu.iter().sum::<f64>() / gpu.len() as f64;
+        format!("GPU {avg:.2} ms avg, {max:.2} ms max")
+    };
+    info!(
+        "terrain clipmap: {} compositing frames, {}k texels ({}k max/frame), {}k queued; {gpu}",
+        window.frames,
+        window.texels / 1000,
+        window.max_texels / 1000,
+        window.queued / 1000,
+    );
+}
+
 #[derive(Debug)]
 struct Job {
     window: IRect,

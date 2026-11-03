@@ -18,13 +18,14 @@ use bevy::{
             ShaderType, StoreOp, TextureFormat, TextureSampleType, TextureViewDescriptor,
             TextureViewDimension, UniformBuffer, VertexState,
         },
+        diagnostic::RecordDiagnostics,
         renderer::{RenderContext, RenderDevice, RenderGraph, RenderGraphSystems, RenderQueue},
         texture::GpuImage,
         ExtractSchedule, MainWorld, RenderApp, RenderStartup,
     },
 };
 
-use crate::vt::{VtDone, VtMessage, VtOutbox, VtRequest};
+use crate::vt::{VtDone, VtMessage, VtOutbox, VtRequest, VtStats};
 
 /// The render world's queue of requests, filled at extraction.
 #[derive(Resource, Default)]
@@ -54,12 +55,16 @@ pub(crate) struct VtRenderPlugin;
 impl Plugin for VtRenderPlugin {
     fn build(&self, app: &mut App) {
         let done = VtDone::default();
-        app.init_resource::<VtOutbox>().insert_resource(done.clone());
+        let stats = VtStats::default();
+        app.init_resource::<VtOutbox>()
+            .insert_resource(done.clone())
+            .insert_resource(stats.clone());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
             .insert_resource(done)
+            .insert_resource(stats)
             .init_resource::<VtInbox>()
             .add_systems(RenderStartup, init_vt_pipeline)
             .add_systems(ExtractSchedule, extract_vt_messages)
@@ -176,6 +181,7 @@ fn extract_vt_messages(mut main_world: ResMut<MainWorld>, mut inbox: ResMut<VtIn
 fn composite_vt(
     mut inbox: ResMut<VtInbox>,
     done_out: Res<VtDone>,
+    stats: Res<VtStats>,
     pipeline: Option<Res<VtPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -308,6 +314,9 @@ fn composite_vt(
         &BindGroupEntries::single(draw_binding),
     );
 
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    let span = diagnostics.time_span(ctx.command_encoder(), crate::vt::VT_COMPOSITE_SPAN);
     for batch in &batches {
         let (albedo_id, normal_id) = targets[&batch.clipmap];
         let (Some(albedo), Some(normal)) = (images.get(albedo_id), images.get(normal_id)) else {
@@ -355,6 +364,20 @@ fn composite_vt(
         }
     }
 
+    span.end(ctx.command_encoder());
+
+    let drawn = (budget as i64 - remaining).max(0) as u64;
+    let queued: u64 = queue
+        .iter()
+        .map(|r| (r.rect.width() * r.rect.height()) as u64)
+        .sum();
+    {
+        let mut window = stats.0.lock().unwrap();
+        window.frames += 1;
+        window.texels += drawn;
+        window.max_texels = window.max_texels.max(drawn);
+        window.queued = queued;
+    }
     done_out.0.lock().unwrap().extend(done);
 }
 
