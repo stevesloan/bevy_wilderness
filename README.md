@@ -5,7 +5,7 @@
 Beautiful, up close and from afar, nature-shaped terrain for Bevy.
 
 Forked from [bevy-clipmap](https://github.com/kirillsurkov/bevy-clipmap) by
-Kirill Surkov — thanks! The fork has diverged heavily (baked RVT shading,
+Kirill Surkov — thanks! The fork has diverged heavily (texture-clipmap shading,
 procedural splat, height fog, toroidal looping, editable-terrain API) and lives
 on under a new name.
 
@@ -20,9 +20,12 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 ### Features
 
 - **Geometry clipmap terrain** — adaptive LOD for huge worlds.
-- **Procedural multi-layer material** — splat blending placed by slope/height bands.
-- **Baked shading (RVT)** — albedo, normals, roughness, self-shadow, macro AO /
-  bent normal / cavity, plus a near-range detail overlay.
+- **Procedural multi-layer material** — splat blending placed by slope, height
+  and cavity bands, with height blending and hex tiling.
+- **Texture-clipmap shading** — the splat composited into levels that follow
+  the camera, only where it moves, plus a near-range detail overlay.
+- **Terrain sun shadow** — a baked shadow-ceiling field, height-correct for the
+  ground and for your own meshes.
 - **Height fog**, one inline path (flatscreen + standalone VR).
 - **Toroidal looping** — optionally tile the heightmap for seamless infinite terrain.
 - **Editable-terrain API** (`editing` feature) — a `RebakeRequested` re-bake
@@ -30,9 +33,9 @@ This is an adaptive LOD technique that allows us to render huge worlds for cheap
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — how the renderer works.
+- [docs/architecture.md](docs/architecture.md) — how the renderer works, and the
+  work left open in it.
 - [docs/editor.md](docs/editor.md) — how the terrain editor works.
-- [docs/roadmap.md](docs/roadmap.md) — where it's going, and why.
 
 ## Usage
 

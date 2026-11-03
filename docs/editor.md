@@ -148,7 +148,8 @@ Messages: `UndoRequest`, `RedoRequest` → `UndoApplied { label, redone }`.
 ## 7. Bake control and clay
 
 - `RebakeSettings { auto }` (default on): dirty flushes arm a 200 ms debounce,
-  then `RebakeRequested`. The previous bake stays on screen meanwhile.
+  then `RebakeRequested`, which rebakes the shadow field and recomposites every
+  clipmap level. The previous shading stays on screen meanwhile.
 - With auto off, edits switch the terrain to **clay** (grey, derivative
   normals, terrain-scale CSM shadows — see architecture.md §8) until the user
   bakes. Rationale: "geometry is true, materials are pending" reads coherently;

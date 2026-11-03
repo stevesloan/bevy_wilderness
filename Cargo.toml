@@ -1,4 +1,4 @@
-# Virtual workspace root (docs/terrain-editor-design.md §7). The renderer and the
+# Virtual workspace root (docs/editor.md). The renderer and the
 # editor crates (bevy_wilderness_editor, _editor_ui — later phases) live under
 # crates/; a shared Cargo.lock keeps one bevy version across all of them.
 [workspace]
