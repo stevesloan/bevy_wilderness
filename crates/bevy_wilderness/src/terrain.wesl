@@ -83,7 +83,8 @@ struct BakedLight {
 // repeating, no mips.
 // Dev/experiment + editing scalars packed into one uniform (bindings 112/113
 // freed for ceiling headroom). debug_view: 0 = lit terrain, 1 = cavity,
-// 2 = sun visibility — nonzero outputs the raw value unlit. The stamp_*
+// 2 = sun visibility, 3 = flat colour, 7 = albedo — those output unlit. 4–6 are
+// lit with one part of the shading removed, for measuring its cost. The stamp_*
 // fields are the stamp preview transform, read in `fn vertex` while flags
 // bit5 is set (must match the Rust `DevParams` field-for-field).
 struct DevParams {
@@ -616,7 +617,9 @@ fn vt_sample(xz: vec2<f32>, footprint: f32) -> VtSample {
     var rough = 0.0;
     var id_level = dev.vt.count - 1u;
     var id_found = false;
-    for (var i = 0u; i < dev.vt.count; i++) {
+    // Debug: the whole-world level alone (`TerrainDebugView::OneLevel`).
+    let first = select(0u, dev.vt.count - 1u, dev.debug_view == 5u);
+    for (var i = first; i < dev.vt.count; i++) {
         let level = dev.vt.levels[i];
         let last = i + 1u == dev.vt.count;
         let r = level.rect;
@@ -672,6 +675,12 @@ fn fragment(
     if (flags & 1u) != 0u {
         var out: FragmentOutput;
         out.color = vec4(1.0);
+        return out;
+    }
+    // Debug: flat colour, no texture reads or lighting (`TerrainDebugView::Flat`).
+    if dev.debug_view == 3u {
+        var out: FragmentOutput;
+        out.color = vec4(0.35, 0.35, 0.32, 1.0);
         return out;
     }
 
@@ -730,7 +739,8 @@ fn fragment(
     // Near-range detail overlay, faded with distance. Skipped entirely past the
     // fade range so far terrain pays none of the detail samples. Derivatives are
     // taken outside the branch so the guarded samples keep correct mip selection.
-    let detail_fade = 1.0 - smoothstep(detail.near, detail.far, cam_dist);
+    // Debug: no detail overlay (`TerrainDebugView::NoDetail`).
+    let detail_fade = select(1.0 - smoothstep(detail.near, detail.far, cam_dist), 0.0, dev.debug_view == 4u);
     let dtile = in.world_position.xz / detail.tiling;
     let ddx = dpdx(dtile);
     let ddy = dpdy(dtile);
@@ -828,7 +838,11 @@ fn fragment(
     pbr_input.material.metallic = 0.0;
     // The detail AO darkens only ambient/indirect, never the direct sun.
     pbr_input.diffuse_occlusion = vec3<f32>(ao);
-    let baked = baked_light_at(in.world_position.xz, pbr_input.N);
+    // Debug: no baked light (`TerrainDebugView::NoBakedLight`).
+    var baked = no_baked_light();
+    if dev.debug_view != 6u {
+        baked = baked_light_at(in.world_position.xz, pbr_input.N);
+    }
     if baked.found {
         sun_vis = baked.sun_visibility;
     }
@@ -844,6 +858,8 @@ fn fragment(
         out.color = vec4<f32>(vec3<f32>(vt.albedo.a), 1.0);
     } else if dev.debug_view == 2u {
         out.color = vec4<f32>(vec3<f32>(sun_vis), 1.0);
+    } else if dev.debug_view == 7u {
+        out.color = vec4<f32>(albedo, 1.0);
     } else {
         out.color = terrain_apply_lighting(pbr_input, sun_vis, baked);
         out.color = main_pass_post_lighting_processing(pbr_input, out.color);

@@ -52,6 +52,65 @@ impl Default for TerrainQuality {
     }
 }
 
+/// What the terrain's fragment shader outputs. Everything but
+/// [`Lit`](Self::Lit) is unlit, for inspecting a channel or measuring cost.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TerrainDebugView {
+    #[default]
+    Lit,
+    /// The cavity channel as grayscale.
+    Cavity,
+    /// Sun visibility from the shadow field, as grayscale.
+    SunVisibility,
+    /// One flat colour, with no texture reads or lighting: the frame with the
+    /// terrain's geometry but none of its shading, to measure what shading costs.
+    Flat,
+    /// The following each remove one part of the shading, to measure its cost.
+    /// Lit, without the near detail overlay.
+    NoDetail,
+    /// Lit, reading only the clipmap's whole-world level.
+    OneLevel,
+    /// Lit, ignoring [`TerrainBakedLight`](crate::TerrainBakedLight).
+    NoBakedLight,
+    /// The clipmap's albedo with the detail overlay, unlit.
+    Unlit,
+}
+
+impl TerrainDebugView {
+    fn index(self) -> u32 {
+        match self {
+            Self::Lit => 0,
+            Self::Cavity => 1,
+            Self::SunVisibility => 2,
+            Self::Flat => 3,
+            Self::NoDetail => 4,
+            Self::OneLevel => 5,
+            Self::NoBakedLight => 6,
+            Self::Unlit => 7,
+        }
+    }
+}
+
+/// Publish [`TerrainDebugView`] to the terrain's materials. Every frame, so a
+/// clipmap spawned after the view was set picks it up; writes only on a
+/// difference.
+pub(crate) fn apply_terrain_debug_view(
+    view: Res<TerrainDebugView>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    let index = view.index();
+    let stale: Vec<_> = materials
+        .iter()
+        .filter(|(_, material)| material.extension.dev.debug_view != index)
+        .map(|(id, _)| id)
+        .collect();
+    for id in stale {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.dev.debug_view = index;
+        }
+    }
+}
+
 /// The fog as a uniform, to fog **your own** materials: `#import
 /// bevy_wilderness::fog_functions`, embed a `#[uniform(N)] HeightFogParams`, copy
 /// this in when it changes, and call `apply_height_fog` before tonemapping. The

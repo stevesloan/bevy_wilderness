@@ -89,7 +89,8 @@ field's ground shadow (§8); remove it when the terrain no longer matches the
 bake (an edit) and the terrain lights itself again. The crate never bakes it.
 
 **Resources.** `TerrainQuality` (performance profile, §9), `TerrainFog` (the
-fog *look*), `InlineFog` (the fog's params for your own shaders).
+fog *look*), `InlineFog` (the fog's params for your own shaders),
+`TerrainDebugView` (what the terrain's fragment shader outputs, §8).
 
 **Other.** `TerrainLayer`, `SlopeRule`, `HeightRule`, `CavityRule`, `DetailConfig`,
 `HoleShape`, `MAX_HOLES` (24), `HeightFog`/`HeightFogParams`, `SunShadowParams`,
@@ -99,8 +100,9 @@ fog *look*), `InlineFog` (the fog's params for your own shaders).
 - `editing` — the editable-terrain API: `RebakeRequested`, `Heightfield`,
   `ClipmapStamp`, the overlay/stamp bindings, clay mode. Default consumers pay
   nothing for it.
-- `dev-controls` — V cycles debug views (cavity / sun visibility), and the
-  clipmap logs its composite cost once a second while compositing (§10).
+- `dev-controls` — V cycles `TerrainDebugView` through lit, cavity, sun
+  visibility and flat, and the clipmap logs its composite cost once a second
+  while compositing (§10).
 
 ## 4. Geometry — clipmap rings
 
@@ -379,7 +381,11 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    ranges; terrain does not receive rect lights).
 4. Deferred builds write `deferred_output` instead of lighting.
 
-Debug views (`dev-controls`): 1 cavity, 2 sun visibility — raw, unlit.
+**Debug views** (`TerrainDebugView`, any build). Cavity and sun visibility
+show a channel as grayscale, unlit. The rest measure what the shading costs on
+a device, each removing one part: `Flat` (one colour, no texture reads or
+lighting), `NoDetail`, `OneLevel` (the whole-world level only), `NoBakedLight`,
+and `Unlit` (albedo and detail, no lighting or fog).
 
 **Clay mode** (`editing`). While shading is stale (`clipmap.clay`, or never
 ready) the fragment ignores the clipmap and renders grey clay with derivative

@@ -28,7 +28,7 @@ pub use holes::{HoleShape, MAX_HOLES};
 /// that must stay in sync with the shaders (docs/architecture.md).
 #[cfg(feature = "editing")]
 pub use heightfield::Heightfield;
-pub use quality::{InlineFog, TerrainFog, TerrainQuality};
+pub use quality::{InlineFog, TerrainDebugView, TerrainFog, TerrainQuality};
 pub use sun_shadow::{SunShadowParams, TerrainSunShadow};
 pub use texture::{build_terrain_array, load_terrain_array};
 
@@ -57,6 +57,7 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
+            .init_resource::<TerrainDebugView>()
             .add_systems(
                 PreUpdate,
                 (
@@ -88,6 +89,7 @@ impl Plugin for ClipmapPlugin {
                     vt::update_vt.after(drive_rvt_bake),
                     vt::mark_clipmap_ready.after(vt::update_vt),
                     quality::apply_terrain_fog,
+                    quality::apply_terrain_debug_view,
                     warn_unbaked_terrain,
                     warn_late_quality,
                 ),
