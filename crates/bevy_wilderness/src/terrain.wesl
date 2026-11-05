@@ -142,6 +142,17 @@ struct DetailParams {
     albedo_strength: f32,
     near: f32,
     far: f32,
+    // Per layer, for the direct near field (`material.rs`).
+    layer_tiling: vec4<f32>,
+    layer_height_blend: vec4<f32>,
+    layer_normal: vec4<f32>,
+    layer_roughness: vec4<f32>,
+    layer_count: u32,
+    // Per layer, the micro tiling (m); 0 = none.
+    layer_micro: vec4<f32>,
+    micro_near: f32,
+    micro_far: f32,
+    micro_strength: f32,
 }
 @group(constants::MATERIAL_BIND_GROUP) @binding(129) var<uniform> detail: DetailParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(130) var detail_orm_array: texture_2d_array<f32>;
@@ -689,11 +700,46 @@ fn geo_normal_at(xz: vec2<f32>) -> vec3<f32> {
     return normalize(vec3(h_l - h_r, 2.0 * texel_size, h_b - h_t));
 }
 
+// How far below the higher material the other still shows, in height: small is
+// a crisp edge, large a soft one. Near the camera, then past the micro tiling.
+const DETAIL_BLEND_DEPTH: f32 = 0.08;
+const DETAIL_BLEND_DEPTH_FAR: f32 = 0.25;
+// Layers with a smaller share of the clipmap texel aren't sampled up close.
+const NEAR_MIN_SHARE: f32 = 0.01;
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// The layers' shares in a clipmap level, cubic B-spline filtered from four
+// bilinear taps. A texel's shares are close to all-or-nothing, so bilinear
+// filtering draws the texel grid into every boundary; the B-spline is smooth.
+fn shares_bspline(uv: vec2<f32>, layer: u32) -> vec4<f32> {
+    let size = f32(dev.vt.size);
+    let pos = uv * size - 0.5;
+    let base = floor(pos);
+    let f = pos - base;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let p0 = (base - 0.5 + w1 / g0) / size;
+    let p1 = (base + 1.5 + w3 / g1) / size;
+    let t00 = textureSampleLevel(vt_normal_texture, vt_sampler, vec2(p0.x, p0.y), layer, 0.0);
+    let t10 = textureSampleLevel(vt_normal_texture, vt_sampler, vec2(p1.x, p0.y), layer, 0.0);
+    let t01 = textureSampleLevel(vt_normal_texture, vt_sampler, vec2(p0.x, p1.y), layer, 0.0);
+    let t11 = textureSampleLevel(vt_normal_texture, vt_sampler, vec2(p1.x, p1.y), layer, 0.0);
+    return g0.y * (g0.x * t00 + g1.x * t10) + g1.y * (g0.x * t01 + g1.x * t11);
+}
+
 struct DetailSample {
     // Unnormalized, already reoriented onto the surface.
     normal: vec3<f32>,
     albedo: vec3<f32>,
     orm: vec3<f32>,
+    // The layer's height (albedo alpha), 0..1.
+    height: f32,
 }
 
 // One material's detail, projected by `pw`. `p` and its derivatives are world
@@ -707,7 +753,7 @@ fn detail_sample(
     base_normal: vec3<f32>,
     strength: f32,
 ) -> DetailSample {
-    var s = DetailSample(vec3(0.0), vec3(0.0), vec3(0.0));
+    var s = DetailSample(vec3(0.0), vec3(0.0), vec3(0.0), 0.0);
     for (var k = 0u; k < 3u; k++) {
         if pw[k] <= 0.0 {
             continue;
@@ -718,7 +764,9 @@ fn detail_sample(
         let ddy = vec2<f32>(dot(dp_dy, b[0]), dot(dp_dy, b[1]));
         let tn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, uv, layer, ddx, ddy).xyz * 2.0 - 1.0;
         s.normal += whiteout(vec3<f32>(tn.xy * strength, tn.z), base_normal, b) * pw[k];
-        s.albedo += textureSampleGrad(detail_albedo_array, detail_albedo_sampler, uv, layer, ddx, ddy).rgb * pw[k];
+        let albedo = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, uv, layer, ddx, ddy);
+        s.albedo += albedo.rgb * pw[k];
+        s.height += albedo.a * pw[k];
         s.orm += textureSampleGrad(detail_orm_array, detail_albedo_sampler, uv, layer, ddx, ddy).rgb * pw[k];
     }
     return s;
@@ -821,20 +869,12 @@ fn fragment(
     var albedo = vt.albedo.rgb;
     var rough = vt.roughness;
     var ao = 1.0;
-    if detail_fade > 0.001 {
-        // Two dominant material ids + their blend, packed (2+2+4 bits) into the
-        // clipmap normal's alpha. `mblend` (0..0.5) lerps the two materials'
-        // detail normals. Read it NEAREST (textureLoad) — the packed byte can't
-        // be linearly filtered, or the bilinear sweep through id/weight combos
-        // shows as banding strips — from the finest level covering this point.
-        //
-        // Jitter the sample point by ±0.5 texel using a world-locked hash before
-        // the NEAREST read. Rounding a coordinate offset by uniform noise picks
-        // each neighbouring texel with probability equal to the fractional
-        // distance — a stochastic stand-in for the bilinear filter the packed
-        // byte can't use. The hard dirt→rock boundary becomes noise the detail
-        // texture hides. The high-frequency hash keeps cells sub-texel so
-        // adjacent fragments decorrelate and average toward the true blend.
+    if detail_fade > 0.001 && (flags & 4u) != 0u {
+        // Single-layer detail (standalone): the dominant material's grain over the
+        // clipmap. Its id is packed (2+2+4 bits) in the clipmap normal's alpha, so
+        // it's read NEAREST from the finest level covering this point, jittered
+        // ±0.5 texel by a world-locked hash: a stochastic stand-in for the
+        // bilinear filter the packed byte can't take.
         let jitter = hash22(in.world_position.xz) - 0.5;
         let id_level = dev.vt.levels[vt.id_level];
         let vt_size = i32(dev.vt.size);
@@ -847,49 +887,103 @@ fn fragment(
         }
         let mid = u32(textureLoad(vt_normal_texture, mid_idx, vt.id_level, 0).a * 255.0 + 0.5);
         let id0 = mid & 3u;
-        let id1 = (mid >> 2u) & 3u;
-        let mblend = f32((mid >> 4u) & 15u) / 15.0 * 0.5;
 
-        // Top dominant material's detail normal / albedo / ORM. The second material
-        // is lerped in for smooth boundaries — skipped for single-layer detail (VR)
-        // and wherever one material dominates (`mblend == 0`, the common case, which
-        // the bake quantizes exactly to 0), saving a second material's samples.
-        // Single-layer detail also projects top-down only, skipping the heightmap
-        // normal and the side projections on slopes.
-        // The RVT already holds this same albedo array blended at macro tiling, so
-        // the detail sample must contribute *variation*, not colour, or the two
-        // multiply into albedo squared. Its coarsest mip is the layer's own mean,
-        // so the grain below is unit-mean by construction and leaves the macro
-        // albedo intact for any texture set, whatever its average brightness.
-        let single = (flags & 4u) != 0u;
-        var pw = vec3<f32>(0.0, 1.0, 0.0);
-        if !single {
-            pw = projection_weights(geo_normal_at(in.world_position.xz));
-        }
+        // The clipmap already holds this albedo array blended at macro tiling, so
+        // the detail must contribute *variation*, not colour, or the two multiply
+        // into albedo squared. The coarsest mip is the layer's own mean, so the
+        // grain is unit-mean by construction.
         let strength = detail.normal_strength * detail_fade;
         let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
-        var d = detail_sample(id0, pw, detail_p, detail_dx, detail_dy, base_normal, strength);
-        var da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, detail_p.xz, id0, da_lod).rgb;
-        if !single && mblend > 0.0 {
-            let d1 = detail_sample(id1, pw, detail_p, detail_dx, detail_dy, base_normal, strength);
-            let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, detail_p.xz, id1, da_lod).rgb;
-            d.normal = mix(d.normal, d1.normal, mblend);
-            d.albedo = mix(d.albedo, d1.albedo, mblend);
-            d.orm = mix(d.orm, d1.orm, mblend);
-            da_avg = mix(da_avg, da1_avg, mblend);
-        }
+        let d = detail_sample(id0, vec3<f32>(0.0, 1.0, 0.0), detail_p, detail_dx, detail_dy, base_normal, strength);
+        let da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, detail_p.xz, id0, da_lod).rgb;
         world_normal = normalize(d.normal);
 
-        // Grain is the detail's *brightness* around its own mean, capped. A
-        // per-channel ratio amplified grass's near-zero blue up to ~6×, and
-        // where the NEAREST material id and the filtered colour disagree (a
-        // grass id over rock colour) that tinted rock purple. Brightness can't
-        // change hue, whatever colour it lands on.
-        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
-        let grain = min(dot(d.albedo, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
+        // Grain is the detail's *brightness* around its own mean, capped: a
+        // per-channel ratio amplified grass's near-zero blue up to ~6× and tinted
+        // rock purple. Brightness can't change hue.
+        let grain = min(dot(d.albedo, LUMA) / max(dot(da_avg, LUMA), 1e-4), 3.0);
         albedo *= mix(1.0, grain, detail.albedo_strength * detail_fade);
         rough = mix(vt.roughness, d.orm.g, detail_fade);
         ao = mix(1.0, d.orm.r, detail_fade);
+    } else if detail_fade > 0.001 {
+        // The near field, drawn from the materials themselves: each layer's full
+        // albedo, normal and roughness at its real-scale tiling, height-blended
+        // per pixel, rather than the clipmap's texels. The clipmap supplies the
+        // layers' shares (filterable, from the finest level covering this point)
+        // and, below, the macro variation the near colour carries.
+        let level = dev.vt.levels[vt.id_level];
+        var share_uv = in.world_position.xz / level.info.y + 0.5;
+        if (flags & 8u) == 0u && vt.id_level + 1u == dev.vt.count {
+            share_uv = clamp(share_uv, vec2(0.0), vec2(1.0));
+        }
+        let shares = shares_bspline(share_uv, vt.id_level + dev.vt.count);
+
+        let geo = geo_normal_at(in.world_position.xz);
+        let pw = projection_weights(geo);
+        let world_dx = detail_dx * detail.tiling;
+        let world_dy = detail_dy * detail.tiling;
+        let mean_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
+        let micro_fade = (1.0 - smoothstep(detail.micro_near, detail.micro_far, cam_dist)) * detail.micro_strength;
+        var samples: array<DetailSample, 4>;
+        var means: array<vec3<f32>, 4>;
+        var scores = array<f32, 4>(-1e9, -1e9, -1e9, -1e9);
+        var top = -1e9;
+        var macro_mean = vec3<f32>(0.0);
+        for (var i = 0u; i < 4u; i++) {
+            if i >= detail.layer_count || shares[i] <= NEAR_MIN_SHARE {
+                continue;
+            }
+            let scale = 1.0 / detail.layer_tiling[i];
+            samples[i] = detail_sample(
+                i, pw, in.world_position.xyz * scale, world_dx * scale, world_dy * scale, geo,
+                detail.layer_normal[i] * detail.normal_strength,
+            );
+            means[i] = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, vec2(0.5), i, mean_lod).rgb;
+            macro_mean += means[i] * shares[i];
+            // The same material at a much smaller tiling, for its relief only:
+            // its colour would lay a second pattern over the material's own.
+            if detail.layer_micro[i] > 0.0 && micro_fade > 0.001 {
+                let micro_scale = 1.0 / detail.layer_micro[i];
+                let micro = detail_sample(
+                    i, pw, in.world_position.xyz * micro_scale, world_dx * micro_scale, world_dy * micro_scale,
+                    normalize(samples[i].normal), detail.layer_normal[i] * detail.normal_strength * micro_fade,
+                );
+                samples[i].normal = micro.normal;
+                // Blend on the fine relief too: a large tiling's height changes
+                // over metres, and an edge that follows it is one smooth cut.
+                samples[i].height = mix(samples[i].height, micro.height, 0.5 * micro_fade);
+            }
+            scores[i] = shares[i] + samples[i].height * detail.layer_height_blend[i];
+            top = max(top, scores[i]);
+        }
+        // Crisp where the fine relief breaks the edge up, softer past it, where
+        // only large-scale height is left to shape it.
+        let blend_depth = mix(DETAIL_BLEND_DEPTH_FAR, DETAIL_BLEND_DEPTH, micro_fade / max(detail.micro_strength, 1e-3));
+        var near_albedo = vec3<f32>(0.0);
+        var near_normal = vec3<f32>(0.0);
+        var near_rough = 0.0;
+        var near_ao = 0.0;
+        var total = 0.0;
+        for (var i = 0u; i < 4u; i++) {
+            let b = max(scores[i] - (top - blend_depth), 0.0);
+            if b <= 0.0 {
+                continue;
+            }
+            near_albedo += samples[i].albedo * b;
+            near_normal += samples[i].normal * b;
+            near_rough += samples[i].orm.g * detail.layer_roughness[i] * b;
+            near_ao += samples[i].orm.r * b;
+            total += b;
+        }
+        let inv = 1.0 / max(total, 1e-4);
+        // The clipmap's colour over the plain mix of the same layers' means is
+        // what it adds at macro scale: mask tints, broad tiling variation. Carried
+        // as brightness only, so it can't shift hue.
+        let macro_ratio = clamp(dot(vt.albedo.rgb, LUMA) / max(dot(macro_mean, LUMA), 1e-4), 0.3, 3.0);
+        albedo = mix(vt.albedo.rgb, near_albedo * inv * macro_ratio, detail_fade);
+        world_normal = normalize(mix(base_normal, normalize(near_normal), detail_fade));
+        rough = mix(vt.roughness, near_rough * inv, detail_fade);
+        ao = mix(1.0, near_ao * inv, detail_fade);
     }
     in_modified.world_normal = world_normal;
 

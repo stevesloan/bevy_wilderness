@@ -8,7 +8,6 @@ use bevy::{
 
 use crate::height_fog::HeightFogParams;
 use crate::holes::HoleBuffer;
-use crate::DetailConfig;
 
 /// Pipeline-specializing state. `holes` keys a separate pipeline so terrain
 /// without holes compiles a vertex shader with no shape loop at all.
@@ -86,7 +85,8 @@ impl Default for DevParams {
     }
 }
 
-/// Near-range detail-overlay parameters (packed for the GPU).
+/// Near-range detail parameters (packed for the GPU). `Vec4` lanes index the
+/// layers, as the composite's `TerrainParams` do.
 #[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
 pub(crate) struct DetailParams {
     tiling: f32,
@@ -95,16 +95,45 @@ pub(crate) struct DetailParams {
     /// Camera distances (m) over which the overlay fades out.
     near: f32,
     far: f32,
+    /// Per layer, for the direct near field: tile size (m), height-blend
+    /// strength, normal strength, roughness multiplier.
+    layer_tiling: Vec4,
+    layer_height_blend: Vec4,
+    layer_normal: Vec4,
+    layer_roughness: Vec4,
+    layer_count: u32,
+    /// Per layer, the micro tiling (m); 0 = none.
+    layer_micro: Vec4,
+    micro_near: f32,
+    micro_far: f32,
+    micro_strength: f32,
 }
 
 impl DetailParams {
-    pub(crate) fn from_config(d: &DetailConfig) -> Self {
+    pub(crate) fn from_clipmap(clipmap: &crate::Clipmap) -> Self {
+        let d = &clipmap.detail;
+        let lanes = |f: &dyn Fn(&crate::TerrainLayer) -> f32, default: f32| {
+            let mut v = [default; crate::MAX_TERRAIN_LAYERS];
+            for (i, layer) in clipmap.layers.iter().take(crate::MAX_TERRAIN_LAYERS).enumerate() {
+                v[i] = f(layer);
+            }
+            Vec4::from_array(v)
+        };
         Self {
             tiling: d.tiling.max(1e-3),
             normal_strength: d.normal_strength,
             albedo_strength: d.albedo_strength,
             near: d.near,
             far: d.far,
+            layer_tiling: lanes(&|l| l.detail_tiling.max(1e-3), 1.0),
+            layer_height_blend: lanes(&|l| l.height_blend, 0.0),
+            layer_normal: lanes(&|l| l.normal_strength, 1.0),
+            layer_roughness: lanes(&|l| l.roughness, 1.0),
+            layer_count: clipmap.layers.len().min(crate::MAX_TERRAIN_LAYERS) as u32,
+            layer_micro: lanes(&|l| l.micro_tiling.map_or(0.0, |t| t.max(1e-3)), 0.0),
+            micro_near: d.micro_near,
+            micro_far: d.micro_far.max(d.micro_near + 1e-3),
+            micro_strength: d.micro_strength,
         }
     }
 }

@@ -354,7 +354,7 @@ impl ClipmapVt {
     pub(crate) fn new(images: &mut Assets<Image>) -> Self {
         Self {
             albedo: images.add(vt_array_image(1, 1, TextureFormat::Rgba8UnormSrgb)),
-            normal: images.add(vt_array_image(1, 1, TextureFormat::Rgba8Unorm)),
+            normal: images.add(vt_array_image(1, 2, TextureFormat::Rgba8Unorm)),
             layout: None,
             refresh: false,
             refreshing: false,
@@ -508,9 +508,10 @@ pub(crate) fn update_vt(
             messages.push(VtMessage::Cancel(entity));
             let layout = build_layout(&quality, world_size, clipmap.looping);
             let layers = layout.levels.len() as u32;
-            for (handle, format) in [
-                (vt.albedo.clone(), TextureFormat::Rgba8UnormSrgb),
-                (vt.normal.clone(), TextureFormat::Rgba8Unorm),
+            // The normal array's second half holds each level's layer weights.
+            for (handle, layers, format) in [
+                (vt.albedo.clone(), layers, TextureFormat::Rgba8UnormSrgb),
+                (vt.normal.clone(), layers * 2, TextureFormat::Rgba8Unorm),
             ] {
                 if let Some(mut image) = images.get_mut(&handle) {
                     *image = vt_array_image(layout.size, layers, format);

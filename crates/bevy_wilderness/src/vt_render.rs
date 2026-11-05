@@ -124,6 +124,7 @@ fn init_vt_pipeline(
             targets: vec![
                 target(TextureFormat::Rgba8UnormSrgb),
                 target(TextureFormat::Rgba8Unorm),
+                target(TextureFormat::Rgba8Unorm),
             ],
             ..default()
         }),
@@ -215,7 +216,7 @@ fn composite_vt(
             break;
         };
         let sources = request.sources;
-        let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(_), Some(masks)) = (
+        let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(vt_normal), Some(masks)) = (
             images.get(sources.heightmap),
             images.get(sources.albedo_array),
             images.get(sources.normal_array),
@@ -229,7 +230,12 @@ fn composite_vt(
         };
         // The layout's images land a frame or more after its first requests.
         let extent = vt_albedo.texture_descriptor.size;
-        if extent.width != request.size || extent.depth_or_array_layers <= request.layer {
+        let normal_extent = vt_normal.texture_descriptor.size;
+        if extent.width != request.size
+            || extent.depth_or_array_layers <= request.layer
+            || normal_extent.width != request.size
+            || normal_extent.depth_or_array_layers != extent.depth_or_array_layers * 2
+        {
             queue.push_front(request);
             break;
         }
@@ -325,17 +331,19 @@ fn composite_vt(
         let (Some(albedo), Some(normal)) = (images.get(albedo_id), images.get(normal_id)) else {
             continue;
         };
-        let layer_view = |image: &GpuImage| {
+        let layer_view = |image: &GpuImage, layer: u32| {
             image.texture.create_view(&TextureViewDescriptor {
                 label: Some("terrain_vt_layer"),
                 dimension: Some(TextureViewDimension::D2),
-                base_array_layer: batch.layer,
+                base_array_layer: layer,
                 array_layer_count: Some(1),
                 ..default()
             })
         };
-        let albedo_view = layer_view(albedo);
-        let normal_view = layer_view(normal);
+        let albedo_view = layer_view(albedo, batch.layer);
+        let normal_view = layer_view(normal, batch.layer);
+        // The normal array's second half holds the layer weights, level for level.
+        let weights_view = layer_view(normal, batch.layer + normal.texture.depth_or_array_layers() / 2);
         let attachment = |view| {
             Some(RenderPassColorAttachment {
                 view,
@@ -351,7 +359,11 @@ fn composite_vt(
             .command_encoder()
             .begin_render_pass(&RenderPassDescriptor {
                 label: Some("terrain_vt_composite"),
-                color_attachments: &[attachment(&albedo_view), attachment(&normal_view)],
+                color_attachments: &[
+                    attachment(&albedo_view),
+                    attachment(&normal_view),
+                    attachment(&weights_view),
+                ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,

@@ -193,9 +193,9 @@ one solid + one wireframe instance per clipmap, shared by all rings.
 | Array | Format | Channels |
 | ----- | ------ | -------- |
 | albedo | `Rgba8UnormSrgb` | rgb albedo · a cavity |
-| normal | `Rgba8Unorm` | rg octahedral world normal · b roughness · a packed material ids |
+| normal | `Rgba8Unorm` | rg octahedral world normal · b roughness · a packed material ids; second half: each layer's share, rgba |
 
-Both are `vt_size`² × levels, built once the heightmap loads (placeholders
+The albedo array is `vt_size`² × levels and the normal array twice that, built once the heightmap loads (placeholders
 until then, replaced in place so material bindings stay valid). Level 0's texel
 is `vt_finest_texel`; each level outward doubles it while its window is smaller
 than the world; the last level covers the whole world exactly and never moves.
@@ -345,16 +345,21 @@ There are **no realtime shadow passes in normal rendering** — terrain is
    derivatives, widened toward the major by at most `VT_MAX_ANISO` (4), so
    grazing ground keeps some sharpness at the cost of slight aliasing along
    the view. Then the ground's sun visibility from the shadow field (§7).
-2. **Detail overlay**, faded by camera distance (`DetailConfig.near/far`).
-   Skipped entirely past `far` (derivatives hoisted out of the branch). Reads
-   the packed material ids **NEAREST** (a packed byte can't be filtered) with a
-   world-locked ±½-texel jitter standing in for bilinear, from the finest level
-   covering the point, then samples the top
-   material's detail albedo / normal / ORM — and the second material's, lerped,
-   unless single-layer detail is set or one material dominates. Detail albedo
-   contributes a **unit-mean ratio** (`da / da_mean`, the mean read from the
-   coarsest mip) so it adds variation without double-darkening the clipmap's
-   albedo.
+2. **Near field**, faded by camera distance (`DetailConfig.near/far`) and
+   skipped past `far` (derivatives hoisted out of the branch). Two paths:
+   - **Two-layer detail (desktop): drawn from the materials.** Reads the layers'
+     shares from the normal array's second half (B-spline filtered, so the
+     texel grid doesn't print into boundaries), then samples every layer with
+     a share at its `detail_tiling` — albedo with height in alpha, normal, ORM,
+     biplanar on steep ground — and height-blends them per pixel. A layer's
+     `micro_tiling` adds relief to its normal and its height to the blend
+     within `micro_near/far`; the blend edge widens past it. The clipmap's
+     colour over the plain mix of the same layers' means carries its macro
+     variation (tints, broad tiling) onto the near colour, as brightness.
+   - **Single-layer detail (standalone): grain over the clipmap.** Reads the
+     packed material ids **NEAREST** with a world-locked ±½-texel jitter
+     standing in for bilinear, and multiplies the top material's
+     **unit-mean** brightness (`da / da_mean`) into the clipmap's albedo.
 3. **Lighting** — `terrain_apply_lighting`, a trimmed fork of Bevy's
    `apply_pbr_lighting` (base layer only):
    - directional lights × CSM shadow (if any) × **field sun visibility**, with grazing

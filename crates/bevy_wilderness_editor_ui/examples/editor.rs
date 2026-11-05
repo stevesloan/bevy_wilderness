@@ -533,6 +533,8 @@ fn setup(
         layers: vec![
             TerrainLayer {
                 tiling_scale: 150.0,
+                detail_tiling: 25.0,
+                micro_tiling: Some(4.0),
                 height_blend: 0.3,
                 normal_strength: 1.0,
                 roughness: 0.99,
@@ -549,6 +551,8 @@ fn setup(
             },
             TerrainLayer {
                 tiling_scale: 300.0,
+                detail_tiling: 20.0,
+                micro_tiling: Some(3.0),
                 height_blend: 0.5,
                 normal_strength: 1.3,
                 roughness: 0.96,
@@ -563,7 +567,9 @@ fn setup(
             },
             TerrainLayer {
                 tiling_scale: 150.0,
-                height_blend: 0.95,
+                detail_tiling: 20.0,
+                micro_tiling: Some(3.0),
+                height_blend: 0.5,
                 normal_strength: 1.3,
                 roughness: 0.94,
                 slope: Some(SlopeRule {
@@ -581,6 +587,8 @@ fn setup(
             // height bands alone can't express.
             TerrainLayer {
                 tiling_scale: 100.0,
+                detail_tiling: 2.0,
+                micro_tiling: None,
                 height_blend: 0.6,
                 normal_strength: 1.0,
                 roughness: 0.9,
@@ -607,6 +615,9 @@ fn setup(
             albedo_strength: 0.8,
             near: 60.0,
             far: 600.0,
+            micro_near: 4.0,
+            micro_far: 20.0,
+            micro_strength: 0.8,
         },
         masks: None,
         min: HEIGHT_MIN,

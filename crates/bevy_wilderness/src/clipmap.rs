@@ -64,8 +64,19 @@ pub struct CavityRule {
 /// No control map.
 #[derive(Clone, Debug)]
 pub struct TerrainLayer {
-    /// World-space size of one texture tile, in meters.
+    /// World-space size of one texture tile in the clipmap, in meters: large
+    /// enough that repetition doesn't show from a distance.
     pub tiling_scale: f32,
+    /// World-space size of one tile up close, where the material is drawn
+    /// directly rather than from the clipmap (two-layer detail only): the scan's
+    /// real size, so it shows at the scale it was captured.
+    pub detail_tiling: f32,
+    /// A much smaller tiling of the same material for the last metres before
+    /// the camera, adding its relief to the normal and nothing to the colour
+    /// (two-layer detail only): sharpness for a layer whose real scale is
+    /// coarse up close.
+    /// `None` for a layer already sharp at `detail_tiling`.
+    pub micro_tiling: Option<f32>,
     /// Strength of this layer's height relief in height-based blending.
     /// 0 falls back to weight blending; higher lets the layer's alpha-channel
     /// height dominate transitions.
@@ -146,6 +157,11 @@ pub struct DetailConfig {
     /// Camera distances (meters) over which the overlay fades out.
     pub near: f32,
     pub far: f32,
+    /// Camera distances (meters) over which layers' `micro_tiling` fades out.
+    pub micro_near: f32,
+    pub micro_far: f32,
+    /// How strongly the micro tiling applies, 0..1.
+    pub micro_strength: f32,
 }
 
 /// The component defining a clipmap.
@@ -413,7 +429,7 @@ pub(crate) fn init_clipmaps(
                     fog: initial_fog.clone(),
                     detail_albedo_array: clipmap.detail.albedo_array.clone(),
                     detail_normal_array: clipmap.detail.normal_array.clone(),
-                    detail: DetailParams::from_config(&clipmap.detail),
+                    detail: DetailParams::from_clipmap(clipmap),
                     detail_orm_array: clipmap.detail.orm_array.clone(),
                     #[cfg(feature = "editing")]
                     edit_overlay: edit_overlay.clone(),

@@ -80,6 +80,9 @@ struct SplatResult {
     // Top-2 layer ids + blend, packed into 8 bits (2+2+4); the main pass
     // unpacks it to blend per-material detail.
     material_id: f32,
+    // Each layer's share after the height blend, summing to 1: filterable, for
+    // the main pass to draw the materials itself up close.
+    weights: vec4<f32>,
 }
 
 fn heightmap_uv(world_xz: vec2<f32>) -> vec2<f32> {
@@ -328,6 +331,7 @@ fn splat_terrain(
     var orm = vec3<f32>(0.0);
     var rough = 0.0;
     var bsum = 0.0;
+    var shares = vec4<f32>(0.0);
     var b0 = -1.0;
     var i0 = 0u;
     var b1 = -1.0;
@@ -339,6 +343,7 @@ fn splat_terrain(
         orm += orms[i] * b;
         rough += params.roughness[i] * b;
         bsum += b;
+        shares[i] = b;
         if b > b0 {
             b1 = b0; i1 = i0;
             b0 = b; i0 = i;
@@ -365,6 +370,7 @@ fn splat_terrain(
     let t2 = clamp(2.0 * b1 / max(b0 + b1, 1e-4), 0.0, 1.0);
     let q = floor(t2 * 15.0 + 0.5);
     out.material_id = (f32(i0) + f32(i1) * 4.0 + q * 16.0) / 255.0;
+    out.weights = shares * inv;
     return out;
 }
 
@@ -388,6 +394,7 @@ fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 struct CompositeOutput {
     @location(0) albedo: vec4<f32>,
     @location(1) normal: vec4<f32>,
+    @location(2) weights: vec4<f32>,
 }
 
 @fragment
@@ -402,5 +409,6 @@ fn fragment(@builtin(position) position: vec4<f32>) -> CompositeOutput {
     var out: CompositeOutput;
     out.albedo = vec4<f32>(splat.color, cavity);
     out.normal = vec4<f32>(oct_encode(splat.normal), splat.roughness, splat.material_id);
+    out.weights = splat.weights;
     return out;
 }
