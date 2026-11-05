@@ -3,9 +3,9 @@
 // material ids into the second. Drawn as a fullscreen triangle clipped by the
 // viewport to the rectangle's slots in the level's array layer; see `vt.rs`.
 //
-// A fragment's world position is linear in its framebuffer position (`draw`),
-// so the implicit derivatives the layer samples take are the level's texel
-// size: every level is prefiltered at its own density.
+// A fragment's world XZ is linear in its framebuffer position (`draw`), so the
+// derivatives the layer samples take span one level texel (plus the height it
+// climbs, on a side projection): every level is prefiltered at its own density.
 
 @group(0) @binding(0) var heightmap_texture: texture_2d<f32>;
 @group(0) @binding(1) var albedo_array: texture_2d_array<f32>;
@@ -16,6 +16,7 @@
 @group(0) @binding(6) var orm_sampler: sampler;
 @group(0) @binding(7) var<uniform> params: TerrainParams;
 @group(0) @binding(8) var<uniform> terrain: CompositeTerrain;
+@group(0) @binding(9) var mask_texture: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> draw: CompositeDraw;
 
 struct TerrainParams {
@@ -32,6 +33,15 @@ struct TerrainParams {
     cavity_min: vec4<f32>,
     cavity_max: vec4<f32>,
     cavity_blend: vec4<f32>,
+    // Negative = no mask rule.
+    mask_channel: vec4<f32>,
+    mask_min: vec4<f32>,
+    mask_max: vec4<f32>,
+    mask_blend: vec4<f32>,
+    // Per mask channel: albedo multiplier (rgb), strength (w).
+    mask_tint: array<vec4<f32>, 4>,
+    // Per mask channel: ramp start (x), end (y).
+    mask_tint_range: array<vec4<f32>, 4>,
     layer_count: u32,
 }
 
@@ -42,6 +52,8 @@ struct CompositeTerrain {
     texel_size: f32,
     // 1 = looping terrain: heightmap reads wrap toroidally.
     looping: u32,
+    // 0 = no masks: the mask binding holds a stand-in, and reads are 0.
+    has_masks: u32,
 }
 
 // Matches `CompositeDraw` in `vt/render.rs`.
@@ -93,6 +105,28 @@ fn height_bilinear(uv: vec2<f32>) -> f32 {
     let h01 = load_height_texel(p0 + vec2(0, 1), tex_size);
     let h11 = load_height_texel(p0 + vec2(1, 1), tex_size);
     return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+// The masks cover the heightmap's extent at their own resolution. Read with
+// textureLoad, so by hand: bilinear, wrapping on looping terrain.
+fn mask_at(world_xz: vec2<f32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(mask_texture));
+    let pos = heightmap_uv(world_xz) * vec2<f32>(size) - 0.5;
+    let p0 = vec2<i32>(floor(pos));
+    let f = pos - floor(pos);
+    let m00 = load_mask_texel(p0, size);
+    let m10 = load_mask_texel(p0 + vec2(1, 0), size);
+    let m01 = load_mask_texel(p0 + vec2(0, 1), size);
+    let m11 = load_mask_texel(p0 + vec2(1, 1), size);
+    return mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
+}
+
+fn load_mask_texel(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
+    var idx = clamp(p, vec2(0), size - 1);
+    if terrain.looping != 0u {
+        idx = ((p % size) + size) % size;
+    }
+    return textureLoad(mask_texture, idx, 0);
 }
 
 fn terrain_height(world_xz: vec2<f32>) -> f32 {
@@ -178,10 +212,57 @@ fn hex_sample(
     return c1 * wn.x + c2 * wn.y + c3 * wn.z;
 }
 
-fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>, height: f32, cavity: f32) -> SplatResult {
+// --- Biplanar projection ---
+// Layer textures project along whichever of X, Y and Z the surface faces most,
+// so cliffs don't smear a top-down projection down their faces. Weights are
+// zero below |n| = 0.5 on an axis, so at most two projections are sampled
+// except in a sliver around the diagonal; flat ground pays for the top one only.
+// Mirrored in `terrain.wesl` for the near overlay: keep the two in step, or the
+// overlay won't line up with the surface it details.
+
+const BIPLANAR_SHARPNESS: f32 = 4.0;
+
+fn projection_weights(n: vec3<f32>) -> vec3<f32> {
+    let w = pow(clamp((abs(n) - 0.5) * 2.0, vec3(0.0), vec3(1.0)), vec3(BIPLANAR_SHARPNESS));
+    return w / (w.x + w.y + w.z);
+}
+
+// Columns: the world directions of a projection's u and v, then its axis. The
+// side projections run v down the world, so textures stand upright on cliffs.
+fn projection_basis(k: u32) -> mat3x3<f32> {
+    if k == 0u {
+        return mat3x3<f32>(vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0), vec3(1.0, 0.0, 0.0));
+    }
+    if k == 1u {
+        return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0));
+    }
+    return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0));
+}
+
+// Whiteout blend of a tangent-space normal (x along the projection's u, y along
+// its v) onto the surface normal `n`. Correct on either side of the axis, so the
+// side projections need no mirroring.
+fn whiteout(tn: vec3<f32>, n: vec3<f32>, b: mat3x3<f32>) -> vec3<f32> {
+    return b[0] * (tn.x + dot(n, b[0]))
+        + b[1] * (tn.y + dot(n, b[1]))
+        + b[2] * (abs(tn.z) * dot(n, b[2]));
+}
+
+fn splat_terrain(
+    p: vec3<f32>,
+    dp_dx: vec3<f32>,
+    dp_dy: vec3<f32>,
+    normal: vec3<f32>,
+    cavity: f32,
+) -> SplatResult {
     let slope = acos(clamp(normal.y, -1.0, 1.0));
+    let height = p.y;
 
     var w = array<f32, 4>(0.0, 0.0, 0.0, 0.0);
+    var masks = vec4<f32>(0.0);
+    if terrain.has_masks != 0u {
+        masks = mask_at(p.xz);
+    }
     for (var i = 0u; i < MAX_LAYERS; i++) {
         if i >= params.layer_count {
             continue;
@@ -189,6 +270,10 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>, height: f32, cavity: f3
         w[i] = band(slope, params.slope_min[i], params.slope_max[i], params.slope_blend[i])
              * band(height, params.height_min[i], params.height_max[i], params.height_range_blend[i])
              * band(cavity, params.cavity_min[i], params.cavity_max[i], params.cavity_blend[i]);
+        let ch = params.mask_channel[i];
+        if ch >= 0.0 {
+            w[i] *= band(masks[u32(ch)], params.mask_min[i], params.mask_max[i], params.mask_blend[i]);
+        }
     }
 
     let wsum = w[0] + w[1] + w[2] + w[3];
@@ -200,31 +285,46 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>, height: f32, cavity: f3
         }
     }
 
+    let pw = projection_weights(normal);
     var colors = array<vec3<f32>, 4>();
     var normals = array<vec3<f32>, 4>();
     var orms = array<vec3<f32>, 4>();
     var scores = array<f32, 4>();
     var maxs = -1e9;
     for (var i = 0u; i < MAX_LAYERS; i++) {
-        let tile_uv = world_xz / params.tiling_scale[i];
-        let ddx = dpdx(tile_uv);
-        let ddy = dpdy(tile_uv);
-        let a = hex_sample(albedo_array, albedo_sampler, i, tile_uv, ddx, ddy);
-        // Flip X: the reorientation tangent runs -X vs the +X tiling UV, so the
-        // normal's red axis is mirrored — cracks would light up as bumps.
-        let n = (hex_sample(normal_array, normal_sampler, i, tile_uv, ddx, ddy).xyz * 2.0 - 1.0)
-            * vec3<f32>(-1.0, 1.0, 1.0);
+        // A layer the rules exclude can't win the height blend below, so its
+        // samples are skipped.
+        if w[i] <= 1e-4 {
+            scores[i] = -1e9;
+            continue;
+        }
+        var a = vec4<f32>(0.0);
+        var n = vec3<f32>(0.0);
+        var o = vec3<f32>(0.0);
+        for (var k = 0u; k < 3u; k++) {
+            if pw[k] <= 0.0 {
+                continue;
+            }
+            let b = projection_basis(k);
+            let puv = vec2<f32>(dot(p, b[0]), dot(p, b[1]));
+            let pdx = vec2<f32>(dot(dp_dx, b[0]), dot(dp_dx, b[1]));
+            let pdy = vec2<f32>(dot(dp_dy, b[0]), dot(dp_dy, b[1]));
+            let s = 1.0 / params.tiling_scale[i];
+            a += hex_sample(albedo_array, albedo_sampler, i, puv * s, pdx * s, pdy * s) * pw[k];
+            let tn = hex_sample(normal_array, normal_sampler, i, puv * s, pdx * s, pdy * s).xyz * 2.0 - 1.0;
+            n += whiteout(vec3<f32>(tn.xy * params.normal_strength[i], tn.z), normal, b) * pw[k];
+            o += hex_sample(orm_array, orm_sampler, i, puv * s, pdx * s, pdy * s).rgb * pw[k];
+        }
         colors[i] = a.rgb;
-        normals[i] = vec3<f32>(n.xy * params.normal_strength[i], n.z);
-        orms[i] = hex_sample(orm_array, orm_sampler, i, tile_uv, ddx, ddy).rgb;
-        let mask = select(0.0, 1.0, w[i] > 1e-4);
-        scores[i] = (w[i] + a.a * params.height_blend[i]) * mask - (1.0 - mask) * 1e9;
+        normals[i] = normalize(n);
+        orms[i] = o;
+        scores[i] = w[i] + a.a * params.height_blend[i];
         maxs = max(maxs, scores[i]);
     }
 
     const TRANSITION = 0.2;
     var rgb = vec3<f32>(0.0);
-    var tn = vec3<f32>(0.0);
+    var nsum = vec3<f32>(0.0);
     var orm = vec3<f32>(0.0);
     var rough = 0.0;
     var bsum = 0.0;
@@ -235,7 +335,7 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>, height: f32, cavity: f3
     for (var i = 0u; i < MAX_LAYERS; i++) {
         let b = max(0.0, scores[i] - (maxs - TRANSITION));
         rgb += colors[i] * b;
-        tn += normals[i] * b;
+        nsum += normals[i] * b;
         orm += orms[i] * b;
         rough += params.roughness[i] * b;
         bsum += b;
@@ -249,15 +349,17 @@ fn splat_terrain(world_xz: vec2<f32>, normal: vec3<f32>, height: f32, cavity: f3
     let inv = 1.0 / max(bsum, 1e-4);
     rgb *= inv;
     orm *= inv;
-    tn = normalize(tn);
 
-    let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(normal.z) > 0.99);
-    let tangent = normalize(cross(ref_axis, normal));
-    let bitangent = cross(normal, tangent);
+    var tint = vec3<f32>(1.0);
+    for (var c = 0u; c < 4u; c++) {
+        let t = params.mask_tint[c];
+        let r = params.mask_tint_range[c];
+        tint *= mix(vec3<f32>(1.0), t.rgb, smoothstep(r.x, r.y, masks[c]) * t.w);
+    }
 
     var out: SplatResult;
-    out.color = rgb;
-    out.normal = normalize(tangent * tn.x + bitangent * tn.y + normal * tn.z);
+    out.color = rgb * tint;
+    out.normal = normalize(nsum);
     out.roughness = (rough * inv) * orm.g;
     // The blend `t2` (0..1) maps to a detail-normal lerp of 0..0.5 in the main pass.
     let t2 = clamp(2.0 * b1 / max(b0 + b1, 1e-4), 0.0, 1.0);
@@ -294,7 +396,9 @@ fn fragment(@builtin(position) position: vec4<f32>) -> CompositeOutput {
     let height = terrain_height(world_xz);
     let cavity = cavity_at(world_xz, height);
     let normal = geo_normal(world_xz, max(draw.texel, terrain.texel_size));
-    let splat = splat_terrain(world_xz, normal, height, cavity);
+    // Derivatives in uniform control flow, for the layer samples' mip selection.
+    let p = vec3<f32>(world_xz.x, height, world_xz.y);
+    let splat = splat_terrain(p, dpdx(p), dpdy(p), normal, cavity);
     var out: CompositeOutput;
     out.albedo = vec4<f32>(splat.color, cavity);
     out.normal = vec4<f32>(oct_encode(splat.normal), splat.roughness, splat.material_id);

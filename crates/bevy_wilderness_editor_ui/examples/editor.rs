@@ -545,6 +545,7 @@ fn setup(
                     max: 1.0,
                     blend: 0.15,
                 }),
+                mask: None,
             },
             TerrainLayer {
                 tiling_scale: 300.0,
@@ -558,6 +559,7 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                mask: None,
             },
             TerrainLayer {
                 tiling_scale: 150.0,
@@ -571,6 +573,7 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                mask: None,
             },
             // sediment — pebbles washed into gullies and hollows (cavity below
             // ~0.3: ground the surrounding terrain rises above), on gentle slopes
@@ -592,6 +595,7 @@ fn setup(
                     max: 0.3,
                     blend: 0.1,
                 }),
+                mask: None,
             },
         ],
         detail: DetailConfig {
@@ -604,6 +608,7 @@ fn setup(
             near: 60.0,
             far: 600.0,
         },
+        masks: None,
         min: HEIGHT_MIN,
         max: HEIGHT_MAX,
         wireframe: false,

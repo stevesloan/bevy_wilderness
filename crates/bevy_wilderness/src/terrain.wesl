@@ -652,6 +652,78 @@ fn vt_sample(xz: vec2<f32>, footprint: f32) -> VtSample {
     return VtSample(albedo, normalize(normal), rough, id_level);
 }
 
+// --- Biplanar projection (near overlay) ---
+// The same projection the composite uses (`vt_composite.wesl`): keep the two in
+// step, or the overlay's detail won't line up with the surface beneath it.
+
+const BIPLANAR_SHARPNESS: f32 = 4.0;
+
+fn projection_weights(n: vec3<f32>) -> vec3<f32> {
+    let w = pow(clamp((abs(n) - 0.5) * 2.0, vec3(0.0), vec3(1.0)), vec3(BIPLANAR_SHARPNESS));
+    return w / (w.x + w.y + w.z);
+}
+
+fn projection_basis(k: u32) -> mat3x3<f32> {
+    if k == 0u {
+        return mat3x3<f32>(vec3(0.0, 0.0, 1.0), vec3(0.0, -1.0, 0.0), vec3(1.0, 0.0, 0.0));
+    }
+    if k == 1u {
+        return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0));
+    }
+    return mat3x3<f32>(vec3(1.0, 0.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(0.0, 0.0, 1.0));
+}
+
+fn whiteout(tn: vec3<f32>, n: vec3<f32>, b: mat3x3<f32>) -> vec3<f32> {
+    return b[0] * (tn.x + dot(n, b[0]))
+        + b[1] * (tn.y + dot(n, b[1]))
+        + b[2] * (abs(tn.z) * dot(n, b[2]));
+}
+
+// The heightmap's normal across one heightmap texel, the step the composite's
+// fine levels take, so the projection weights here match the clipmap's.
+fn geo_normal_at(xz: vec2<f32>) -> vec3<f32> {
+    let h_r = base_height_at(xz + vec2(texel_size, 0.0));
+    let h_l = base_height_at(xz - vec2(texel_size, 0.0));
+    let h_t = base_height_at(xz + vec2(0.0, texel_size));
+    let h_b = base_height_at(xz - vec2(0.0, texel_size));
+    return normalize(vec3(h_l - h_r, 2.0 * texel_size, h_b - h_t));
+}
+
+struct DetailSample {
+    // Unnormalized, already reoriented onto the surface.
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    orm: vec3<f32>,
+}
+
+// One material's detail, projected by `pw`. `p` and its derivatives are world
+// position over the detail tiling.
+fn detail_sample(
+    layer: u32,
+    pw: vec3<f32>,
+    p: vec3<f32>,
+    dp_dx: vec3<f32>,
+    dp_dy: vec3<f32>,
+    base_normal: vec3<f32>,
+    strength: f32,
+) -> DetailSample {
+    var s = DetailSample(vec3(0.0), vec3(0.0), vec3(0.0));
+    for (var k = 0u; k < 3u; k++) {
+        if pw[k] <= 0.0 {
+            continue;
+        }
+        let b = projection_basis(k);
+        let uv = vec2<f32>(dot(p, b[0]), dot(p, b[1]));
+        let ddx = vec2<f32>(dot(dp_dx, b[0]), dot(dp_dx, b[1]));
+        let ddy = vec2<f32>(dot(dp_dy, b[0]), dot(dp_dy, b[1]));
+        let tn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, uv, layer, ddx, ddy).xyz * 2.0 - 1.0;
+        s.normal += whiteout(vec3<f32>(tn.xy * strength, tn.z), base_normal, b) * pw[k];
+        s.albedo += textureSampleGrad(detail_albedo_array, detail_albedo_sampler, uv, layer, ddx, ddy).rgb * pw[k];
+        s.orm += textureSampleGrad(detail_orm_array, detail_albedo_sampler, uv, layer, ddx, ddy).rgb * pw[k];
+    }
+    return s;
+}
+
 // The ground's sun shadow, from the field that shadows meshes, tested at the
 // ground height the field recorded rather than the rendered one, which the
 // distant LODs lower at peaks. `uv` is the world's, which the field covers,
@@ -741,9 +813,9 @@ fn fragment(
     // taken outside the branch so the guarded samples keep correct mip selection.
     // Debug: no detail overlay (`TerrainDebugView::NoDetail`).
     let detail_fade = select(1.0 - smoothstep(detail.near, detail.far, cam_dist), 0.0, dev.debug_view == 4u);
-    let dtile = in.world_position.xz / detail.tiling;
-    let ddx = dpdx(dtile);
-    let ddy = dpdy(dtile);
+    let detail_p = in.world_position.xyz / detail.tiling;
+    let detail_dx = dpdx(detail_p);
+    let detail_dy = dpdy(detail_p);
 
     var world_normal = base_normal;
     var albedo = vt.albedo.rgb;
@@ -781,34 +853,32 @@ fn fragment(
         // Top dominant material's detail normal / albedo / ORM. The second material
         // is lerped in for smooth boundaries — skipped for single-layer detail (VR)
         // and wherever one material dominates (`mblend == 0`, the common case, which
-        // the bake quantizes exactly to 0), saving three `textureSampleGrad`s.
+        // the bake quantizes exactly to 0), saving a second material's samples.
+        // Single-layer detail also projects top-down only, skipping the heightmap
+        // normal and the side projections on slopes.
         // The RVT already holds this same albedo array blended at macro tiling, so
         // the detail sample must contribute *variation*, not colour, or the two
         // multiply into albedo squared. Its coarsest mip is the layer's own mean,
         // so the grain below is unit-mean by construction and leaves the macro
         // albedo intact for any texture set, whatever its average brightness.
-        let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
-        var dn = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id0, ddx, ddy).xyz * 2.0 - 1.0;
-        var da = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id0, ddx, ddy).rgb;
-        var da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id0, da_lod).rgb;
-        var dorm = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id0, ddx, ddy);
-        if (flags & 4u) == 0u && mblend > 0.0 {
-            let dn1 = textureSampleGrad(detail_normal_array, detail_albedo_sampler, dtile, id1, ddx, ddy).xyz * 2.0 - 1.0;
-            let da1 = textureSampleGrad(detail_albedo_array, detail_albedo_sampler, dtile, id1, ddx, ddy).rgb;
-            let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, dtile, id1, da_lod).rgb;
-            let dorm1 = textureSampleGrad(detail_orm_array, detail_albedo_sampler, dtile, id1, ddx, ddy);
-            dn = mix(dn, dn1, mblend);
-            da = mix(da, da1, mblend);
-            da_avg = mix(da_avg, da1_avg, mblend);
-            dorm = mix(dorm, dorm1, mblend);
+        let single = (flags & 4u) != 0u;
+        var pw = vec3<f32>(0.0, 1.0, 0.0);
+        if !single {
+            pw = projection_weights(geo_normal_at(in.world_position.xz));
         }
-        // Flip X (see bake) and reorient onto the base normal.
-        dn = dn * vec3<f32>(-1.0, 1.0, 1.0);
-        let dn_scaled = vec3<f32>(dn.xy * detail.normal_strength * detail_fade, dn.z);
-        let ref_axis = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(base_normal.z) > 0.99);
-        let dt = normalize(cross(ref_axis, base_normal));
-        let db = cross(base_normal, dt);
-        world_normal = normalize(dt * dn_scaled.x + db * dn_scaled.y + base_normal * dn_scaled.z);
+        let strength = detail.normal_strength * detail_fade;
+        let da_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
+        var d = detail_sample(id0, pw, detail_p, detail_dx, detail_dy, base_normal, strength);
+        var da_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, detail_p.xz, id0, da_lod).rgb;
+        if !single && mblend > 0.0 {
+            let d1 = detail_sample(id1, pw, detail_p, detail_dx, detail_dy, base_normal, strength);
+            let da1_avg = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, detail_p.xz, id1, da_lod).rgb;
+            d.normal = mix(d.normal, d1.normal, mblend);
+            d.albedo = mix(d.albedo, d1.albedo, mblend);
+            d.orm = mix(d.orm, d1.orm, mblend);
+            da_avg = mix(da_avg, da1_avg, mblend);
+        }
+        world_normal = normalize(d.normal);
 
         // Grain is the detail's *brightness* around its own mean, capped. A
         // per-channel ratio amplified grass's near-zero blue up to ~6×, and
@@ -816,10 +886,10 @@ fn fragment(
         // grass id over rock colour) that tinted rock purple. Brightness can't
         // change hue, whatever colour it lands on.
         let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
-        let grain = min(dot(da, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
+        let grain = min(dot(d.albedo, luma) / max(dot(da_avg, luma), 1e-4), 3.0);
         albedo *= mix(1.0, grain, detail.albedo_strength * detail_fade);
-        rough = mix(vt.roughness, dorm.g, detail_fade);
-        ao = mix(1.0, dorm.r, detail_fade);
+        rough = mix(vt.roughness, d.orm.g, detail_fade);
+        ao = mix(1.0, d.orm.r, detail_fade);
     }
     in_modified.world_normal = world_normal;
 

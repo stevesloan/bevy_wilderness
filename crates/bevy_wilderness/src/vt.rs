@@ -86,6 +86,15 @@ pub(crate) struct TerrainParams {
     cavity_min: Vec4,
     cavity_max: Vec4,
     cavity_blend: Vec4,
+    /// Mask channel per layer; negative = no mask rule.
+    mask_channel: Vec4,
+    mask_min: Vec4,
+    mask_max: Vec4,
+    mask_blend: Vec4,
+    /// Per mask channel: albedo multiplier (rgb) and strength (w).
+    mask_tint: [Vec4; 4],
+    /// Per mask channel: the ramp's start (x) and end (y).
+    mask_tint_range: [Vec4; 4],
     layer_count: u32,
 }
 
@@ -104,6 +113,11 @@ impl TerrainParams {
         let mut cavity_min = [-10.0f32; MAX_TERRAIN_LAYERS];
         let mut cavity_max = [10.0f32; MAX_TERRAIN_LAYERS];
         let mut cavity_blend = [0.01f32; MAX_TERRAIN_LAYERS];
+        let mut mask_channel = [-1.0f32; MAX_TERRAIN_LAYERS];
+        let mut mask_min = [0.0f32; MAX_TERRAIN_LAYERS];
+        let mut mask_max = [1.0f32; MAX_TERRAIN_LAYERS];
+        let mut mask_blend = [0.01f32; MAX_TERRAIN_LAYERS];
+        let tints = clipmap.masks.as_ref().map_or([crate::MaskTint::default(); 4], |m| m.tints);
         for (i, layer) in clipmap.layers.iter().take(MAX_TERRAIN_LAYERS).enumerate() {
             tiling_scale[i] = layer.tiling_scale.max(1e-3);
             height_blend[i] = layer.height_blend;
@@ -124,6 +138,12 @@ impl TerrainParams {
                 cavity_max[i] = c.max;
                 cavity_blend[i] = c.blend.max(1e-3);
             }
+            if let Some(m) = &layer.mask {
+                mask_channel[i] = f32::from(m.channel.min(3));
+                mask_min[i] = m.min;
+                mask_max[i] = m.max;
+                mask_blend[i] = m.blend.max(1e-3);
+            }
         }
         Self {
             tiling_scale: Vec4::from_array(tiling_scale),
@@ -139,6 +159,12 @@ impl TerrainParams {
             cavity_min: Vec4::from_array(cavity_min),
             cavity_max: Vec4::from_array(cavity_max),
             cavity_blend: Vec4::from_array(cavity_blend),
+            mask_channel: Vec4::from_array(mask_channel),
+            mask_min: Vec4::from_array(mask_min),
+            mask_max: Vec4::from_array(mask_max),
+            mask_blend: Vec4::from_array(mask_blend),
+            mask_tint: tints.map(|t| t.color.extend(t.strength)),
+            mask_tint_range: tints.map(|t| Vec4::new(t.from, t.to.max(t.from + 1e-3), 0.0, 0.0)),
             layer_count: clipmap.layers.len().min(MAX_TERRAIN_LAYERS) as u32,
         }
     }
@@ -151,6 +177,8 @@ pub(crate) struct CompositeTerrain {
     pub(crate) minmax: Vec2,
     pub(crate) texel_size: f32,
     pub(crate) looping: u32,
+    /// 0 = the mask binding holds a stand-in; mask reads are 0.
+    pub(crate) has_masks: u32,
 }
 
 /// The images one composite reads and writes.
@@ -160,6 +188,9 @@ pub(crate) struct VtSources {
     pub(crate) albedo_array: AssetId<Image>,
     pub(crate) normal_array: AssetId<Image>,
     pub(crate) orm_array: AssetId<Image>,
+    /// The clipmap's masks, or the heightmap standing in when it has none (the
+    /// binding can't be empty; no layer reads it then).
+    pub(crate) masks: AssetId<Image>,
     pub(crate) vt_albedo: AssetId<Image>,
     pub(crate) vt_normal: AssetId<Image>,
 }
@@ -501,6 +532,7 @@ pub(crate) fn update_vt(
             albedo_array: clipmap.albedo_array.id(),
             normal_array: clipmap.normal_array.id(),
             orm_array: clipmap.orm_array.id(),
+            masks: clipmap.masks.as_ref().map_or(clipmap.heightmap.id(), |m| m.image.id()),
             vt_albedo: vt.albedo.id(),
             vt_normal: vt.normal.id(),
         };
@@ -508,6 +540,7 @@ pub(crate) fn update_vt(
             minmax: Vec2::new(clipmap.min, clipmap.max),
             texel_size: clipmap.texel_size,
             looping: clipmap.looping as u32,
+            has_masks: clipmap.masks.is_some() as u32,
         };
         let params = TerrainParams::from_clipmap(clipmap);
 

@@ -80,6 +80,50 @@ pub struct TerrainLayer {
     pub height: Option<HeightRule>,
     /// Curvature band this layer occupies (none = any shape).
     pub cavity: Option<CavityRule>,
+    /// Band of one [`Clipmap::masks`] channel this layer occupies (none = any).
+    pub mask: Option<MaskRule>,
+}
+
+/// A layer's band in one channel of [`Clipmap::masks`], shaped like the other
+/// rules: full weight inside `min..max`, ramping to zero over `blend` outside.
+/// Without masks on the clipmap the rule reads 0.
+#[derive(Clone, Debug)]
+pub struct MaskRule {
+    /// Channel index, 0..4 (R, G, B, A).
+    pub channel: u8,
+    pub min: f32,
+    pub max: f32,
+    pub blend: f32,
+}
+
+/// Up to four 0..1 channels covering the terrain like the heightmap does, at any
+/// resolution: placement inputs for [`MaskRule`]s, and colour for the
+/// [`tints`](Self::tints) they drive.
+#[derive(Clone, Debug)]
+pub struct TerrainMasks {
+    /// RGBA image. Load it linear (`is_srgb = false`).
+    pub image: Handle<Image>,
+    /// One per channel, applied over the blended layers.
+    pub tints: [MaskTint; 4],
+}
+
+/// An albedo multiplier one mask channel applies, ramping in as the channel
+/// rises from `from` to `to`: variation tens of metres across that tiling
+/// layers can't give, such as damp hollows or pale scree. The default does
+/// nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct MaskTint {
+    /// Albedo multiplier at full effect.
+    pub color: Vec3,
+    pub strength: f32,
+    pub from: f32,
+    pub to: f32,
+}
+
+impl Default for MaskTint {
+    fn default() -> Self {
+        Self { color: Vec3::ONE, strength: 0.0, from: 0.0, to: 1.0 }
+    }
 }
 
 /// The near-range detail overlay: per-material high-frequency textures blended
@@ -151,6 +195,9 @@ pub struct Clipmap {
 
     /// Near-range detail overlay (arrays + tiling/strength/fade).
     pub detail: DetailConfig,
+
+    /// Placement masks and the tints they drive (`None` = mask rules read 0).
+    pub masks: Option<TerrainMasks>,
 
     /// Height bounds.
     pub min: f32,

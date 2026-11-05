@@ -16,6 +16,7 @@ struct HeightFog {
     haze_falloff: f32,        // 1/m haze's density drop per altitude, far gentler than mist's
     start: f32,               // m from the eye before any fog
     sun_forward: f32,         // Henyey-Greenstein g: 0 scatters sunlight evenly, 1 straight on
+    haze_aerosol: vec3<f32>,  // aerosols' share of the haze's scattering per channel; molecules the rest
 }
 
 // Optical depth of one exponential layer along a ray of `dist` metres from `origin_y`.
@@ -55,12 +56,19 @@ fn height_fog_transmittance(fog: HeightFog, cam_pos: vec3<f32>, world_pos: vec3<
     return exp(-layers.x * fog.extinction - layers.y * fog.haze_extinction);
 }
 
-// Henyey-Greenstein's phase function past its even share: the even share is in
-// `color` and `haze_color`, what's left is the brightening around the sun.
-fn sun_glow(cos_sun: f32, g: f32) -> f32 {
-    const EVEN_SHARE: f32 = 0.07957747; // 1 / 4π
+// Phase functions past their even share: the even share is in `color` and
+// `haze_color`, what's left is the brightening around the sun.
+const EVEN_SHARE: f32 = 0.07957747; // 1 / 4π
+
+// Droplets and aerosols (Henyey-Greenstein): a strong glow toward the sun.
+fn forward_glow(cos_sun: f32, g: f32) -> f32 {
     let phase = EVEN_SHARE * (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * cos_sun, 1.5);
     return max(phase - EVEN_SHARE, 0.0);
+}
+
+// Molecules (Rayleigh): close to even, a little brighter toward and away from the sun.
+fn molecular_glow(cos_sun: f32) -> f32 {
+    return max(0.75 * EVEN_SHARE * (1.0 + cos_sun * cos_sun) - EVEN_SHARE, 0.0);
 }
 
 // `color`, exposed by `exposure`, as seen from cam_pos through the fog to world_pos.
@@ -80,7 +88,11 @@ fn apply_height_fog(
     let transmittance = exp(-depth);
     // Each layer lends the ray its colour in proportion to the depth it adds.
     let air = (mist * fog.color + haze * fog.haze_color) / max(depth, vec3<f32>(1e-30));
+    // Mist is droplets throughout; haze is part aerosol, part molecules.
     let cos_sun = dot(normalize(world_pos - cam_pos), fog.sun_direction);
-    let scattered = air + fog.sun_color * sun_glow(cos_sun, fog.sun_forward);
+    let forward = forward_glow(cos_sun, fog.sun_forward);
+    let haze_glow = mix(vec3<f32>(molecular_glow(cos_sun)), vec3<f32>(forward), fog.haze_aerosol);
+    let glow = (mist * forward + haze * haze_glow) / max(depth, vec3<f32>(1e-30));
+    let scattered = air + fog.sun_color * glow;
     return color * transmittance + scattered * exposure * (1.0 - transmittance);
 }

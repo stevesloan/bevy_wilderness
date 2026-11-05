@@ -53,6 +53,11 @@ pub struct HeightFog {
     pub haze_color: Color,
     /// `haze_density`'s share per channel, as `extinction`.
     pub haze_extinction: Vec3,
+    /// The aerosols' share of the haze's scattering, per channel. Aerosols glow
+    /// strongly around the sun (`sun_forward`); molecules, the rest, scatter
+    /// close to evenly. Clean air is mostly molecules. `ONE` treats it all as
+    /// aerosol, as the mist always is.
+    pub haze_aerosol: Vec3,
 }
 
 impl Default for HeightFog {
@@ -73,6 +78,7 @@ impl Default for HeightFog {
             haze_falloff: 0.0,
             haze_color: Color::linear_rgb(19_700.0, 22_800.0, 27_500.0),
             haze_extinction: Vec3::ONE,
+            haze_aerosol: Vec3::ONE,
         }
     }
 }
@@ -94,6 +100,7 @@ pub struct HeightFogParams {
     haze_falloff: f32,
     start: f32,
     sun_forward: f32,
+    haze_aerosol: Vec3,
 }
 
 impl HeightFogParams {
@@ -114,6 +121,7 @@ impl HeightFogParams {
             haze_falloff: 0.0,
             start: 0.0,
             sun_forward: 0.0,
+            haze_aerosol: Vec3::ONE,
         }
     }
 }
@@ -135,6 +143,7 @@ impl From<&HeightFog> for HeightFogParams {
             haze_falloff: fog.haze_falloff,
             start: fog.start,
             sun_forward: fog.sun_forward,
+            haze_aerosol: fog.haze_aerosol,
         }
     }
 }

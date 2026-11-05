@@ -18,7 +18,7 @@ mod vt_render;
 
 pub use baked_light::{BakedLightRegion, MAX_BAKED_LIGHT_REGIONS, TerrainBakedLight};
 pub use clipmap::{
-    CavityRule, Clipmap, ClipmapReady, DetailConfig, HeightRule, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer,
+    CavityRule, Clipmap, ClipmapReady, DetailConfig, HeightRule, MaskRule, MaskTint, MAX_TERRAIN_LAYERS, SlopeRule, TerrainLayer, TerrainMasks,
 };
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};

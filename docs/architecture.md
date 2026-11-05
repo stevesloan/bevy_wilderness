@@ -543,11 +543,10 @@ The game's ordering of this work, and why, lives in its own plan (Totem's
 
 **Material layer** — most of what reads as real up close.
 - Up to 16 layers (per-layer params leave their `Vec4` lanes); painted weight
-  maps from the editor and heightmap masks (flow, wetness, wear, deposition) as
-  new rule kinds, refining the rules, not replacing them; height blending
-  across every layer.
-- Slope-gated biplanar cliffs in the composite (every tier) and in the near
-  overlay (desktop); a low-frequency macro tint against tiling from the air.
+  maps from the editor as a rule kind; height blending across every layer.
+- Landform masks: flow routing across filled basins runs in straight streaks
+  (needs flat resolution), and every edge is an outlet, so a looping seam is
+  wrong. Masks drive `MaskRule`s and `MaskTint`s; flow drives neither yet.
 - Curvature-driven response: a darker, smoother surface in hollows, weathered
   ridges.
 

@@ -91,6 +91,7 @@ fn init_vt_pipeline(
                 sampler(SamplerBindingType::Filtering),
                 uniform_buffer::<crate::vt::TerrainParams>(false),
                 uniform_buffer::<crate::vt::CompositeTerrain>(false),
+                texture_2d(TextureSampleType::Float { filterable: false }),
             ),
         ),
     );
@@ -214,13 +215,14 @@ fn composite_vt(
             break;
         };
         let sources = request.sources;
-        let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(_)) = (
+        let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(_), Some(masks)) = (
             images.get(sources.heightmap),
             images.get(sources.albedo_array),
             images.get(sources.normal_array),
             images.get(sources.orm_array),
             images.get(sources.vt_albedo),
             images.get(sources.vt_normal),
+            images.get(sources.masks),
         ) else {
             queue.push_front(request);
             break;
@@ -254,6 +256,7 @@ fn composite_vt(
                     &orm.sampler,
                     params,
                     terrain,
+                    &masks.texture_view,
                 )),
             );
             terrain_groups.insert(request.clipmap, group);

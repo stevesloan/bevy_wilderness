@@ -243,6 +243,7 @@ fn setup(
                     max: 1.0,
                     blend: 0.15,
                 }),
+                mask: None,
             },
             // dirt — mid slopes
             TerrainLayer {
@@ -257,6 +258,7 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                mask: None,
             },
             // rock — steep terrain at any height
             TerrainLayer {
@@ -271,6 +273,7 @@ fn setup(
                 }),
                 height: None,
                 cavity: None,
+                mask: None,
             },
             // sediment — pebbles washed into gullies and hollows (cavity below
             // ~0.3: ground the surrounding terrain rises above), on gentle slopes
@@ -292,6 +295,7 @@ fn setup(
                     max: 0.3,
                     blend: 0.1,
                 }),
+                mask: None,
             },
         ],
         detail: DetailConfig {
@@ -304,6 +308,7 @@ fn setup(
             near: 60.0,
             far: 600.0,
         },
+        masks: None,
         min: -1312.5,
         max: 1312.5,
         wireframe: false,
