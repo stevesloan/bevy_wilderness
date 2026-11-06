@@ -98,6 +98,16 @@ pub struct TerrainEditorUiPlugin {
     /// [`TerrainUi`] sections in its own UI. `false` (default): also draw the
     /// standalone side panel with every section.
     pub embedded: bool,
+    /// `true`: the host shows long jobs' progress and outcome itself (from
+    /// [`WorldImportRun::progress`] and [`WorldImported`]), so the sections
+    /// draw neither a progress bar nor a status line for them.
+    pub host_shows_progress: bool,
+}
+
+/// [`TerrainEditorUiPlugin`]'s options, for the sections to read.
+#[derive(Resource, Clone, Copy, Default)]
+struct UiOptions {
+    host_shows_progress: bool,
 }
 
 impl Plugin for TerrainEditorUiPlugin {
@@ -105,7 +115,10 @@ impl Plugin for TerrainEditorUiPlugin {
         if !app.is_plugin_added::<EguiPlugin>() {
             app.add_plugins(EguiPlugin::default());
         }
-        app.init_resource::<UiExportPath>()
+        app.insert_resource(UiOptions {
+            host_shows_progress: self.host_shows_progress,
+        })
+        .init_resource::<UiExportPath>()
             .init_resource::<UiStampFolder>()
             .add_systems(
                 Update,
@@ -221,6 +234,7 @@ pub struct TerrainUi<'w, 's> {
     world_requests: MessageWriter<'w, WorldImportRequested>,
     world_imported: MessageReader<'w, 's, WorldImported>,
     world_status: Local<'s, Option<String>>,
+    options: Res<'w, UiOptions>,
     export_path: Res<'w, UiExportPath>,
     export: MessageWriter<'w, ExportRequested>,
     exported: MessageReader<'w, 's, HeightmapExported>,
@@ -554,6 +568,9 @@ impl TerrainUi<'_, '_> {
                  (its tilt) and keeps every ridge. No effect on finite terrains.",
             );
         match self.world_runs.iter().next() {
+            Some(_) if self.options.host_shows_progress => {
+                ui.add_enabled(false, egui::Button::new("Importing…"));
+            }
             Some(run) => {
                 ui.add(egui::ProgressBar::new(run.progress()).show_percentage());
             }
@@ -567,7 +584,9 @@ impl TerrainUi<'_, '_> {
                 }
             }
         }
-        if let Some(status) = self.world_status.as_deref() {
+        if let Some(status) = self.world_status.as_deref()
+            && !self.options.host_shows_progress
+        {
             ui.small(status.to_owned());
         }
         ui.small("replaces the map with Earth elevation at this point (AWS terrain tiles)");
