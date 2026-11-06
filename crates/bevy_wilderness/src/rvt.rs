@@ -191,11 +191,11 @@ const BAKE_STALL_WARN_SECS: f32 = 30.0;
 /// source textures leave the terrain an unbaked chrome mirror with no diagnostic.
 pub(crate) fn warn_unbaked_terrain(
     time: Res<Time>,
-    mut clipmaps: Query<(&Clipmap, &mut ClipmapRvt), Without<ClipmapReady>>,
+    mut clipmaps: Query<(&Clipmap, &mut ClipmapRvt, &crate::vt::ClipmapVt), Without<ClipmapReady>>,
     suns: Query<(), With<DirectionalLight>>,
     images: Res<Assets<Image>>,
 ) {
-    for (clipmap, mut rvt) in &mut clipmaps {
+    for (clipmap, mut rvt, vt) in &mut clipmaps {
         if rvt.stall_warned {
             continue;
         }
@@ -204,13 +204,21 @@ pub(crate) fn warn_unbaked_terrain(
             continue;
         }
         rvt.stall_warned = true;
+        let (committed, levels) = vt.committed_levels();
         let reason = if suns.is_empty() {
-            "no DirectionalLight in the scene — the bake needs one for the sun-shadow field"
+            "no DirectionalLight in the scene — the bake needs one for the sun-shadow field".to_string()
         } else if images.get(&clipmap.heightmap).is_none() {
-            "the heightmap image hasn't loaded — check the asset path"
+            "the heightmap image hasn't loaded — check the asset path".to_string()
         } else {
-            "the bake hasn't finished — source terrain textures may not be GPU-resident \
-             (or the bake is just slow on this device)"
+            let shadow = if rvt.shadow_done {
+                "baked"
+            } else {
+                "not baked (its sentinel never drew: bake pipeline or heightmap not on the GPU)"
+            };
+            format!(
+                "sun-shadow field {shadow}; surface {committed} of {levels} levels composited \
+                 (its composites wait on the material arrays, masks and heightmap being on the GPU)"
+            )
         };
         warn!(
             "bevy_wilderness: terrain still unbaked after {:.0}s ({reason}); it renders as a \

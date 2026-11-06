@@ -58,6 +58,7 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
             .init_resource::<TerrainDebugView>()
+            .add_observer(vt::cancel_removed_clipmap)
             .add_systems(
                 PreUpdate,
                 (

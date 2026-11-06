@@ -2,7 +2,7 @@
 //! requests within the per-frame texel budget and draws each into its level's
 //! array layer, before any camera renders.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bevy::{
     asset::{load_embedded_asset, AssetServer},
@@ -179,6 +179,69 @@ fn extract_vt_messages(mut main_world: ResMut<MainWorld>, mut inbox: ResMut<VtIn
     }
 }
 
+/// Up to a frame's budget of one request, to draw this frame.
+struct Slice {
+    clipmap: Entity,
+    layer: u32,
+    size: u32,
+    texel: f32,
+    rect: IRect,
+}
+
+/// Takes up to `budget` texels off the front of `queue`, splitting the last
+/// request by rows. `start` says whether a request can be drawn now; once one
+/// can't, the rest of its clipmap's requests are skipped too and all of them
+/// stay queued in order. So a clipmap whose images are still uploading, or are
+/// gone, never holds back another. Returns the slices and the ids of the
+/// requests they finish.
+fn take_work(
+    queue: &mut VecDeque<VtRequest>,
+    budget: u32,
+    mut start: impl FnMut(&VtRequest) -> bool,
+) -> (Vec<Slice>, Vec<u64>) {
+    let mut remaining = budget as i64;
+    let mut slices = Vec::new();
+    let mut done = Vec::new();
+    let mut blocked = HashSet::new();
+    let mut skipped = Vec::new();
+    while remaining > 0 {
+        let Some(mut request) = queue.pop_front() else {
+            break;
+        };
+        if blocked.contains(&request.clipmap) || !start(&request) {
+            blocked.insert(request.clipmap);
+            skipped.push(request);
+            continue;
+        }
+        let width = request.rect.width().max(1);
+        let rows = ((remaining / width as i64).max(1) as i32).min(request.rect.height());
+        let part = IRect::new(
+            request.rect.min.x,
+            request.rect.min.y,
+            request.rect.max.x,
+            request.rect.min.y + rows,
+        );
+        remaining -= (rows * width) as i64;
+        slices.push(Slice {
+            clipmap: request.clipmap,
+            layer: request.layer,
+            size: request.size,
+            texel: request.texel,
+            rect: part,
+        });
+        if part.max.y >= request.rect.max.y {
+            done.push(request.id);
+        } else {
+            request.rect.min.y = part.max.y;
+            queue.push_front(request);
+        }
+    }
+    for request in skipped.into_iter().rev() {
+        queue.push_front(request);
+    }
+    (slices, done)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn composite_vt(
     mut inbox: ResMut<VtInbox>,
@@ -204,17 +267,9 @@ fn composite_vt(
         return;
     };
 
-    let mut remaining = budget as i64;
-    let mut batches: Vec<Batch> = Vec::new();
     let mut terrain_groups: HashMap<Entity, BindGroup> = HashMap::new();
     let mut targets: HashMap<Entity, (AssetId<Image>, AssetId<Image>)> = HashMap::new();
-    let mut done = Vec::new();
-    draws.clear();
-
-    while remaining > 0 {
-        let Some(mut request) = queue.pop_front() else {
-            break;
-        };
+    let (slices, done) = take_work(queue, budget, |request| {
         let sources = request.sources;
         let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(vt_normal), Some(masks)) = (
             images.get(sources.heightmap),
@@ -225,8 +280,7 @@ fn composite_vt(
             images.get(sources.vt_normal),
             images.get(sources.masks),
         ) else {
-            queue.push_front(request);
-            break;
+            return false;
         };
         // The layout's images land a frame or more after its first requests.
         let extent = vt_albedo.texture_descriptor.size;
@@ -236,54 +290,47 @@ fn composite_vt(
             || normal_extent.width != request.size
             || normal_extent.depth_or_array_layers != extent.depth_or_array_layers * 2
         {
-            queue.push_front(request);
-            break;
+            return false;
         }
-
-        if !terrain_groups.contains_key(&request.clipmap) {
-            let mut params = UniformBuffer::from(request.params);
-            params.write_buffer(&render_device, &render_queue);
-            let mut terrain = UniformBuffer::from(request.terrain);
-            terrain.write_buffer(&render_device, &render_queue);
-            let (Some(params), Some(terrain)) = (params.binding(), terrain.binding()) else {
-                queue.push_front(request);
-                break;
-            };
-            let group = render_device.create_bind_group(
-                "terrain_vt_composite_terrain",
-                &pipeline_cache.get_bind_group_layout(&pipeline.terrain_layout),
-                &BindGroupEntries::sequential((
-                    &heightmap.texture_view,
-                    &albedo.texture_view,
-                    &albedo.sampler,
-                    &normal.texture_view,
-                    &normal.sampler,
-                    &orm.texture_view,
-                    &orm.sampler,
-                    params,
-                    terrain,
-                    &masks.texture_view,
-                )),
-            );
-            terrain_groups.insert(request.clipmap, group);
-            targets.insert(request.clipmap, (sources.vt_albedo, sources.vt_normal));
+        if terrain_groups.contains_key(&request.clipmap) {
+            return true;
         }
-
-        let width = request.rect.width().max(1);
-        let rows = ((remaining / width as i64).max(1) as i32).min(request.rect.height());
-        let part = IRect::new(
-            request.rect.min.x,
-            request.rect.min.y,
-            request.rect.max.x,
-            request.rect.min.y + rows,
+        let mut params = UniformBuffer::from(request.params);
+        params.write_buffer(&render_device, &render_queue);
+        let mut terrain = UniformBuffer::from(request.terrain);
+        terrain.write_buffer(&render_device, &render_queue);
+        let (Some(params), Some(terrain)) = (params.binding(), terrain.binding()) else {
+            return false;
+        };
+        let group = render_device.create_bind_group(
+            "terrain_vt_composite_terrain",
+            &pipeline_cache.get_bind_group_layout(&pipeline.terrain_layout),
+            &BindGroupEntries::sequential((
+                &heightmap.texture_view,
+                &albedo.texture_view,
+                &albedo.sampler,
+                &normal.texture_view,
+                &normal.sampler,
+                &orm.texture_view,
+                &orm.sampler,
+                params,
+                terrain,
+                &masks.texture_view,
+            )),
         );
-        remaining -= (rows * width) as i64;
+        terrain_groups.insert(request.clipmap, group);
+        targets.insert(request.clipmap, (sources.vt_albedo, sources.vt_normal));
+        true
+    });
 
+    draws.clear();
+    let mut batches: Vec<Batch> = Vec::new();
+    for slice in &slices {
         let mut pieces = Vec::new();
-        for (world, slot) in toroidal_pieces(part, request.size as i32) {
+        for (world, slot) in toroidal_pieces(slice.rect, slice.size as i32) {
             let offset = draws.push(&CompositeDraw {
-                origin: (world.min - slot).as_vec2() * request.texel,
-                texel: request.texel,
+                origin: (world.min - slot).as_vec2() * slice.texel,
+                texel: slice.texel,
                 _pad: 0.0,
             });
             pieces.push((
@@ -297,18 +344,15 @@ fn composite_vt(
             ));
         }
         batches.push(Batch {
-            clipmap: request.clipmap,
-            layer: request.layer,
+            clipmap: slice.clipmap,
+            layer: slice.layer,
             pieces,
         });
-
-        if part.max.y >= request.rect.max.y {
-            done.push(request.id);
-        } else {
-            request.rect.min.y = part.max.y;
-            queue.push_front(request);
-        }
     }
+    let drawn: u64 = slices
+        .iter()
+        .map(|slice| (slice.rect.width() * slice.rect.height()) as u64)
+        .sum();
     if batches.is_empty() {
         return;
     }
@@ -381,7 +425,6 @@ fn composite_vt(
 
     span.end(ctx.command_encoder());
 
-    let drawn = (budget as i64 - remaining).max(0) as u64;
     let queued: u64 = queue
         .iter()
         .map(|r| (r.rect.width() * r.rect.height()) as u64)
@@ -399,6 +442,74 @@ fn composite_vt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(id: u64, clipmap: Entity, rect: IRect) -> VtRequest {
+        VtRequest {
+            id,
+            clipmap,
+            sources: crate::vt::VtSources {
+                heightmap: AssetId::default(),
+                albedo_array: AssetId::default(),
+                normal_array: AssetId::default(),
+                orm_array: AssetId::default(),
+                masks: AssetId::default(),
+                vt_albedo: AssetId::default(),
+                vt_normal: AssetId::default(),
+            },
+            terrain: default(),
+            params: default(),
+            layer: 0,
+            size: 64,
+            texel: 1.0,
+            rect,
+        }
+    }
+
+    fn ids(queue: &VecDeque<VtRequest>) -> Vec<u64> {
+        queue.iter().map(|r| r.id).collect()
+    }
+
+    #[test]
+    fn a_blocked_clipmap_does_not_hold_back_another() {
+        let stale = Entity::from_raw_u32(1).unwrap();
+        let live = Entity::from_raw_u32(2).unwrap();
+        let rect = IRect::new(0, 0, 8, 8);
+        let mut queue = VecDeque::from([
+            request(1, stale, rect),
+            request(2, live, rect),
+            request(3, stale, rect),
+            request(4, live, rect),
+        ]);
+        let mut asked = Vec::new();
+        let (slices, done) = take_work(&mut queue, 1 << 20, |r| {
+            asked.push(r.id);
+            r.clipmap == live
+        });
+        assert_eq!(done, vec![2, 4]);
+        assert!(slices.iter().all(|s| s.clipmap == live));
+        // Once a clipmap is blocked its later requests aren't offered this frame.
+        assert_eq!(asked, vec![1, 2, 4]);
+        assert_eq!(ids(&queue), vec![1, 3]);
+    }
+
+    #[test]
+    fn the_budget_splits_a_request_by_rows() {
+        let clipmap = Entity::from_raw_u32(1).unwrap();
+        let mut queue = VecDeque::from([
+            request(1, clipmap, IRect::new(0, 0, 8, 8)),
+            request(2, clipmap, IRect::new(0, 0, 8, 8)),
+        ]);
+        let (slices, done) = take_work(&mut queue, 8 * 3, |_| true);
+        assert_eq!(done, Vec::<u64>::new());
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].rect, IRect::new(0, 0, 8, 3));
+        assert_eq!(ids(&queue), vec![1, 2]);
+        assert_eq!(queue[0].rect, IRect::new(0, 3, 8, 8));
+
+        let (_, done) = take_work(&mut queue, 8 * 5, |_| true);
+        assert_eq!(done, vec![1]);
+        assert_eq!(ids(&queue), vec![2]);
+    }
 
     #[test]
     fn pieces_wrap_and_stay_in_the_layer() {

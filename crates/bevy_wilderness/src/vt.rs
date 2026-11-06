@@ -348,6 +348,10 @@ pub(crate) struct ClipmapVt {
     refreshing: bool,
     /// The quality the layout was built with.
     built_with: Option<(u32, f32)>,
+    /// Where the windows were last centred. Held while the target is missing
+    /// (despawned, or not spawned yet), as the geometry holds, so a vanished
+    /// target doesn't recomposite every level around the world origin.
+    last_target: Option<Vec2>,
 }
 
 impl ClipmapVt {
@@ -359,7 +363,16 @@ impl ClipmapVt {
             refresh: false,
             refreshing: false,
             built_with: None,
+            last_target: None,
         }
+    }
+
+    /// Levels composited, out of the levels in the layout (0 of 0 before it's built).
+    pub(crate) fn committed_levels(&self) -> (usize, usize) {
+        self.layout.as_ref().map_or((0, 0), |layout| {
+            let done = layout.levels.iter().filter(|l| l.committed.is_some()).count();
+            (done, layout.levels.len())
+        })
     }
 
     /// Every level is composited and no refresh is pending.
@@ -527,7 +540,10 @@ pub(crate) fn update_vt(
         let target = transforms
             .get(clipmap.target)
             .map(|t| t.translation().xz())
+            .ok()
+            .or(vt.last_target)
             .unwrap_or(Vec2::ZERO);
+        vt.last_target = Some(target);
         let sources = VtSources {
             heightmap: clipmap.heightmap.id(),
             albedo_array: clipmap.albedo_array.id(),
@@ -658,6 +674,12 @@ fn vt_params(layout: &Layout) -> VtParams {
     params
 }
 
+/// Drops a removed clipmap's queued requests. They name its images, which go
+/// with it, so the render world could never draw them.
+pub(crate) fn cancel_removed_clipmap(removed: On<Remove<ClipmapVt>>, mut outbox: ResMut<VtOutbox>) {
+    outbox.messages.push(VtMessage::Cancel(removed.entity));
+}
+
 /// [`ClipmapReady`] once the shadow field has baked and every level is
 /// composited.
 pub(crate) fn mark_clipmap_ready(
@@ -707,6 +729,21 @@ mod tests {
         let texels: Vec<f32> = layout.levels.iter().map(|l| l.texel).collect();
         assert_eq!(texels, vec![0.5, 1.0, 2.0, 4.0, 8.0]);
         assert!(layout.levels.last().unwrap().base);
+    }
+
+    #[test]
+    fn despawning_a_clipmap_cancels_its_requests() {
+        let mut world = World::new();
+        world.init_resource::<VtOutbox>();
+        world.add_observer(cancel_removed_clipmap);
+        let mut images = Assets::<Image>::default();
+        let clipmap = world.spawn(ClipmapVt::new(&mut images)).id();
+        world.despawn(clipmap);
+        let outbox = world.resource::<VtOutbox>();
+        assert!(matches!(
+            outbox.messages.as_slice(),
+            [VtMessage::Cancel(entity)] if *entity == clipmap
+        ));
     }
 
     #[test]
