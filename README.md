@@ -86,6 +86,9 @@ for the full list):
   Shift+wheel = rotate; click commits. Drop your own 8/16-bit PNGs into the
   gallery folder (`crates/bevy_wilderness_editor_ui/assets/stamps/`, generated
   on first run) and hit Rescan.
+- **Clone** (L) — Alt+click captures a round piece of the terrain's own
+  relief, without the slope it stood on; it then floats and commits like a
+  stamp, scaled and rotated. A hill cloned onto flat ground is the same hill.
 - **Undo/redo** — Ctrl+Z / Ctrl+Shift+Z, every tool included.
 - **Export** — writes the heightmap as both `.ktx2` (engine master) and
   16-bit `.png` (interchange). Reload an export without restarting via the

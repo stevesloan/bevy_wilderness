@@ -17,6 +17,8 @@ impl ToolId {
     pub const MASK: ToolId = ToolId("wilderness.mask");
     /// Built-in stamp tool (heightfield PNG stamps).
     pub const STAMP: ToolId = ToolId("wilderness.stamp");
+    /// Built-in clone tool (stamps a captured piece of the terrain).
+    pub const CLONE: ToolId = ToolId("wilderness.clone");
 }
 
 /// A registered tool, as a UI would list it.

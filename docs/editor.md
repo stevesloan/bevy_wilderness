@@ -98,7 +98,7 @@ the new heightmap), and shading catches up one debounce + bake later.
 ## 5. Tools
 
 **Registry.** `EditorTools` (id → name), `ActiveTool`, `ToolId` (built-ins
-`SCULPT`, `MASK`, `STAMP`), `tool_active(id)`. Registering is data only;
+`SCULPT`, `MASK`, `STAMP`, `CLONE`), `tool_active(id)`. Registering is data only;
 behavior is the tool's own systems.
 
 **Cursor.** `TerrainCursor(Option<TerrainHit { terrain, position, texel }>)`.
@@ -129,6 +129,22 @@ feather).
   one function — change both or the terrain pops on click.
 - Wheel = strength (crosses zero into carving), Ctrl = size, Shift = rotate,
   Alt = feather. The wheel is only read while the pick hits terrain.
+
+**Clone** (`clone.rs`). `CloneSource(Option<ClonedRelief>)` +
+`CloneSettings { radius, scale, height, rotation, feather }`. Alt+click
+captures the disc under the cursor as a round stamp
+(`StampData::from_relief`), and from there it previews and commits through the
+stamp tool's path, added to what's under it.
+
+- **What's captured is relief, in meters:** the disc's heights minus the
+  harmonic surface through its rim (the rim's Fourier series, each harmonic
+  fading inward as `r^k`). That removes the elevation and slope the disc sits
+  on and nothing inside it, so a hill lands on flat ground as itself and a
+  mountain filling the disc keeps its full height.
+- **A snapshot,** resampled to at most 1024 texels across. Stamping over the
+  source doesn't change the capture.
+- Wheel = height, Ctrl = scale (heights follow, so slopes keep their angle),
+  Shift = rotate; with Alt held the wheel sets the capture radius.
 
 ## 6. Undo
 

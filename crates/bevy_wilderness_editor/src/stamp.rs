@@ -34,10 +34,12 @@ use crate::undo::UndoHistory;
 /// A loaded stamp: heights for the CPU commit and a texture for the GPU
 /// preview, both derived from the same bake output so preview ≡ commit.
 pub struct StampData {
-    /// Original texels as loaded, pre-bake, row-major.
-    raw: Vec<u16>,
-    /// The raw minimum, subtracted during bake.
-    floor: u16,
+    /// Relief before the bake, -1..1, row-major: a PNG's texels above its
+    /// darkest, or signed relief from [`from_relief`](Self::from_relief).
+    raw: Vec<f32>,
+    /// The footprint is the disc inscribed in the image, not its rectangle:
+    /// nothing lands outside it and the feather runs in from its rim.
+    round: bool,
     /// What the current `heights`/`image` were baked with.
     baked_params: BakeParams,
     /// Baked heights -1..1, row-major — negative values carve under
@@ -80,13 +82,29 @@ impl StampData {
         // A constant stamp (flat plateau) would bake to nothing if its own
         // value were subtracted as the baseline.
         let floor = if min == max { 0 } else { min };
+        let raw = texels
+            .iter()
+            .map(|&t| t.saturating_sub(floor) as f32 / 65535.0)
+            .collect();
+        Self::from_raw(raw, dims, false, images)
+    }
+
+    /// Build a round stamp from signed relief, -1..1 (row-major, square or
+    /// not): positive raises and negative carves under positive strength.
+    /// Only the inscribed disc is used.
+    pub fn from_relief(relief: Vec<f32>, dims: UVec2, images: &mut Assets<Image>) -> Self {
+        debug_assert_eq!(relief.len(), (dims.x * dims.y) as usize);
+        Self::from_raw(relief, dims, true, images)
+    }
+
+    fn from_raw(raw: Vec<f32>, dims: UVec2, round: bool, images: &mut Assets<Image>) -> Self {
         let params = BakeParams::default();
-        let baked = bake(texels, dims, floor, params);
+        let baked = bake(&raw, dims, round, params);
         let heights = baked.iter().map(|&t| t as f32 / 32767.0).collect();
         let image = make_image(&baked, dims, images);
         Self {
-            raw: texels.to_vec(),
-            floor,
+            raw,
+            round,
             baked_params: params,
             heights,
             dims,
@@ -101,7 +119,7 @@ impl StampData {
         if params == self.baked_params {
             return;
         }
-        let baked = bake(&self.raw, self.dims, self.floor, params);
+        let baked = bake(&self.raw, self.dims, self.round, params);
         self.heights = baked.iter().map(|&t| t as f32 / 32767.0).collect();
         self.image = make_image(&baked, self.dims, images);
         self.baked_params = params;
@@ -138,8 +156,8 @@ impl StampData {
 /// (baseline removal only).
 #[derive(Clone, Copy, PartialEq, Default)]
 pub struct BakeParams {
-    /// Edge feather as a fraction of the half-extent per axis (0 = hard
-    /// edge, 0.5 = falloff reaches the center).
+    /// Edge feather as a fraction of the extent per axis (0 = hard edge,
+    /// 0.5 = falloff reaches the center); of the diameter on a round stamp.
     pub feather: f32,
     /// Signed shift after baseline removal, in stamp units (1 = full
     /// strength). Positive re-adds a floor (a plateau with a cliff edge);
@@ -148,25 +166,32 @@ pub struct BakeParams {
     pub offset: f32,
 }
 
-/// The bake pass: baseline, then offset, then feather — so the feather
-/// tapers the adjusted relief (including a deliberate offset pedestal),
-/// not the raw export's. Signed snorm output, -1..1.
-fn bake(raw: &[u16], dims: UVec2, floor: u16, params: BakeParams) -> Vec<i16> {
+/// The bake pass: offset, then feather — so the feather tapers the adjusted
+/// relief (including a deliberate offset pedestal), not the raw export's.
+/// Signed snorm output, -1..1.
+fn bake(raw: &[f32], dims: UVec2, round: bool, params: BakeParams) -> Vec<i16> {
     let inv = dims.as_vec2().recip();
     raw.iter()
         .enumerate()
         .map(|(i, &t)| {
-            let mut v = (t.saturating_sub(floor)) as f32 / 65535.0;
-            v = (v + params.offset).clamp(-1.0, 1.0);
-            if params.feather > 0.0 {
+            let mut v = (t + params.offset).clamp(-1.0, 1.0);
+            if round || params.feather > 0.0 {
                 // Texel centers at half-integers, matching `sample` and the
                 // shader; distance to the nearest edge in normalized uv.
                 let x = i as u32 % dims.x;
                 let y = i as u32 / dims.x;
                 let uv = (Vec2::new(x as f32, y as f32) + 0.5) * inv;
-                let d = uv.min(1.0 - uv).min_element();
-                let t = (d / params.feather).clamp(0.0, 1.0);
-                v *= t * t * (3.0 - 2.0 * t);
+                let d = if round {
+                    0.5 - uv.distance(Vec2::splat(0.5))
+                } else {
+                    uv.min(1.0 - uv).min_element()
+                };
+                if d <= 0.0 {
+                    v = 0.0;
+                } else if params.feather > 0.0 {
+                    let t = (d / params.feather).clamp(0.0, 1.0);
+                    v *= t * t * (3.0 - 2.0 * t);
+                }
             }
             (v * 32767.0).round() as i16
         })
@@ -337,8 +362,8 @@ pub(crate) fn drive_stamp_tool(
     }
 }
 
-/// Drop any floating preview while the stamp tool isn't active — the drive
-/// system only runs while it is.
+/// Drop any floating preview while no tool that floats one is active — their
+/// drive systems only run while they are.
 pub(crate) fn clear_stamp_preview(mut clipmaps: Query<&mut Clipmap, With<EditableTerrain>>) {
     for mut clipmap in &mut clipmaps {
         if clipmap.stamp.is_some() {

@@ -17,6 +17,8 @@
 //! - [`ActiveStamp`] / [`StampSettings`] — the stamp tool's heightfield PNG
 //!   and transform; the GPU preview floats it under the cursor, a
 //!   click commits it.
+//! - [`CloneSource`] / [`CloneSettings`] — the clone tool's captured piece of
+//!   terrain and its transform; previewed and committed like a stamp.
 //! - [`ExportRequested`] / [`HeightmapExported`] — write the heightmap to an
 //!   R16 KTX2 (round-trips through the asset loader) and/or a 16-bit PNG
 //!   interchange copy, by extension.
@@ -38,6 +40,7 @@
 
 use bevy::prelude::*;
 
+mod clone;
 mod cog;
 mod cursor;
 mod export;
@@ -59,6 +62,7 @@ mod usgs;
 mod utm;
 mod world;
 
+pub use clone::{CloneSettings, CloneSource, ClonedRelief};
 pub use cursor::{BrushRing, PointerBlocked, TerrainCursor, TerrainHit};
 pub use export::{ExportRequested, HeightmapExported};
 pub use field::TerrainField;
@@ -115,6 +119,8 @@ impl Plugin for TerrainEditorPlugin {
             .init_resource::<cursor::BrushRing>()
             .init_resource::<ActiveStamp>()
             .init_resource::<StampSettings>()
+            .init_resource::<CloneSource>()
+            .init_resource::<CloneSettings>()
             .init_resource::<export::ExportTasks>()
             .add_message::<TerrainRegionChanged>()
             .add_message::<ExportRequested>()
@@ -164,9 +170,13 @@ impl Plugin for TerrainEditorPlugin {
                         .chain()
                         .run_if(tool_active(ToolId::STAMP))
                         .in_set(EditorSet::Tools),
+                    (clone::drive_clone_tool, clone::draw_clone_rings)
+                        .run_if(tool_active(ToolId::CLONE))
+                        .in_set(EditorSet::Tools),
                     // Drop a floating preview the frame the tool deactivates.
                     stamp::clear_stamp_preview
                         .run_if(not(tool_active(ToolId::STAMP)))
+                        .run_if(not(tool_active(ToolId::CLONE)))
                         .in_set(EditorSet::Tools),
                     // Between Tools and Apply: an undone action's dirty
                     // regions flush (quantize + event + re-bake debounce) the
@@ -198,5 +208,6 @@ impl Plugin for TerrainEditorPlugin {
         tools.register(ToolId::SCULPT, "Sculpt");
         tools.register(ToolId::MASK, "Mask");
         tools.register(ToolId::STAMP, "Stamp");
+        tools.register(ToolId::CLONE, "Clone");
     }
 }

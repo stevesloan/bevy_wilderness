@@ -10,7 +10,7 @@
 //! Everything is driven from the side panel; keyboard shortcuts mirror it
 //! (WASD + right-drag to fly):
 //! - **Left mouse (held)** — apply the active tool under the brush ring
-//! - **S / M / P / T** — sculpt / mask paint / place-prop / stamp tool
+//! - **S / M / P / T / L** — sculpt / mask paint / place-prop / stamp / clone tool
 //! - **1 / 2 / 3 / 4** — sculpt mode: Raise / Lower / Smooth / Flatten
 //! - **Shift / Ctrl** (sculpt tool, held) — smooth / invert the current mode
 //! - **Shift+LMB** (mask tool) — erase mask; **C** — clear the whole mask
@@ -28,6 +28,11 @@
 //! example generates a few starter stamps (hill / ridge / ring) into its
 //! stamps folder on first run — drop your own 8/16-bit grayscale PNGs
 //! there and hit "rescan".
+//!
+//! The clone tool (L) stamps a piece of the terrain itself: **Alt+click**
+//! captures the disc under the cursor (**Alt+wheel** = its radius), then it
+//! floats and commits like a stamp — **wheel** = height, **Ctrl+wheel** =
+//! scale, **Shift+wheel** = rotate.
 //!
 //! A painted mask (orange tint) confines sculpting *and* stamps to it,
 //! feathered at the edge; the re-bake after an edit turns fresh cliffs rocky.
@@ -290,9 +295,13 @@ fn brush_controls(
             "tool: stamp (pick a stamp in the panel; wheel = strength, ctrl = size, shift = rotate)"
         );
     }
+    if keys.just_pressed(KeyCode::KeyL) {
+        active.0 = Some(ToolId::CLONE);
+        info!("tool: clone (alt+click captures; wheel = height, ctrl = scale, shift = rotate)");
+    }
 }
 
-/// While the stamp tool is active the wheel belongs to the stamp (strength /
+/// While the stamp or clone tool is active the wheel belongs to it (strength /
 /// size / rotation), so pause the fly camera's scroll-speed binding and
 /// restore it on tool switch.
 fn stamp_wheel_guard(
@@ -300,7 +309,7 @@ fn stamp_wheel_guard(
     mut cameras: Query<&mut FreeCamera>,
     mut saved: Local<Option<f32>>,
 ) {
-    let stamping = active.0 == Some(ToolId::STAMP);
+    let stamping = matches!(active.0, Some(ToolId::STAMP | ToolId::CLONE));
     for mut camera in &mut cameras {
         if stamping && saved.is_none() {
             *saved = Some(camera.scroll_factor);

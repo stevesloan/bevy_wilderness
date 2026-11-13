@@ -22,12 +22,12 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
 use bevy_wilderness_editor::{
-    ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, EditableTerrain, EditorSet, EditorTools,
-    ExportRequested, HeightmapExported, LoadRequested, NewTerrainRequested,
-    PointerBlocked, RebakeRequested, RebakeSettings, RedoRequest, SculptMode, SeamOverlay,
-    StampData, StampSettings, TerrainGesture, TerrainLoaded, TerrainQuality, ToolId, UndoBuffer,
-    UndoHistory, UndoRequest, WorldImportRequested, WorldImportRun, WorldImportSettings,
-    WorldImportSource, WorldImported,
+    ActiveStamp, ActiveTool, BrushSettings, ClipmapReady, CloneSettings, CloneSource,
+    EditableTerrain, EditorSet, EditorTools, ExportRequested, HeightmapExported, LoadRequested,
+    NewTerrainRequested, PointerBlocked, RebakeRequested, RebakeSettings, RedoRequest, SculptMode,
+    SeamOverlay, StampData, StampSettings, TerrainGesture, TerrainLoaded, TerrainQuality, ToolId,
+    UndoBuffer, UndoHistory, UndoRequest, WorldImportRequested, WorldImportRun,
+    WorldImportSettings, WorldImportSource, WorldImported,
 };
 
 /// Named lat/lon starting points for the world-import section — dramatic,
@@ -249,6 +249,8 @@ pub struct TerrainUi<'w, 's> {
     active_stamp: ResMut<'w, ActiveStamp>,
     stamp_settings: ResMut<'w, StampSettings>,
     stamp_folder: Res<'w, UiStampFolder>,
+    clone_source: Res<'w, CloneSource>,
+    clone_settings: ResMut<'w, CloneSettings>,
     images: ResMut<'w, Assets<Image>>,
     library: Local<'s, StampLibrary>,
     export_status: Local<'s, Vec<String>>,
@@ -266,6 +268,7 @@ impl TerrainUi<'_, '_> {
         self.undo_section(ui);
         self.brush_section(ui);
         self.stamp_section(ui, contexts);
+        self.clone_section(ui);
         self.mask_section(ui);
         self.bake_section(ui);
         self.quality_section(ui);
@@ -502,6 +505,46 @@ impl TerrainUi<'_, '_> {
         if self.active_stamp.0.is_none() {
             ui.small("pick a stamp to start previewing");
         }
+    }
+
+    /// The clone tool's capture radius and transform. Draws nothing unless
+    /// the clone tool is active.
+    pub fn clone_section(&mut self, ui: &mut egui::Ui) {
+        if self.active.0 != Some(ToolId::CLONE) {
+            return;
+        }
+        ui.separator();
+        ui.label("Clone");
+        let settings = &mut *self.clone_settings;
+        ui.add(
+            egui::Slider::new(&mut settings.radius, 2.0..=8192.0)
+                .logarithmic(true)
+                .text("capture radius (m)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut settings.scale, 0.05..=20.0)
+                .logarithmic(true)
+                .text("scale"),
+        );
+        ui.add(egui::Slider::new(&mut settings.height, -5.0..=5.0).text("height ×"));
+        let mut degrees = settings.rotation.to_degrees();
+        if ui
+            .add(egui::Slider::new(&mut degrees, 0.0..=360.0).text("rotation °"))
+            .changed()
+        {
+            settings.rotation = degrees.to_radians();
+        }
+        ui.add(egui::Slider::new(&mut settings.feather, 0.0..=0.5).text("feather"));
+        ui.small("alt+click: capture · alt+wheel: capture radius");
+        ui.small("wheel: height · ctrl: scale · shift: rotate");
+        match &self.clone_source.0 {
+            Some(relief) => ui.small(format!(
+                "captured {:.0} m across, {:.0} m of relief",
+                relief.radius * 2.0,
+                relief.amplitude()
+            )),
+            None => ui.small("alt+click the terrain to capture a piece of it"),
+        };
     }
 
     /// Real-world terrain import: presets, lat/lon, vertical scale, and the
