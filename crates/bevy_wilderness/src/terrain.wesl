@@ -29,7 +29,7 @@ import bevy_pbr::light_probe::environment_map;
 
 // Shared with every other material that fogs itself.
 @if(WILDERNESS_SHADE)
-import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog};
+import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog_lit, fog_sunlit_share};
 
 @if(MESHLET_MESH_MATERIAL_PASS)
 import bevy_pbr::meshlet::visibility_buffer_resolve::VertexOutput;
@@ -529,7 +529,8 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
     if fog.density + fog.haze_density > 0.0 {
-        color = apply_height_fog(fog, color, view.world_position, in.world_position.xyz, view.exposure);
+        let sunlit = fog_sunlit_share(fog, sun_shadow_field, vt_sampler, dev.sun_shadow, view.world_position, in.world_position.xyz);
+        color = apply_height_fog_lit(fog, color, view.world_position, in.world_position.xyz, view.exposure, sunlit);
     }
     return vec4<f32>(color, base_color.a);
 }

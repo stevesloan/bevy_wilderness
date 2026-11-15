@@ -1,6 +1,9 @@
 // Analytic height fog in two exponential layers, mist and haze (Crytek/Wenzel, with
 // one more layer). Imported by the terrain shader and by any material that fogs
 // itself, in the lit colour before tonemapping.
+
+import bevy_wilderness::sun_shadow::{SunShadowParams, sun_visibility};
+
 struct HeightFog {
     color: vec3<f32>,         // light the mist scatters toward the eye, cd/m²
     density: f32,             // mist's density at base_height; 0 for none
@@ -17,6 +20,7 @@ struct HeightFog {
     start: f32,               // m from the eye before any fog
     sun_forward: f32,         // Henyey-Greenstein g: 0 scatters sunlight evenly, 1 straight on
     haze_aerosol: vec3<f32>,  // aerosols' share of the haze's scattering per channel; molecules the rest
+    shadow_samples: u32,      // points per ray testing the sun shadow field; 0 for none
 }
 
 // Optical depth of one exponential layer along a ray of `dist` metres from `origin_y`.
@@ -71,6 +75,49 @@ fn molecular_glow(cos_sun: f32) -> f32 {
     return max(0.75 * EVEN_SHARE * (1.0 + cos_sun * cos_sun) - EVEN_SHARE, 0.0);
 }
 
+// The share of the fog between cam_pos and world_pos that the sun reaches, from
+// the terrain's sun shadow field at `fog.shadow_samples` points along the ray,
+// each weighted by the fog there. Points crowd toward the eye, quadratically:
+// near fog shows a shaft's edge sharply, and far fog is mostly haze, which
+// varies slowly. 1 with no samples.
+fn fog_sunlit_share(
+    fog: HeightFog,
+    field: texture_2d<f32>,
+    field_sampler: sampler,
+    params: SunShadowParams,
+    cam_pos: vec3<f32>,
+    world_pos: vec3<f32>,
+) -> f32 {
+    if fog.shadow_samples == 0u || params.valid < 0.5 {
+        return 1.0;
+    }
+    let ray = world_pos - cam_pos;
+    let d = length(ray);
+    let dir = ray / max(d, 1e-4);
+    let skipped = min(fog.start, d);
+    let dist = min(d - skipped, fog.max_distance);
+    let samples = f32(fog.shadow_samples);
+    var lit = 0.0;
+    var total = 0.0;
+    for (var i = 0u; i < fog.shadow_samples; i++) {
+        let u = (f32(i) + 0.5) / samples;
+        let along = skipped + dist * u * u;
+        let p = cam_pos + dir * along;
+        let height = p.y - fog.base_height;
+        // Green, the channel visibility is quoted for, times the length of
+        // ray this point stands for (the derivative of u²).
+        let density = fog.density * fog.extinction.y * exp(clamp(-fog.falloff * height, -60.0, 60.0))
+            + fog.haze_density * fog.haze_extinction.y * exp(clamp(-fog.haze_falloff * height, -60.0, 60.0));
+        let weight = density * u;
+        lit += weight * sun_visibility(field, field_sampler, params, p);
+        total += weight;
+    }
+    if total <= 0.0 {
+        return 1.0;
+    }
+    return lit / total;
+}
+
 // `color`, exposed by `exposure`, as seen from cam_pos through the fog to world_pos.
 fn apply_height_fog(
     fog: HeightFog,
@@ -78,6 +125,20 @@ fn apply_height_fog(
     cam_pos: vec3<f32>,
     world_pos: vec3<f32>,
     exposure: f32,
+) -> vec3<f32> {
+    return apply_height_fog_lit(fog, color, cam_pos, world_pos, exposure, 1.0);
+}
+
+// `apply_height_fog` with `sunlit` of the fog reached by the sun
+// (`fog_sunlit_share`): the rest loses its glow toward the sun and the mist the
+// sun's even share of its colour, keeping only the sky's light.
+fn apply_height_fog_lit(
+    fog: HeightFog,
+    color: vec3<f32>,
+    cam_pos: vec3<f32>,
+    world_pos: vec3<f32>,
+    exposure: f32,
+    sunlit: f32,
 ) -> vec3<f32> {
     // Beer-Lambert per channel: what's behind the fog fades, and what the fog
     // scatters toward the eye takes its place in the same measure.
@@ -87,12 +148,13 @@ fn apply_height_fog(
     let depth = mist + haze;
     let transmittance = exp(-depth);
     // Each layer lends the ray its colour in proportion to the depth it adds.
-    let air = (mist * fog.color + haze * fog.haze_color) / max(depth, vec3<f32>(1e-30));
+    let mist_color = max(fog.color - (1.0 - sunlit) * fog.sun_color * EVEN_SHARE, vec3<f32>(0.0));
+    let air = (mist * mist_color + haze * fog.haze_color) / max(depth, vec3<f32>(1e-30));
     // Mist is droplets throughout; haze is part aerosol, part molecules.
     let cos_sun = dot(normalize(world_pos - cam_pos), fog.sun_direction);
     let forward = forward_glow(cos_sun, fog.sun_forward);
     let haze_glow = mix(vec3<f32>(molecular_glow(cos_sun)), vec3<f32>(forward), fog.haze_aerosol);
     let glow = (mist * forward + haze * haze_glow) / max(depth, vec3<f32>(1e-30));
-    let scattered = air + fog.sun_color * glow;
+    let scattered = air + fog.sun_color * glow * sunlit;
     return color * transmittance + scattered * exposure * (1.0 - transmittance);
 }
