@@ -98,11 +98,34 @@ fn sunlit_between(a: f32, b: f32) -> f32 {
     return (sunlit_integral(b) - sunlit_integral(a)) / (b - a);
 }
 
-// The share of the fog between cam_pos and world_pos that the sun reaches, from
-// the terrain's sun shadow field along the ray: `fog.shadow_samples` stretches,
-// each weighted by the fog in it. Stretches lengthen away from the eye,
-// quadratically: near fog shows a shaft's edge sharply, and far fog is mostly
-// haze, which varies slowly. 1 with no samples.
+// Metres above the terrain's top a summit's penumbra can still reach.
+const TOP_PENUMBRA: f32 = 25.0;
+
+// How far along a ray from `origin` the terrain can shade it: until it leaves
+// the field's square or climbs over the terrain's top.
+fn shadowable_length(params: SunShadowParams, origin: vec3<f32>, dir: vec3<f32>) -> f32 {
+    let half = 0.5 / max(params.inv_world_size, 1e-9);
+    var t = 1e30;
+    if abs(dir.x) > 1e-6 {
+        t = min(t, (sign(dir.x) * half - origin.x) / dir.x);
+    }
+    if abs(dir.z) > 1e-6 {
+        t = min(t, (sign(dir.z) * half - origin.z) / dir.z);
+    }
+    if dir.y > 1e-6 {
+        t = min(t, (params.top + TOP_PENUMBRA - origin.y) / dir.y);
+    }
+    return max(t, 0.0);
+}
+
+// The share of the fog's light between cam_pos and world_pos that the sun
+// reaches, from the terrain's sun shadow field along the ray:
+// `fog.shadow_samples` stretches, each weighted by the light it sends the eye,
+// its own fog dimmed by the fog in front of it, in green, the channel
+// visibility is quoted for. The stretches cover only the part of the ray the
+// terrain can shade, the rest counting as sunlit, and lengthen away from the
+// eye, quadratically: near fog shows a shaft's edge sharply, and far fog is
+// mostly haze, which varies slowly. 1 with no samples.
 fn fog_sunlit_share(
     fog: HeightFog,
     field: texture_2d<f32>,
@@ -120,27 +143,36 @@ fn fog_sunlit_share(
     let skipped = min(fog.start, d);
     let dist = min(d - skipped, fog.max_distance);
     let start = cam_pos + dir * skipped;
+    let span = min(dist, shadowable_length(params, start, dir));
     let samples = f32(fog.shadow_samples);
+    let mist = fog.density * fog.extinction.y;
+    let haze = fog.haze_density * fog.haze_extinction.y;
     var lit = 0.0;
-    var total = 0.0;
+    // Optical depth from the start to the current stretch.
+    var depth = 0.0;
     var before = 0.0;
     var margin_before = sun_shadow_margin(field, field_sampler, params, start);
     for (var i = 1u; i <= fog.shadow_samples; i++) {
         let u = f32(i) / samples;
-        let margin = sun_shadow_margin(field, field_sampler, params, start + dir * (dist * u * u));
-        // The fog in the stretch, in green, the channel visibility is quoted
-        // for, at its middle, times its length.
-        let middle = start + dir * (dist * 0.25 * (before + u) * (before + u));
-        let height = middle.y - fog.base_height;
-        let density = fog.density * fog.extinction.y * exp(clamp(-fog.falloff * height, -60.0, 60.0))
-            + fog.haze_density * fog.haze_extinction.y * exp(clamp(-fog.haze_falloff * height, -60.0, 60.0));
-        let weight = density * (u * u - before * before);
+        let margin = sun_shadow_margin(field, field_sampler, params, start + dir * (span * u * u));
+        // In closed form, not from a point: mist is a thin layer, which a
+        // stretch's middle can miss.
+        let origin_y = start.y + dir.y * span * before * before;
+        let run = span * (u * u - before * before);
+        let stretch = layer_depth(mist, fog.falloff, fog.base_height, origin_y, run, dir.y)
+            + layer_depth(haze, fog.haze_falloff, fog.base_height, origin_y, run, dir.y);
+        let weight = exp(-depth) * (1.0 - exp(-stretch));
         lit += weight * sunlit_between(margin_before, margin);
-        total += weight;
+        depth += stretch;
         before = u;
         margin_before = margin;
     }
-    if total <= 0.0 {
+    let rest = layer_depth(mist, fog.falloff, fog.base_height, start.y + dir.y * span, dist - span, dir.y)
+        + layer_depth(haze, fog.haze_falloff, fog.base_height, start.y + dir.y * span, dist - span, dir.y);
+    lit += exp(-depth) * (1.0 - exp(-rest));
+    depth += rest;
+    let total = 1.0 - exp(-depth);
+    if total <= 1e-6 {
         return 1.0;
     }
     return lit / total;

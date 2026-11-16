@@ -377,7 +377,7 @@ pub(crate) fn init_rvt(
         // (same as the other RVT targets), so validity carries over — unless the
         // target was blanked by a resize, which clears it in the rebake path.
         let was_valid = sun_shadow.params.valid;
-        sun_shadow.params = crate::SunShadowParams::pending(world_size, clipmap.min);
+        sun_shadow.params = crate::SunShadowParams::pending(world_size, clipmap.min, clipmap.max);
         sun_shadow.params.valid = was_valid;
         rvt.initialized = true;
         // Kept in sync with the targets below.

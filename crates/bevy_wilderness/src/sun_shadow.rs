@@ -45,6 +45,9 @@ pub struct SunShadowParams {
     pub penumbra_per_metre: f32,
     /// 0 until the field is baked, 1 after. Unbaked reads as full sun.
     pub valid: f32,
+    /// The terrain's highest point, which no ceiling exceeds: above it nothing
+    /// is shaded.
+    pub top: f32,
 }
 
 /// The sun's angular radius seen from Earth is ~0.266°, so its shadow edge
@@ -61,19 +64,21 @@ impl SunShadowParams {
             height_bias: 0.0,
             penumbra_per_metre: SUN_ANGULAR_RADIUS_TAN,
             valid: 0.0,
+            top: 0.0,
         }
     }
 
     /// Geometry resolved, bake in flight. Still reads as full sun: a render
     /// target holds undefined data until something draws to it, and reading that
     /// as heights would shadow the world with noise.
-    pub(crate) fn pending(world_size: f32, min_height: f32) -> Self {
+    pub(crate) fn pending(world_size: f32, min_height: f32, max_height: f32) -> Self {
         Self {
             inv_world_size: 1.0 / world_size.max(1e-4),
             // Undoes the bake's `- (minmax.x - 1.0)`.
             height_bias: min_height - 1.0,
             penumbra_per_metre: SUN_ANGULAR_RADIUS_TAN,
             valid: 0.0,
+            top: max_height,
         }
     }
 

@@ -22,6 +22,8 @@ struct SunShadowParams {
     // 0 while the field has not been baked, 1 once it has. Unbaked reads as full
     // sun rather than a black world.
     valid: f32,
+    // The terrain's highest point, which no ceiling exceeds.
+    top: f32,
 }
 
 // 1.0 = full sun, 0.0 = fully shadowed by terrain, soft between.
