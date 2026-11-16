@@ -11,6 +11,9 @@ import bevy_pbr::render::forward_io::VertexOutput;
 // 1 = looping terrain: read the heightmap toroidally so the shadow march wraps
 // across tile edges; 0 = finite (clamp).
 @group(constants::MATERIAL_BIND_GROUP) @binding(15) var<uniform> looping: u32;
+// Written to alpha, which no reader uses, so `bake_check.wesl` can tell this
+// bake's texels from an earlier bake's.
+@group(constants::MATERIAL_BIND_GROUP) @binding(16) var<uniform> stamp: f32;
 
 fn heightmap_uv(world_xz: vec2<f32>) -> vec2<f32> {
     let texture_size = vec2<f32>(textureDimensions(heightmap_texture));
@@ -121,5 +124,5 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // own ground, which R equals wherever the column is lit.
     let bias = minmax.x - 1.0;
     let ground = terrain_height(in.world_position.xz);
-    return vec4<f32>(shadow.x - bias, shadow.y, ground - bias, 1.0);
+    return vec4<f32>(shadow.x - bias, shadow.y, ground - bias, stamp);
 }

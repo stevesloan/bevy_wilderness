@@ -34,7 +34,7 @@ pub use texture::{build_terrain_array, load_terrain_array};
 
 use clipmap::{init_clipmaps, init_grids, retag_png_heightmaps, update_grids};
 use material::GridMaterial;
-use rvt::{BakeMaterial, drive_rvt_bake, init_rvt, warn_late_quality, warn_unbaked_terrain};
+use rvt::{BakeCheckMaterial, BakeMaterial, drive_rvt_bake, init_rvt, warn_late_quality, warn_unbaked_terrain};
 
 pub struct ClipmapPlugin;
 
@@ -47,12 +47,14 @@ impl Plugin for ClipmapPlugin {
         load_shader_library!(app, "sun_shadow.wesl");
         embedded_asset!(app, "terrain.wesl");
         embedded_asset!(app, "bake.wesl");
+        embedded_asset!(app, "bake_check.wesl");
         embedded_asset!(app, "vt_composite.wesl");
 
         app.add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, GridMaterial>,
         >::default())
             .add_plugins(MaterialPlugin::<BakeMaterial>::default())
+            .add_plugins(MaterialPlugin::<BakeCheckMaterial>::default())
             .add_plugins(vt_render::VtRenderPlugin)
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()

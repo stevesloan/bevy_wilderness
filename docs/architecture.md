@@ -47,7 +47,7 @@ material.
 | `terrain.wesl` | Main pass: vertex displacement, holes, stamp preview; fragment shading + lighting fork |
 | `vt.rs` | Texture clipmap, main world: level layout, windows, composite requests, visible rects |
 | `vt_render.rs` / `vt_composite.wesl` | Texture clipmap, render world: the composite pass |
-| `rvt.rs` / `bake.wesl` | Sun shadow field bake: sentinel-gated lifecycle, re-bake |
+| `rvt.rs` / `bake.wesl` / `bake_check.wesl` | Sun shadow field bake: sentinel-gated, checked in its field; re-bake |
 | `quality.rs` | `TerrainQuality`, `TerrainFog`, `InlineFog` |
 | `height_fog.rs`, `fog_functions.wesl` | Height fog: its parameters and shared math |
 | `sun_shadow.rs` / `.wesl` | Baked sun shadow-ceiling field for *your* meshes |
@@ -298,8 +298,15 @@ layer.
 **Sentinel gating.** A camera that renders before its pipeline compiles and
 textures are resident bakes black. So the target first draws to a 4×4 sentinel
 that is read back every frame; the first non-black readback proves the pipeline
-is ready, the real bake camera runs for 2 frames (`RVT_BAKE_FRAMES`), and
-everything despawns. `TerrainSunShadow` is then marked valid; `ClipmapReady`
+is ready, and the real bake camera starts.
+
+**Bake check.** The sentinel is a different view, so it can't prove the bake
+camera drew. Each bake writes a stamp into the field's alpha, and a 4×4 check
+camera (`bake_check.wesl`), drawn after the bake, turns white where it reads
+the field holding that stamp. The bake camera renders until the check's
+readback is all white (at most `RVT_BAKE_MAX_FRAMES`, then a warning), logs
+`sun shadow bake done after N frames`, and everything despawns.
+`TerrainSunShadow` is then marked valid; `ClipmapReady`
 and `ever_baked` follow once the clipmap is composited too
 (`mark_clipmap_ready`).
 

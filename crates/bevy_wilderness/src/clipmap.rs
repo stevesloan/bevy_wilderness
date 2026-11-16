@@ -463,6 +463,7 @@ pub(crate) fn init_clipmaps(
                 shadow_done: false,
                 ever_baked: false,
                 pending_bakes: 0,
+                bake_stamp: 0,
                 quality: *quality,
                 stall_secs: 0.0,
                 stall_warned: false,

@@ -22,6 +22,8 @@ const RVT_SUN_SHADOW_LAYER: usize = 4;
 /// exceed the number of bake targets so sentinel layers can't collide with a
 /// target's base layer.
 const RVT_SENTINEL_LAYER_OFFSET: usize = 4;
+/// Layer offset for the tiny targets that check the bake reached its target.
+const RVT_CHECK_LAYER_OFFSET: usize = 8;
 
 /// Bake state for a clipmap's sun shadow-ceiling field, the one whole-world
 /// target still baked at load. The surface itself is composited per level by
@@ -40,6 +42,9 @@ pub(crate) struct ClipmapRvt {
     /// Bake targets not yet finished. Set when the bake cameras spawn; each
     /// decrements as it completes, and [`ClipmapReady`] is inserted at zero.
     pub(crate) pending_bakes: u32,
+    /// Written into each bake's texels so a check can tell them from an
+    /// earlier bake's; never 0, which a blank target reads as.
+    pub(crate) bake_stamp: u32,
     /// The quality profile this clipmap baked with — its bake-time fields are
     /// locked in at spawn, so `warn_late_quality` can flag later changes.
     pub(crate) quality: TerrainQuality,
@@ -51,12 +56,13 @@ pub(crate) struct ClipmapRvt {
 
 /// A bake camera stays inactive until its sentinel readback proves the bake
 /// pipeline is compiled and source textures are on the GPU (`ready`), then
-/// renders a few frames (the full-coverage RVT is static) and deactivates.
-/// Pipeline compilation and asset upload take a machine-dependent number of
-/// frames; a camera that renders before they finish produces an empty target.
+/// renders until a readback of its own target shows this bake there (`drawn`).
+/// The sentinel is a different view, so it can't prove this one drew.
 #[derive(Component)]
 pub(crate) struct RvtBakeCamera {
     ready: bool,
+    drawn: bool,
+    /// Frames rendered so far, for the log.
     frames: u32,
     /// The clipmap entity this camera bakes for, so completion can be tallied.
     clipmap: Entity,
@@ -64,10 +70,13 @@ pub(crate) struct RvtBakeCamera {
     /// once the bake finishes (it and the camera are dead weight afterward — the
     /// baked target lives on in `ClipmapRvt`/`GridMaterial`).
     quad: Entity,
+    /// The check's camera, quad and readback, despawned with the bake.
+    check: [Entity; 3],
 }
 
-/// Active frames rendered once ready; > 1 only as safety margin.
-const RVT_BAKE_FRAMES: u32 = 2;
+/// Bake frames after which a check that never passes stops the bake, so a
+/// broken check costs a slow load rather than a full-field render every frame.
+const RVT_BAKE_MAX_FRAMES: u32 = 120;
 
 pub(crate) fn drive_rvt_bake(
     mut commands: Commands,
@@ -79,11 +88,23 @@ pub(crate) fn drive_rvt_bake(
         if !state.ready {
             continue;
         }
-        if state.frames > 0 {
+        if !state.drawn && state.frames >= RVT_BAKE_MAX_FRAMES {
+            warn!(
+                "bevy_wilderness: no sign of the sun shadow bake in its field after {} frames; \
+                 keeping it as it is",
+                state.frames
+            );
+            state.drawn = true;
+        }
+        if !state.drawn {
             camera.is_active = true;
-            state.frames -= 1;
+            state.frames += 1;
         } else if camera.is_active {
             camera.is_active = false;
+            info!(
+                "bevy_wilderness: sun shadow bake done after {} frames",
+                state.frames
+            );
             // This target is baked; `vt::mark_clipmap_ready` inserts
             // `ClipmapReady` once the clipmap's surface is composited too.
             // Guarded by `is_active`, so this fires exactly once per camera.
@@ -102,6 +123,9 @@ pub(crate) fn drive_rvt_bake(
             // this they render/iterate every frame for the app's lifetime.
             commands.entity(state.quad).try_despawn();
             commands.entity(camera_entity).try_despawn();
+            for entity in state.check {
+                commands.entity(entity).try_despawn();
+            }
         }
     }
 }
@@ -213,7 +237,7 @@ pub(crate) fn warn_unbaked_terrain(
             let shadow = if rvt.shadow_done {
                 "baked"
             } else {
-                "not baked (its sentinel never drew: bake pipeline or heightmap not on the GPU)"
+                "not baked (no draw has reached it: bake pipeline or heightmap not on the GPU)"
             };
             format!(
                 "sun-shadow field {shadow}; surface {committed} of {levels} levels composited \
@@ -283,6 +307,9 @@ pub(crate) struct BakeMaterial {
     // edges (baked shading tiles seamlessly for a looping clipmap); 0 = clamp.
     #[uniform(15)]
     looping: u32,
+    /// See [`ClipmapRvt::bake_stamp`].
+    #[uniform(16)]
+    stamp: f32,
 }
 
 impl Material for BakeMaterial {
@@ -297,12 +324,35 @@ impl Material for BakeMaterial {
     }
 }
 
+/// Reads the shadow field into a tiny target, white where it holds the bake
+/// stamped `stamp`; see `bake_check.wesl`.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub(crate) struct BakeCheckMaterial {
+    #[texture(0)]
+    field: Handle<Image>,
+    #[uniform(1)]
+    stamp: f32,
+}
+
+impl Material for BakeCheckMaterial {
+    fn fragment_shader() -> ShaderRef {
+        ShaderRef::Path(
+            AssetPath::from_path_buf(embedded_path!("bake_check.wesl")).with_source("embedded"),
+        )
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+}
+
 /// Once the heightmap is loaded, spawn the top-down bake camera and quad that
 /// render the sun shadow-ceiling field (full-terrain coverage).
 pub(crate) fn init_rvt(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut bake_materials: ResMut<Assets<BakeMaterial>>,
+    mut check_materials: ResMut<Assets<BakeCheckMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut clipmaps: Query<(
         Entity,
@@ -332,6 +382,9 @@ pub(crate) fn init_rvt(
         rvt.initialized = true;
         // Kept in sync with the targets below.
         rvt.pending_bakes = 1;
+        // Wraps well inside the range a 16-bit float holds exactly.
+        rvt.bake_stamp = rvt.bake_stamp % 2000 + 1;
+        let stamp = rvt.bake_stamp as f32;
 
         let mut make_bake = || {
             bake_materials.add(BakeMaterial {
@@ -340,6 +393,7 @@ pub(crate) fn init_rvt(
                 minmax: Vec2::new(clipmap.min, clipmap.max),
                 sun_direction,
                 looping: clipmap.looping as u32,
+                stamp,
             })
         };
         let quad = meshes.add(Plane3d::default().mesh().size(world_size, world_size));
@@ -379,6 +433,45 @@ pub(crate) fn init_rvt(
         for (target, format, layer, order) in targets {
             let material = make_bake();
             let sentinel_layer = layer + RVT_SENTINEL_LAYER_OFFSET;
+            let check_layer = layer + RVT_CHECK_LAYER_OFFSET;
+
+            // Rendered after the bake (higher order) and read back every frame
+            // until the bake camera's own target shows this bake.
+            let mut check_image = Image::new_target_texture(4, 4, format, None);
+            check_image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+            let check_target = images.add(check_image);
+            let check_quad = commands
+                .spawn((
+                    Mesh3d(quad.clone()),
+                    MeshMaterial3d(check_materials.add(BakeCheckMaterial {
+                        field: target.clone(),
+                        stamp,
+                    })),
+                    Transform::default(),
+                    RenderLayers::layer(check_layer),
+                    ChildOf(clipmap_entity),
+                ))
+                .id();
+            let check_camera = commands
+                .spawn((
+                    Camera3d::default(),
+                    Camera {
+                        order: order + 1,
+                        clear_color: Color::BLACK.into(),
+                        ..default()
+                    },
+                    RenderTarget::Image(check_target.clone().into()),
+                    projection(),
+                    Tonemapping::None,
+                    Msaa::Off,
+                    camera_transform,
+                    RenderLayers::layer(check_layer),
+                    ChildOf(clipmap_entity),
+                ))
+                .id();
+            let check_readback = commands
+                .spawn((Readback::texture(check_target), ChildOf(clipmap_entity)))
+                .id();
 
             // All bake entities are parented to the clipmap so despawning it
             // recursively tears them down (Bevy despawns descendants) — otherwise
@@ -414,12 +507,30 @@ pub(crate) fn init_rvt(
                     ChildOf(clipmap_entity),
                     RvtBakeCamera {
                         ready: false,
-                        frames: RVT_BAKE_FRAMES,
+                        drawn: false,
+                        frames: 0,
                         clipmap: clipmap_entity,
                         quad: bake_quad,
+                        check: [check_camera, check_quad, check_readback],
                     },
                 ))
                 .id();
+            commands.entity(check_readback).observe(
+                move |event: On<ReadbackComplete>, mut cameras: Query<&mut RvtBakeCamera>| {
+                    // Rows come padded to the copy alignment; only the first 4
+                    // texels of each are the image. `format` is `Rgba16Float`,
+                    // so a white texel's R is 1.0, 0x3C00.
+                    let data = &event.event().data;
+                    let drawn = data.chunks(data.len() / 4).all(|row| {
+                        row[..4 * 8]
+                            .chunks(8)
+                            .all(|px| u16::from_le_bytes([px[0], px[1]]) == 0x3C00)
+                    });
+                    if drawn && let Ok(mut camera) = cameras.get_mut(bake_camera) {
+                        camera.drawn = true;
+                    }
+                },
+            );
 
             // Sentinel: same mesh/material/format, 4x4 target read back each
             // frame. Must match the bake's pipeline key (target format, MSAA,
