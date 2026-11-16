@@ -2,7 +2,7 @@
 // one more layer). Imported by the terrain shader and by any material that fogs
 // itself, in the lit colour before tonemapping.
 
-import bevy_wilderness::sun_shadow::{SunShadowParams, sun_visibility};
+import bevy_wilderness::sun_shadow::{SunShadowParams, sun_shadow_margin};
 
 struct HeightFog {
     color: vec3<f32>,         // light the mist scatters toward the eye, cd/m²
@@ -75,11 +75,34 @@ fn molecular_glow(cos_sun: f32) -> f32 {
     return max(0.75 * EVEN_SHARE * (1.0 + cos_sun * cos_sun) - EVEN_SHARE, 0.0);
 }
 
+// The integral of the sun's share over a shadow margin, where the share ramps
+// from 0 at -1 to 1 at 1 (`sun_shadow_margin`).
+fn sunlit_integral(margin: f32) -> f32 {
+    if margin <= -1.0 {
+        return 0.0;
+    }
+    if margin >= 1.0 {
+        return margin;
+    }
+    return (margin + 1.0) * (margin + 1.0) * 0.25;
+}
+
+// The sun's share along a stretch of ray whose margin runs linearly from `a` to
+// `b`. Taking it over the stretch rather than at its ends is what keeps the fog
+// from banding: the share moves smoothly as a shadow's edge passes a sample
+// point, where the points' own 0 or 1 would step together across the screen.
+fn sunlit_between(a: f32, b: f32) -> f32 {
+    if abs(b - a) < 1e-3 {
+        return clamp(0.25 * (a + b) + 0.5, 0.0, 1.0);
+    }
+    return (sunlit_integral(b) - sunlit_integral(a)) / (b - a);
+}
+
 // The share of the fog between cam_pos and world_pos that the sun reaches, from
-// the terrain's sun shadow field at `fog.shadow_samples` points along the ray,
-// each weighted by the fog there. Points crowd toward the eye, quadratically:
-// near fog shows a shaft's edge sharply, and far fog is mostly haze, which
-// varies slowly. 1 with no samples.
+// the terrain's sun shadow field along the ray: `fog.shadow_samples` stretches,
+// each weighted by the fog in it. Stretches lengthen away from the eye,
+// quadratically: near fog shows a shaft's edge sharply, and far fog is mostly
+// haze, which varies slowly. 1 with no samples.
 fn fog_sunlit_share(
     fog: HeightFog,
     field: texture_2d<f32>,
@@ -96,21 +119,26 @@ fn fog_sunlit_share(
     let dir = ray / max(d, 1e-4);
     let skipped = min(fog.start, d);
     let dist = min(d - skipped, fog.max_distance);
+    let start = cam_pos + dir * skipped;
     let samples = f32(fog.shadow_samples);
     var lit = 0.0;
     var total = 0.0;
-    for (var i = 0u; i < fog.shadow_samples; i++) {
-        let u = (f32(i) + 0.5) / samples;
-        let along = skipped + dist * u * u;
-        let p = cam_pos + dir * along;
-        let height = p.y - fog.base_height;
-        // Green, the channel visibility is quoted for, times the length of
-        // ray this point stands for (the derivative of u²).
+    var before = 0.0;
+    var margin_before = sun_shadow_margin(field, field_sampler, params, start);
+    for (var i = 1u; i <= fog.shadow_samples; i++) {
+        let u = f32(i) / samples;
+        let margin = sun_shadow_margin(field, field_sampler, params, start + dir * (dist * u * u));
+        // The fog in the stretch, in green, the channel visibility is quoted
+        // for, at its middle, times its length.
+        let middle = start + dir * (dist * 0.25 * (before + u) * (before + u));
+        let height = middle.y - fog.base_height;
         let density = fog.density * fog.extinction.y * exp(clamp(-fog.falloff * height, -60.0, 60.0))
             + fog.haze_density * fog.haze_extinction.y * exp(clamp(-fog.haze_falloff * height, -60.0, 60.0));
-        let weight = density * u;
-        lit += weight * sun_visibility(field, field_sampler, params, p);
+        let weight = density * (u * u - before * before);
+        lit += weight * sunlit_between(margin_before, margin);
         total += weight;
+        before = u;
+        margin_before = margin;
     }
     if total <= 0.0 {
         return 1.0;

@@ -59,10 +59,11 @@ pub struct HeightFog {
     /// close to evenly. Clean air is mostly molecules. `ONE` treats it all as
     /// aerosol, as the mist always is.
     pub haze_aerosol: Vec3,
-    /// Points along each view ray at which the fog looks up the terrain's sun
+    /// Stretches of each view ray over which the fog takes the terrain's sun
     /// shadow field: mist in a shaded valley loses the sun it can't see, and a
-    /// ridge between the eye and the sun cuts a dark shaft into the haze. Each
-    /// is one fetch per fogged pixel. 0 leaves all of the fog sunlit.
+    /// ridge between the eye and the sun cuts a dark shaft into the haze. One
+    /// fetch per fogged pixel for each, plus one. 0 leaves all of the fog
+    /// sunlit.
     pub shadow_samples: u32,
 }
 

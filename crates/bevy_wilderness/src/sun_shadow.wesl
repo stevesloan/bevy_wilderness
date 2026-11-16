@@ -81,6 +81,28 @@ fn ground_sun_visibility_at(
     return smoothstep(-penumbra, penumbra, field_sample.b - field_sample.r + lift);
 }
 
+// How far `world_pos` is above the terrain's shadow ceiling, in penumbra
+// half-widths: 1 and over in full sun, -1 and under in full shadow, and large
+// where nothing is baked. For integrating the shadow along a ray, where each
+// point's own visibility would step as a shadow's edge crosses it.
+fn sun_shadow_margin(
+    field: texture_2d<f32>,
+    field_sampler: sampler,
+    params: SunShadowParams,
+    world_pos: vec3<f32>,
+) -> f32 {
+    if params.valid < 0.5 {
+        return 1e3;
+    }
+    let uv = world_pos.xz * params.inv_world_size + 0.5;
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return 1e3;
+    }
+    let field_sample = textureSampleLevel(field, field_sampler, uv, 0.0);
+    let penumbra = max(field_sample.g * params.penumbra_per_metre, MIN_PENUMBRA);
+    return (world_pos.y - (field_sample.r + params.height_bias)) / penumbra;
+}
+
 // Narrowest penumbra half-width (m). A point this far above the ceiling is in
 // full sun.
 const MIN_PENUMBRA: f32 = 0.25;
