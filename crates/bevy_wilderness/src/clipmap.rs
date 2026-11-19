@@ -359,6 +359,7 @@ pub(crate) fn init_clipmaps(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
     fog: Res<TerrainFog>,
+    fog_shadow: Res<crate::FogShadowVolume>,
     quality: Res<TerrainQuality>,
     clipmaps: Query<(Entity, &Clipmap), Added<Clipmap>>,
 ) {
@@ -417,6 +418,7 @@ pub(crate) fn init_clipmaps(
                     vt_normal: vt.normal.clone(),
                     sun_shadow_field: rvt_sun_shadow.clone(),
                     baked_light: Handle::default(),
+                    fog_shadow_volume: fog_shadow.image.clone(),
                     dev: {
                         let (holes, hole_count) = HoleBuffer::pack(&clipmap.holes);
                         DevParams {
@@ -792,6 +794,26 @@ pub(crate) fn sync_sun_shadow_params(
             }
             if let Some(mut material) = materials.get_mut(handle) {
                 material.extension.dev.sun_shadow = sun_shadow.params;
+            }
+        }
+    }
+}
+
+/// Keep both materials on the current
+/// [`FogShadowVolume`](crate::FogShadowVolume), whose image is replaced when it
+/// changes size.
+pub(crate) fn sync_fog_shadow_volume(
+    volume: Res<crate::FogShadowVolume>,
+    clipmaps: Query<&ClipmapMaterials>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    if !volume.is_changed() {
+        return;
+    }
+    for mats in &clipmaps {
+        for handle in [&mats.solid, &mats.wireframe] {
+            if let Some(mut material) = materials.get_mut(handle) {
+                material.extension.fog_shadow_volume = volume.image.clone();
             }
         }
     }

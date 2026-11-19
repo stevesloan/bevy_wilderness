@@ -167,6 +167,10 @@ pub(crate) struct GridMaterial {
     /// placeholder image while there's none (never sampled then).
     #[texture(133)]
     pub(crate) baked_light: Handle<Image>,
+    /// [`FogShadowVolume::image`](crate::FogShadowVolume::image), kept current
+    /// by `sync_fog_shadow_volume`.
+    #[texture(134, dimension = "3d")]
+    pub(crate) fog_shadow_volume: Handle<Image>,
     /// Dev/experiment and editing scalars packed into one uniform — see
     /// [`DevParams`]. Frees two binding slots vs. separate
     /// uniforms; the freed 112/113 stay clear as ceiling headroom.

@@ -2,7 +2,7 @@
 // one more layer). Imported by the terrain shader and by any material that fogs
 // itself, in the lit colour before tonemapping.
 
-import bevy_wilderness::sun_shadow::{SunShadowParams, sun_shadow_margin};
+import bevy_wilderness::sun_shadow::SunShadowParams;
 
 struct HeightFog {
     color: vec3<f32>,         // light the mist scatters toward the eye, cd/m²
@@ -20,7 +20,7 @@ struct HeightFog {
     start: f32,               // m from the eye before any fog
     sun_forward: f32,         // Henyey-Greenstein g: 0 scatters sunlight evenly, 1 straight on
     haze_aerosol: vec3<f32>,  // aerosols' share of the haze's scattering per channel; molecules the rest
-    shadow_samples: u32,      // points per ray testing the sun shadow field; 0 for none
+    shadowed: u32,            // 1 with a fog shadow volume to read; 0 leaves the fog sunlit
 }
 
 // Optical depth of one exponential layer along a ray of `dist` metres from `origin_y`.
@@ -98,43 +98,61 @@ fn sunlit_between(a: f32, b: f32) -> f32 {
     return (sunlit_integral(b) - sunlit_integral(a)) / (b - a);
 }
 
-// Metres above the terrain's top a summit's penumbra can still reach.
-const TOP_PENUMBRA: f32 = 25.0;
+// The fog shadow volume (`fog_shadow.rs`): around the viewer, for each
+// direction and distance, the share of the fog's light toward the eye that the
+// terrain's shadow takes, summed from the fog's start out to that distance.
+// World-aligned, so turning the head changes nothing in it, and both eyes read
+// the one volume. x is the azimuth, wrapping; y the elevation, straight down to
+// straight up, its rows closest together at the horizon; z the distance, as the
+// root of its share of `shadow_volume_reach`, so slices are thin near the eye.
+// A texel's distance is the same in every direction: were it a share of each
+// ray's own length to the ground or the field's edge, neighbouring rows would
+// hold different distances at one z, and filtering between them terraces.
 
-// How far along a ray from `origin` the terrain can shade it: until it leaves
-// the field's square or climbs over the terrain's top.
-fn shadowable_length(params: SunShadowParams, origin: vec3<f32>, dir: vec3<f32>) -> f32 {
-    let half = 0.5 / max(params.inv_world_size, 1e-9);
-    var t = 1e30;
-    if abs(dir.x) > 1e-6 {
-        t = min(t, (sign(dir.x) * half - origin.x) / dir.x);
-    }
-    if abs(dir.z) > 1e-6 {
-        t = min(t, (sign(dir.z) * half - origin.z) / dir.z);
-    }
-    if dir.y > 1e-6 {
-        t = min(t, (params.top + TOP_PENUMBRA - origin.y) / dir.y);
-    }
-    return max(t, 0.0);
+// Share of the rows' spacing kept at the horizon, against a spacing even in
+// the ray's height: smaller packs more rows there.
+const VOLUME_HORIZON: f32 = 0.25;
+
+// A direction's row, -1 straight down to 1 straight up.
+fn shadow_volume_row(dir_y: f32) -> f32 {
+    let a = VOLUME_HORIZON;
+    let s = (sqrt(a * a + 4.0 * (1.0 - a) * abs(dir_y)) - a) / (2.0 * (1.0 - a));
+    return sign(dir_y) * min(s, 1.0);
+}
+
+// `shadow_volume_row`'s inverse.
+fn shadow_volume_dir_y(row: f32) -> f32 {
+    return row * (VOLUME_HORIZON + (1.0 - VOLUME_HORIZON) * abs(row));
+}
+
+// The direction of the volume's cell (`column`, `row`) of `size`.
+fn shadow_volume_direction(cell: vec2<u32>, size: vec2<u32>) -> vec3<f32> {
+    let azimuth = ((f32(cell.x) + 0.5) / f32(size.x) - 0.5) * 6.2831853;
+    let y = shadow_volume_dir_y(f32(cell.y) / f32(size.y - 1u) * 2.0 - 1.0);
+    let flat = sqrt(max(1.0 - y * y, 0.0));
+    return vec3<f32>(flat * cos(azimuth), y, flat * sin(azimuth));
+}
+
+// How far from the fog's start the volume reaches, the terrain's width: past
+// it the fog counts as sunlit.
+fn shadow_volume_reach(fog: HeightFog, params: SunShadowParams) -> f32 {
+    return max(min(fog.max_distance, 1.0 / max(params.inv_world_size, 1e-9)), 1e-3);
 }
 
 // The share of the fog's light between cam_pos and world_pos that the sun
-// reaches, from the terrain's sun shadow field along the ray:
-// `fog.shadow_samples` stretches, each weighted by the light it sends the eye,
-// its own fog dimmed by the fog in front of it, in green, the channel
-// visibility is quoted for. The stretches cover only the part of the ray the
-// terrain can shade, the rest counting as sunlit, and lengthen away from the
-// eye, quadratically: near fog shows a shaft's edge sharply, and far fog is
-// mostly haze, which varies slowly. 1 with no samples.
+// reaches, from the fog shadow volume, in green, the channel visibility is
+// quoted for. The volume is centred on the viewer and read as if on cam_pos:
+// an eye's few centimetres from it don't show in fog that starts metres away.
+// `volume_sampler` must be linear and repeat in x. 1 with no volume.
 fn fog_sunlit_share(
     fog: HeightFog,
-    field: texture_2d<f32>,
-    field_sampler: sampler,
+    volume: texture_3d<f32>,
+    volume_sampler: sampler,
     params: SunShadowParams,
     cam_pos: vec3<f32>,
     world_pos: vec3<f32>,
 ) -> f32 {
-    if fog.shadow_samples == 0u || params.valid < 0.5 {
+    if fog.shadowed == 0u || params.valid < 0.5 {
         return 1.0;
     }
     let ray = world_pos - cam_pos;
@@ -143,39 +161,24 @@ fn fog_sunlit_share(
     let skipped = min(fog.start, d);
     let dist = min(d - skipped, fog.max_distance);
     let start = cam_pos + dir * skipped;
-    let span = min(dist, shadowable_length(params, start, dir));
-    let samples = f32(fog.shadow_samples);
     let mist = fog.density * fog.extinction.y;
     let haze = fog.haze_density * fog.haze_extinction.y;
-    var lit = 0.0;
-    // Optical depth from the start to the current stretch.
-    var depth = 0.0;
-    var before = 0.0;
-    var margin_before = sun_shadow_margin(field, field_sampler, params, start);
-    for (var i = 1u; i <= fog.shadow_samples; i++) {
-        let u = f32(i) / samples;
-        let margin = sun_shadow_margin(field, field_sampler, params, start + dir * (span * u * u));
-        // In closed form, not from a point: mist is a thin layer, which a
-        // stretch's middle can miss.
-        let origin_y = start.y + dir.y * span * before * before;
-        let run = span * (u * u - before * before);
-        let stretch = layer_depth(mist, fog.falloff, fog.base_height, origin_y, run, dir.y)
-            + layer_depth(haze, fog.haze_falloff, fog.base_height, origin_y, run, dir.y);
-        let weight = exp(-depth) * (1.0 - exp(-stretch));
-        lit += weight * sunlit_between(margin_before, margin);
-        depth += stretch;
-        before = u;
-        margin_before = margin;
-    }
-    let rest = layer_depth(mist, fog.falloff, fog.base_height, start.y + dir.y * span, dist - span, dir.y)
-        + layer_depth(haze, fog.haze_falloff, fog.base_height, start.y + dir.y * span, dist - span, dir.y);
-    lit += exp(-depth) * (1.0 - exp(-rest));
-    depth += rest;
+    let depth = layer_depth(mist, fog.falloff, fog.base_height, start.y, dist, dir.y)
+        + layer_depth(haze, fog.haze_falloff, fog.base_height, start.y, dist, dir.y);
     let total = 1.0 - exp(-depth);
     if total <= 1e-6 {
         return 1.0;
     }
-    return lit / total;
+    let reach = shadow_volume_reach(fog, params);
+    let size = vec3<f32>(textureDimensions(volume));
+    // Texel centres hold the first and last row and slice; the azimuth wraps.
+    let at = vec3<f32>(
+        atan2(dir.z, dir.x) / 6.2831853 + 0.5,
+        (shadow_volume_row(dir.y) * 0.5 + 0.5) * (size.y - 1.0) / size.y + 0.5 / size.y,
+        sqrt(min(dist / reach, 1.0)) * (size.z - 1.0) / size.z + 0.5 / size.z,
+    );
+    let shaded = textureSampleLevel(volume, volume_sampler, at, 0.0).r;
+    return clamp(1.0 - shaded / total, 0.0, 1.0);
 }
 
 // `color`, exposed by `exposure`, as seen from cam_pos through the fog to world_pos.

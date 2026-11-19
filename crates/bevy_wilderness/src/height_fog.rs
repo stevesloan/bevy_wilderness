@@ -16,8 +16,8 @@ use bevy::{
 pub struct HeightFog {
     /// The light the mist scatters toward the eye, linear, in cd/m² as the
     /// scene's lights are: the camera's exposure applies to it like anything
-    /// else. The sun's even share of it, `sun_color / 4π`, is what
-    /// `shadow_samples` takes out where the terrain hides the sun.
+    /// else. The sun's even share of it, `sun_color / 4π`, is what `shadow`
+    /// takes out where the terrain hides the sun.
     pub color: Color,
     /// Mist's density at `base_height`. 0 for none.
     pub density: f32,
@@ -59,12 +59,11 @@ pub struct HeightFog {
     /// close to evenly. Clean air is mostly molecules. `ONE` treats it all as
     /// aerosol, as the mist always is.
     pub haze_aerosol: Vec3,
-    /// Stretches of each view ray over which the fog takes the terrain's sun
-    /// shadow field: mist in a shaded valley loses the sun it can't see, and a
-    /// ridge between the eye and the sun cuts a dark shaft into the haze. One
-    /// fetch per fogged pixel for each, plus one. 0 leaves all of the fog
-    /// sunlit.
-    pub shadow_samples: u32,
+    /// The fog shadow volume's size ([`crate::FogShadowVolume`]): with one,
+    /// mist in a shaded valley loses the sun it can't see, and a ridge between
+    /// the eye and the sun cuts a dark shaft into the haze. `None` leaves all
+    /// of the fog sunlit.
+    pub shadow: Option<crate::FogShadowSize>,
 }
 
 impl Default for HeightFog {
@@ -86,13 +85,13 @@ impl Default for HeightFog {
             haze_color: Color::linear_rgb(19_700.0, 22_800.0, 27_500.0),
             haze_extinction: Vec3::ONE,
             haze_aerosol: Vec3::ONE,
-            shadow_samples: 0,
+            shadow: None,
         }
     }
 }
 
 /// GPU form of [`HeightFog`], matching the WGSL `HeightFog`.
-#[derive(ShaderType, Clone, Reflect, Debug, Default)]
+#[derive(ShaderType, Clone, PartialEq, Reflect, Debug, Default)]
 pub struct HeightFogParams {
     color: Vec3,
     density: f32,
@@ -109,7 +108,7 @@ pub struct HeightFogParams {
     start: f32,
     sun_forward: f32,
     haze_aerosol: Vec3,
-    shadow_samples: u32,
+    shadowed: u32,
 }
 
 impl HeightFogParams {
@@ -131,7 +130,7 @@ impl HeightFogParams {
             start: 0.0,
             sun_forward: 0.0,
             haze_aerosol: Vec3::ONE,
-            shadow_samples: 0,
+            shadowed: 0,
         }
     }
 }
@@ -154,7 +153,7 @@ impl From<&HeightFog> for HeightFogParams {
             start: fog.start,
             sun_forward: fog.sun_forward,
             haze_aerosol: fog.haze_aerosol,
-            shadow_samples: fog.shadow_samples,
+            shadowed: fog.shadow.is_some() as u32,
         }
     }
 }

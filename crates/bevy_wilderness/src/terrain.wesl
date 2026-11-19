@@ -64,6 +64,9 @@ import bevy_pbr::deferred::functions::deferred_output;
 // The host's baked lighting (see `baked_light.rs`), sampled with 122. Its
 // regions ride in `dev.baked`; with none, nothing reads it.
 @group(constants::MATERIAL_BIND_GROUP) @binding(133) var baked_light_atlas: texture_2d<f32>;
+// The fog shadow volume (see `fog_functions.wesl`), sampled with 122: the
+// shader keeps the two axes that mustn't wrap on texel centres.
+@group(constants::MATERIAL_BIND_GROUP) @binding(134) var fog_shadow_volume: texture_3d<f32>;
 // Matches `BakedRegionGpu`: world = min xz, max xz; color = atlas UV min, max;
 // direction.xy = its tile's UV min, the same size as `color`'s.
 struct BakedRegion {
@@ -529,7 +532,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
     if fog.density + fog.haze_density > 0.0 {
-        let sunlit = fog_sunlit_share(fog, sun_shadow_field, vt_sampler, dev.sun_shadow, view.world_position, in.world_position.xyz);
+        let sunlit = fog_sunlit_share(fog, fog_shadow_volume, vt_sampler, dev.sun_shadow, view.world_position, in.world_position.xyz);
         color = apply_height_fog_lit(fog, color, view.world_position, in.world_position.xyz, view.exposure, sunlit);
     }
     return vec4<f32>(color, base_color.a);

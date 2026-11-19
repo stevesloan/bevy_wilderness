@@ -4,6 +4,7 @@ mod baked_light;
 mod clipmap;
 #[cfg(feature = "dev-controls")]
 mod dev_controls;
+mod fog_shadow;
 mod height_fog;
 mod heightfield;
 mod holes;
@@ -22,6 +23,7 @@ pub use clipmap::{
 };
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};
+pub use fog_shadow::{FogShadowSize, FogShadowViewer, FogShadowVolume};
 pub use height_fog::{HeightFog, HeightFogParams};
 pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
@@ -49,6 +51,7 @@ impl Plugin for ClipmapPlugin {
         embedded_asset!(app, "bake.wesl");
         embedded_asset!(app, "bake_check.wesl");
         embedded_asset!(app, "vt_composite.wesl");
+        embedded_asset!(app, "fog_shadow_volume.wesl");
 
         app.add_plugins(MaterialPlugin::<
             ExtendedMaterial<StandardMaterial, GridMaterial>,
@@ -56,6 +59,7 @@ impl Plugin for ClipmapPlugin {
             .add_plugins(MaterialPlugin::<BakeMaterial>::default())
             .add_plugins(MaterialPlugin::<BakeCheckMaterial>::default())
             .add_plugins(vt_render::VtRenderPlugin)
+            .add_plugins(fog_shadow::FogShadowPlugin)
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
@@ -85,6 +89,7 @@ impl Plugin for ClipmapPlugin {
                     clipmap::sync_holes,
                     clipmap::sync_sun_shadow_params,
                     clipmap::sync_baked_light,
+                    clipmap::sync_fog_shadow_volume,
                     init_rvt,
                     drive_rvt_bake,
                     // After `drive_rvt_bake` and before `mark_clipmap_ready`, so a
