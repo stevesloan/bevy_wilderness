@@ -133,6 +133,40 @@ const HOLE_MIN_CELLS: f32 = 3.0;
 // the HeightFog type comes from the gated fog_functions import above.
 @if(WILDERNESS_SHADE)
 @group(constants::MATERIAL_BIND_GROUP) @binding(114) var<uniform> fog: HeightFog;
+
+// Adreno corrupts a uniform struct passed by value, so functions get a copy
+// built field by field. A new field means updating the copy.
+@if(WILDERNESS_SHADE)
+fn fog_copy() -> HeightFog {
+    return HeightFog(
+        fog.color,
+        fog.density,
+        fog.extinction,
+        fog.base_height,
+        fog.sun_color,
+        fog.falloff,
+        fog.sun_direction,
+        fog.max_distance,
+        fog.haze_color,
+        fog.haze_density,
+        fog.haze_extinction,
+        fog.haze_falloff,
+        fog.start,
+        fog.sun_forward,
+        fog.haze_aerosol,
+        fog.shadowed,
+    );
+}
+
+fn sun_shadow_copy() -> SunShadowParams {
+    return SunShadowParams(
+        dev.sun_shadow.inv_world_size,
+        dev.sun_shadow.height_bias,
+        dev.sun_shadow.penumbra_per_metre,
+        dev.sun_shadow.valid,
+        dev.sun_shadow.top,
+    );
+}
 @group(constants::MATERIAL_BIND_GROUP) @binding(125) var detail_albedo_array: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(126) var detail_albedo_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(127) var detail_normal_array: texture_2d_array<f32>;
@@ -532,8 +566,9 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
     if fog.density + fog.haze_density > 0.0 {
-        let sunlit = fog_sunlit_share(fog, fog_shadow_volume, vt_sampler, dev.sun_shadow, view.world_position, in.world_position.xyz);
-        color = apply_height_fog_lit(fog, color, view.world_position, in.world_position.xyz, view.exposure, sunlit);
+        let fog_now = fog_copy();
+        let sunlit = fog_sunlit_share(fog_now, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);
+        color = apply_height_fog_lit(fog_now, color, view.world_position, in.world_position.xyz, view.exposure, sunlit);
     }
     return vec4<f32>(color, base_color.a);
 }
@@ -788,7 +823,7 @@ fn ground_sun_visibility(uv: vec2<f32>) -> f32 {
     if !looping && (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) {
         return 1.0;
     }
-    return ground_sun_visibility_at(sun_shadow_field, vt_sampler, dev.sun_shadow, uv, 2.0 * MIN_PENUMBRA);
+    return ground_sun_visibility_at(sun_shadow_field, vt_sampler, sun_shadow_copy(), uv, 2.0 * MIN_PENUMBRA);
 }
 
 @fragment
