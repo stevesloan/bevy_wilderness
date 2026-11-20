@@ -837,10 +837,11 @@ fn fragment(
         return out;
     }
     // Debug: flat colour, no texture reads or lighting (`TerrainDebugView::Flat`).
-    if dev.debug_view == 3u {
-        var out: FragmentOutput;
-        out.color = vec4(0.35, 0.35, 0.32, 1.0);
-        return out;
+    // WESL drops an `@if` block's braces, so its names share the function's scope.
+    @if(WILDERNESS_FLAT) {
+        var flat_out: FragmentOutput;
+        flat_out.color = vec4(0.35, 0.35, 0.32, 1.0);
+        return flat_out;
     }
 
     var in_modified = in;
@@ -858,6 +859,7 @@ fn fragment(
     // derivatives (faceted, deliberately: it reads as sculpting clay and
     // needs nothing baked). The mask overlay stays visible — masking is part
     // of the modeling session clay exists for.
+    @if(WILDERNESS_CLAY)
     if (flags & 16u) != 0u {
         var clay_in = in;
         var n = normalize(cross(dpdy(in.world_position.xyz), dpdx(in.world_position.xyz)));
@@ -892,6 +894,30 @@ fn fragment(
     // Baked light needs the shading normal, so it's sampled after the detail
     // overlay below; until then the shadow field's sun visibility stands.
     var sun_vis = ground_sun_visibility(uv);
+
+    // `TerrainShading::Simple`: lit as the Low tier's level meshes are.
+    @if(WILDERNESS_SIMPLE && !PREPASS_PIPELINE) {
+        let simple_n = normalize(base_normal);
+        let simple_baked = baked_light_at(in.world_position.xz, simple_n);
+        var simple_visible = sun_vis;
+        var simple_indirect = lights.ambient_color.rgb;
+        if simple_baked.found {
+            simple_visible = simple_baked.sun_visibility;
+            simple_indirect = simple_baked.light;
+        }
+        let simple_sun = &lights.directional_lights[0];
+        let simple_direct = (*simple_sun).color.rgb * saturate(dot(simple_n, (*simple_sun).direction_to_light))
+            / 3.14159265 * simple_visible;
+        var simple_color = vt.albedo.rgb * (simple_indirect + simple_direct) * view.exposure;
+        if fog.density + fog.haze_density > 0.0 {
+            let simple_fog = fog_copy();
+            let simple_sunlit = fog_sunlit_share(simple_fog, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);
+            simple_color = apply_height_fog_lit(simple_fog, simple_color, view.world_position, in.world_position.xyz, view.exposure, simple_sunlit);
+        }
+        var simple_out: FragmentOutput;
+        simple_out.color = vec4<f32>(simple_color, 1.0);
+        return simple_out;
+    }
 
     let cam_dist = distance(view.world_position, in.world_position.xyz);
 

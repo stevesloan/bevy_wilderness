@@ -442,6 +442,9 @@ pub(crate) fn init_clipmaps(
                     texel_size: clipmap.texel_size,
                     minmax: Vec2::new(clipmap.min, clipmap.max),
                     flags: wireframe | quality_bits,
+                    simple_shading: false,
+                    #[cfg(feature = "editing")]
+                    editor: clipmap.edit_overlay.is_some(),
                 },
             })
         };
@@ -657,11 +660,13 @@ pub(crate) fn sync_editable_materials(
                         .edit_overlay
                         .as_ref()
                         .is_none_or(|overlay| m.extension.edit_overlay == *overlay)
+                    && m.extension.editor == clipmap.edit_overlay.is_some()
             });
             if !in_sync && let Some(mut material) = materials.get_mut(handle) {
                 material.extension.heightmap = clipmap.heightmap.clone();
                 material.extension.texel_size = clipmap.texel_size;
                 material.extension.minmax = minmax;
+                material.extension.editor = clipmap.edit_overlay.is_some();
                 // `None` keeps the current binding (spawn's stub or a previous
                 // overlay) — an editor resets it right before re-creating.
                 if let Some(overlay) = &clipmap.edit_overlay {

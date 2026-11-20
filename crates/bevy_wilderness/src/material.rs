@@ -9,13 +9,20 @@ use bevy::{
 use crate::height_fog::HeightFogParams;
 use crate::holes::HoleBuffer;
 
-/// Pipeline-specializing state. `holes` keys a separate pipeline so terrain
-/// without holes compiles a vertex shader with no shape loop at all.
+/// Pipeline-specializing state. Each keys a separate pipeline so the shader
+/// compiles only the paths in use: on a tiled mobile GPU a fragment shader's
+/// size costs every pixel, even ones that branch around the unused code.
+/// `holes` drops the vertex shape loop; `editor`, the stamp preview and paint
+/// overlay; `clay`, the clay display mode.
 #[repr(C)]
 #[derive(Eq, PartialEq, Hash, Copy, Clone)]
 pub(crate) struct GridMaterialKey {
     wireframe: bool,
     holes: bool,
+    simple: bool,
+    flat: bool,
+    editor: bool,
+    clay: bool,
 }
 
 impl From<&GridMaterial> for GridMaterialKey {
@@ -23,6 +30,13 @@ impl From<&GridMaterial> for GridMaterialKey {
         Self {
             wireframe: material.flags & 1 != 0,
             holes: material.dev.hole_count > 0,
+            simple: material.simple_shading,
+            flat: material.dev.debug_view == 3,
+            #[cfg(feature = "editing")]
+            editor: material.editor,
+            #[cfg(not(feature = "editing"))]
+            editor: false,
+            clay: material.flags & (1 << 4) != 0,
         }
     }
 }
@@ -216,6 +230,13 @@ pub(crate) struct GridMaterial {
     /// limit — extra uniforms silently break its pipeline).
     #[uniform(111)]
     pub(crate) flags: u32,
+    /// [`TerrainShading::Simple`](crate::TerrainShading), kept by
+    /// `apply_terrain_shading`.
+    pub(crate) simple_shading: bool,
+    /// The clipmap has an editor's paint overlay, so the stamp and overlay
+    /// paths compile in. Kept with the overlay itself.
+    #[cfg(feature = "editing")]
+    pub(crate) editor: bool,
 }
 
 impl GridMaterial {
@@ -312,6 +333,16 @@ impl MaterialExtension for GridMaterial {
                 .push("WILDERNESS_SHADE".into());
             if let Some(fragment) = descriptor.fragment.as_mut() {
                 fragment.shader_defs.push("WILDERNESS_SHADE".into());
+                let key = key.bind_group_data;
+                for (on, def) in [
+                    (key.simple, "WILDERNESS_SIMPLE"),
+                    (key.flat, "WILDERNESS_FLAT"),
+                    (key.clay, "WILDERNESS_CLAY"),
+                ] {
+                    if on {
+                        fragment.shader_defs.push(def.into());
+                    }
+                }
             }
         }
         // The edit-overlay and stamp bindings exist only in editing builds;
@@ -322,7 +353,7 @@ impl MaterialExtension for GridMaterial {
         // mountain casts its previewed silhouette) and samples the overlay
         // for its mask weight.
         #[cfg(feature = "editing")]
-        {
+        if key.bind_group_data.editor {
             let vertex = &mut descriptor.vertex.shader_defs;
             vertex.push("WILDERNESS_EDIT_OVERLAY".into());
             vertex.push("WILDERNESS_STAMP".into());

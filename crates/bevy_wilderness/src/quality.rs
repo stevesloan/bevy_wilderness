@@ -52,6 +52,38 @@ impl Default for TerrainQuality {
     }
 }
 
+/// How the terrain is lit. Applies live; each value is its own pipeline, so
+/// [`Simple`](Self::Simple) doesn't carry the full shader's size, which on a
+/// tiled mobile GPU costs every pixel whatever path it takes.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TerrainShading {
+    /// PBR with the near detail overlay, baked and clustered lights.
+    #[default]
+    Full,
+    /// The clipmap's albedo × (baked light + sun N·L), with the shadow field
+    /// and fog: no detail overlay, specular or local lights. For standalone VR.
+    Simple,
+}
+
+/// Publish [`TerrainShading`] to the terrain's materials, which key their
+/// pipelines on it. Every frame, writing only on a difference.
+pub(crate) fn apply_terrain_shading(
+    shading: Res<TerrainShading>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    let simple = *shading == TerrainShading::Simple;
+    let stale: Vec<_> = materials
+        .iter()
+        .filter(|(_, material)| material.extension.simple_shading != simple)
+        .map(|(id, _)| id)
+        .collect();
+    for id in stale {
+        if let Some(mut material) = materials.get_mut(id) {
+            material.extension.simple_shading = simple;
+        }
+    }
+}
+
 /// What the terrain's fragment shader outputs. Everything but
 /// [`Lit`](Self::Lit) is unlit, for inspecting a channel or measuring cost.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,6 +96,8 @@ pub enum TerrainDebugView {
     SunVisibility,
     /// One flat colour, with no texture reads or lighting: the frame with the
     /// terrain's geometry but none of its shading, to measure what shading costs.
+    /// Its own pipeline: as a branch in the full shader it would still pay for
+    /// that shader's size.
     Flat,
     /// The following each remove one part of the shading, to measure its cost.
     /// Lit, without the near detail overlay.
