@@ -897,7 +897,37 @@ fn fragment(
 
     // `TerrainShading::Simple`: lit as the Low tier's level meshes are.
     @if(WILDERNESS_SIMPLE && !PREPASS_PIPELINE) {
-        let simple_n = normalize(base_normal);
+        // Near the viewer, the dominant material's grain and relief over the
+        // clipmap, as the full shader's single-layer detail does: its id from
+        // the finest level's packed byte, its brightness around its own mean so
+        // the clipmap keeps the colour.
+        let simple_dist = distance(view.world_position, in.world_position.xyz);
+        let simple_fade = 1.0 - smoothstep(detail.near, detail.far, simple_dist);
+        let simple_p = in.world_position.xyz / detail.tiling;
+        let simple_dx = dpdx(simple_p);
+        let simple_dy = dpdy(simple_p);
+        var simple_albedo = vt.albedo.rgb;
+        var simple_n = normalize(base_normal);
+        if simple_fade > 0.001 {
+            let simple_jitter = hash22(in.world_position.xz) - 0.5;
+            let simple_level = dev.vt.levels[vt.id_level];
+            let simple_size = i32(dev.vt.size);
+            let simple_raw = vec2<i32>(floor(in.world_position.xz / simple_level.info.x + simple_jitter)) + simple_size / 2;
+            var simple_idx = ((simple_raw % simple_size) + simple_size) % simple_size;
+            if (flags & 8u) == 0u && vt.id_level + 1u == dev.vt.count {
+                simple_idx = clamp(simple_raw, vec2(0), vec2(simple_size - 1));
+            }
+            let simple_id = u32(textureLoad(vt_normal_texture, simple_idx, vt.id_level, 0).a * 255.0 + 0.5) & 3u;
+            let simple_d = detail_sample(
+                simple_id, vec3<f32>(0.0, 1.0, 0.0), simple_p, simple_dx, simple_dy, base_normal,
+                detail.normal_strength * simple_fade,
+            );
+            let simple_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
+            let simple_mean = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, simple_p.xz, simple_id, simple_lod).rgb;
+            let simple_grain = min(dot(simple_d.albedo, LUMA) / max(dot(simple_mean, LUMA), 1e-4), 3.0);
+            simple_albedo *= mix(1.0, simple_grain, detail.albedo_strength * simple_fade);
+            simple_n = normalize(simple_d.normal);
+        }
         let simple_baked = baked_light_at(in.world_position.xz, simple_n);
         var simple_visible = sun_vis;
         var simple_indirect = lights.ambient_color.rgb;
@@ -908,7 +938,7 @@ fn fragment(
         let simple_sun = &lights.directional_lights[0];
         let simple_direct = (*simple_sun).color.rgb * saturate(dot(simple_n, (*simple_sun).direction_to_light))
             / 3.14159265 * simple_visible;
-        var simple_color = vt.albedo.rgb * (simple_indirect + simple_direct) * view.exposure;
+        var simple_color = simple_albedo * (simple_indirect + simple_direct) * view.exposure;
         if fog.density + fog.haze_density > 0.0 {
             let simple_fog = fog_copy();
             let simple_sunlit = fog_sunlit_share(simple_fog, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);
