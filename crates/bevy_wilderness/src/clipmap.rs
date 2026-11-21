@@ -779,6 +779,38 @@ pub(crate) fn sync_holes(
     }
 }
 
+/// Push a changed [`Clipmap::layers`] or [`Clipmap::detail`] into both
+/// materials' near field, so an editor tunes them live.
+pub(crate) fn sync_detail(
+    clipmaps: Query<(&Clipmap, &ClipmapMaterials), Changed<Clipmap>>,
+    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
+) {
+    for (clipmap, mats) in &clipmaps {
+        let detail = DetailParams::from_clipmap(clipmap);
+        let d = &clipmap.detail;
+        for handle in [&mats.solid, &mats.wireframe] {
+            let Some(material) = materials.get(handle) else {
+                continue;
+            };
+            let m = &material.extension;
+            if m.detail == detail
+                && m.detail_albedo_array == d.albedo_array
+                && m.detail_normal_array == d.normal_array
+                && m.detail_orm_array == d.orm_array
+            {
+                continue;
+            }
+            if let Some(mut material) = materials.get_mut(handle) {
+                let m = &mut material.extension;
+                m.detail = detail;
+                m.detail_albedo_array = d.albedo_array.clone();
+                m.detail_normal_array = d.normal_array.clone();
+                m.detail_orm_array = d.orm_array.clone();
+            }
+        }
+    }
+}
+
 /// Copy the clipmap's [`TerrainSunShadow`](crate::TerrainSunShadow) params into
 /// both materials, so the ground reads its own shadow from the field as soon
 /// as the bake marks it valid.

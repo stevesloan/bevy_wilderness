@@ -67,7 +67,7 @@ impl Default for VtParams {
 
 /// Per-layer splat parameters packed for the GPU. `Vec4` lanes index the layers.
 /// Matches `TerrainParams` in `vt_composite.wesl`.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
 pub(crate) struct TerrainParams {
     tiling_scale: Vec4,
     height_blend: Vec4,
@@ -172,7 +172,7 @@ impl TerrainParams {
 
 /// Heightfield scalars the composite needs. Matches `CompositeTerrain` in
 /// `vt_composite.wesl`.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
 pub(crate) struct CompositeTerrain {
     pub(crate) minmax: Vec2,
     pub(crate) texel_size: f32,
@@ -352,6 +352,9 @@ pub(crate) struct ClipmapVt {
     /// (despawned, or not spawned yet), as the geometry holds, so a vanished
     /// target doesn't recomposite every level around the world origin.
     last_target: Option<Vec2>,
+    /// What the committed texels were composited from: a change to the layers,
+    /// their textures or the masks recomposites every level.
+    composited_from: Option<(VtSources, CompositeTerrain, TerrainParams)>,
 }
 
 impl ClipmapVt {
@@ -363,6 +366,7 @@ impl ClipmapVt {
             refresh: false,
             refreshing: false,
             built_with: None,
+            composited_from: None,
             last_target: None,
         }
     }
@@ -560,6 +564,14 @@ pub(crate) fn update_vt(
             has_masks: clipmap.masks.is_some() as u32,
         };
         let params = TerrainParams::from_clipmap(clipmap);
+        let from = Some((sources, terrain, params));
+        let refresh = if vt.composited_from.is_some() && vt.composited_from != from {
+            messages.push(VtMessage::Cancel(entity));
+            true
+        } else {
+            refresh
+        };
+        vt.composited_from = from;
 
         let vt = &mut *vt;
         let layout = vt.layout.as_mut().expect("built above");

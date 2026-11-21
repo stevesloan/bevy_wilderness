@@ -91,6 +91,7 @@ impl Plugin for ClipmapPlugin {
                 (
                     update_grids,
                     clipmap::sync_holes,
+                    clipmap::sync_detail,
                     clipmap::sync_sun_shadow_params,
                     clipmap::sync_baked_light,
                     clipmap::sync_fog_shadow_volume,

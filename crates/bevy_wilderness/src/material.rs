@@ -101,7 +101,7 @@ impl Default for DevParams {
 
 /// Near-range detail parameters (packed for the GPU). `Vec4` lanes index the
 /// layers, as the composite's `TerrainParams` do.
-#[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
 pub(crate) struct DetailParams {
     tiling: f32,
     normal_strength: f32,
