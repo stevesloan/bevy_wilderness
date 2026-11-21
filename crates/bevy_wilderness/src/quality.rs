@@ -153,15 +153,24 @@ pub(crate) fn apply_terrain_debug_view(
 pub struct InlineFog(pub HeightFogParams);
 
 /// Publish [`TerrainFog`] to the terrain's materials and [`InlineFog`].
+/// Without a fog shadow volume, as the viewer's share of the sun leaves it
+/// ([`EyeSunlight`](crate::EyeSunlight)).
 pub(crate) fn apply_terrain_fog(
     fog: Res<TerrainFog>,
+    eye: Res<crate::EyeSunlight>,
     mut inline_fog: ResMut<InlineFog>,
     mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
 ) {
-    if !fog.is_changed() {
+    if !fog.is_changed() && !eye.is_changed() {
         return;
     }
-    let params = HeightFogParams::from(&fog.0);
+    let params = match fog.0.shadow {
+        Some(_) => HeightFogParams::from(&fog.0),
+        None => HeightFogParams::from(&fog.0.seen_from(eye.0)),
+    };
+    if !fog.is_changed() && inline_fog.0 == params {
+        return;
+    }
     inline_fog.0 = params.clone();
     for (_, material) in materials.iter_mut() {
         material.extension.fog = params.clone();

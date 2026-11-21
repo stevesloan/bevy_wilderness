@@ -4,6 +4,7 @@ mod baked_light;
 mod clipmap;
 #[cfg(feature = "dev-controls")]
 mod dev_controls;
+mod eye_sun;
 mod fog_shadow;
 mod height_fog;
 mod heightfield;
@@ -24,6 +25,7 @@ pub use clipmap::{
 #[cfg(feature = "editing")]
 pub use clipmap::{ClipmapStamp, RebakeRequested};
 pub use fog_shadow::{FogShadowSize, FogShadowViewer, FogShadowVolume};
+pub use eye_sun::EyeSunlight;
 pub use height_fog::{HeightFog, HeightFogParams};
 pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
@@ -63,6 +65,7 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<TerrainFog>()
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
+            .init_resource::<EyeSunlight>()
             .init_resource::<TerrainDebugView>()
             .init_resource::<TerrainShading>()
             .add_observer(vt::cancel_removed_clipmap)
@@ -97,7 +100,8 @@ impl Plugin for ClipmapPlugin {
                     // rebake's re-armed flags are seen in the frame they change.
                     vt::update_vt.after(drive_rvt_bake),
                     vt::mark_clipmap_ready.after(vt::update_vt),
-                    quality::apply_terrain_fog,
+                    quality::apply_terrain_fog.after(eye_sun::update_eye_sunlight),
+                    eye_sun::update_eye_sunlight,
                     quality::apply_terrain_debug_view,
                     quality::apply_terrain_shading,
                     warn_unbaked_terrain,

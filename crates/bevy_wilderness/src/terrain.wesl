@@ -30,6 +30,8 @@ import bevy_pbr::light_probe::environment_map;
 // Shared with every other material that fogs itself.
 @if(WILDERNESS_SHADE)
 import bevy_wilderness::fog_functions::{HeightFog, apply_height_fog_lit, fog_sunlit_share};
+// The Simple path's own: it skips `main_pass_post_lighting_processing`.
+@if(TONEMAP_IN_SHADER) import bevy_core_pipeline::tonemapping::tone_mapping;
 
 @if(MESHLET_MESH_MATERIAL_PASS)
 import bevy_pbr::meshlet::visibility_buffer_resolve::VertexOutput;
@@ -148,12 +150,13 @@ fn fog_copy() -> HeightFog {
         fog.sun_direction,
         fog.max_distance,
         fog.haze_color,
-        fog.haze_density,
-        fog.haze_extinction,
-        fog.haze_falloff,
+        fog.molecule_density,
+        fog.molecule_extinction,
+        fog.molecule_falloff,
         fog.start,
         fog.sun_forward,
-        fog.haze_aerosol,
+        fog.aerosol_density,
+        fog.aerosol_falloff,
         fog.shadowed,
     );
 }
@@ -565,7 +568,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
 
     let emissive = in.material.emissive.rgb * base_color.a;
     var color = view.exposure * (direct + indirect) + emissive;
-    if fog.density + fog.haze_density > 0.0 {
+    if fog.density + fog.molecule_density + fog.aerosol_density > 0.0 {
         let fog_now = fog_copy();
         let sunlit = fog_sunlit_share(fog_now, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);
         color = apply_height_fog_lit(fog_now, color, view.world_position, in.world_position.xyz, view.exposure, sunlit);
@@ -939,13 +942,19 @@ fn fragment(
         let simple_direct = (*simple_sun).color.rgb * saturate(dot(simple_n, (*simple_sun).direction_to_light))
             / 3.14159265 * simple_visible;
         var simple_color = simple_albedo * (simple_indirect + simple_direct) * view.exposure;
-        if fog.density + fog.haze_density > 0.0 {
+        if fog.density + fog.molecule_density + fog.aerosol_density > 0.0 {
             let simple_fog = fog_copy();
             let simple_sunlit = fog_sunlit_share(simple_fog, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);
             simple_color = apply_height_fog_lit(simple_fog, simple_color, view.world_position, in.world_position.xyz, view.exposure, simple_sunlit);
         }
         var simple_out: FragmentOutput;
         simple_out.color = vec4<f32>(simple_color, 1.0);
+        // Without HDR every material tonemaps itself. Untonemapped, fog
+        // glowing toward a low sun clips to raw colour beside a sky that
+        // doesn't, and the ground at the horizon outshines it.
+        @if(TONEMAP_IN_SHADER) {
+            simple_out.color = tone_mapping(simple_out.color, view.color_grading);
+        }
         return simple_out;
     }
 

@@ -43,27 +43,52 @@ pub struct HeightFog {
     /// Henyey-Greenstein's g: how much of that sunlight goes straight on, from
     /// 0, evenly, toward 1. Droplets and aerosols sit around 0.8.
     pub sun_forward: f32,
-    /// Haze's density at `base_height`, a second layer for distance at every
-    /// altitude, which a `falloff` steep enough to pool in valleys can't give.
-    /// 0 for none.
-    pub haze_density: f32,
-    /// 1/m, as `falloff`, for the haze. 0 is even through the air.
-    pub haze_falloff: f32,
-    /// The light the haze scatters toward the eye, as `color`: the sky's horizon,
-    /// so distant terrain fades into it.
+    /// The light the haze, molecules and aerosols, scatters toward the eye, as
+    /// `color`: the sky's horizon, so distant terrain fades into it.
     pub haze_color: Color,
-    /// `haze_density`'s share per channel, as `extinction`.
-    pub haze_extinction: Vec3,
-    /// The aerosols' share of the haze's scattering, per channel. Aerosols glow
-    /// strongly around the sun (`sun_forward`); molecules, the rest, scatter
-    /// close to evenly. Clean air is mostly molecules. `ONE` treats it all as
-    /// aerosol, as the mist always is.
-    pub haze_aerosol: Vec3,
+    /// Molecules' density at `base_height`, a layer for distance at every
+    /// altitude, which a `falloff` steep enough to pool in valleys can't give.
+    /// They scatter close to evenly. 0 for none.
+    pub molecule_density: f32,
+    /// `molecule_density`'s share per channel, as `extinction`: blue highest
+    /// lets distance drift blue, as air does.
+    pub molecule_extinction: Vec3,
+    /// 1/m, as `falloff`, for the molecules. 0 is even through the air.
+    pub molecule_falloff: f32,
+    /// Aerosols' density at `base_height`, every channel alike: a layer nearer
+    /// the ground than the molecules', glowing strongly around the sun as the
+    /// mist does (`sun_forward`). 0 for none.
+    pub aerosol_density: f32,
+    /// 1/m, as `falloff`, for the aerosols.
+    pub aerosol_falloff: f32,
     /// The fog shadow volume's size ([`crate::FogShadowVolume`]): with one,
     /// mist in a shaded valley loses the sun it can't see, and a ridge between
-    /// the eye and the sun cuts a dark shaft into the haze. `None` leaves all
-    /// of the fog sunlit.
+    /// the eye and the sun cuts a dark shaft into the haze. `None` takes the
+    /// shadow from the terrain's shadow field at each ray's two ends instead:
+    /// fog the eye sees from inside a ridge's shade stays dark, but a shaft
+    /// across lit air doesn't show.
     pub shadow: Option<crate::FogShadowSize>,
+}
+
+impl HeightFog {
+    /// Whether any layer has density.
+    pub fn is_on(&self) -> bool {
+        self.density + self.molecule_density + self.aerosol_density > 0.0
+    }
+
+    /// The fog as a viewer sees it who gets `sunlit` of the sun
+    /// ([`EyeSunlight`](crate::EyeSunlight)), for when there's no shadow volume
+    /// to shade it point by point: the sun's glow scaled down. The sun's even
+    /// share in the mist's colour stays: it lights the mist alike from every
+    /// side, so taking it out would shift the fog's colour in every direction as
+    /// the viewer steps into shade, while the glow changes only toward the sun.
+    pub fn seen_from(&self, sunlit: f32) -> Self {
+        let sun = self.sun_color.to_linear().to_vec3() * sunlit;
+        Self {
+            sun_color: Color::linear_rgb(sun.x, sun.y, sun.z),
+            ..self.clone()
+        }
+    }
 }
 
 impl Default for HeightFog {
@@ -80,11 +105,12 @@ impl Default for HeightFog {
             sun_color: Color::BLACK,
             sun_direction: Vec3::Y,
             sun_forward: 0.8,
-            haze_density: 0.0,
-            haze_falloff: 0.0,
             haze_color: Color::linear_rgb(19_700.0, 22_800.0, 27_500.0),
-            haze_extinction: Vec3::ONE,
-            haze_aerosol: Vec3::ONE,
+            molecule_density: 0.0,
+            molecule_extinction: Vec3::ONE,
+            molecule_falloff: 0.0,
+            aerosol_density: 0.0,
+            aerosol_falloff: 0.0,
             shadow: None,
         }
     }
@@ -102,12 +128,13 @@ pub struct HeightFogParams {
     sun_direction: Vec3,
     max_distance: f32,
     haze_color: Vec3,
-    haze_density: f32,
-    haze_extinction: Vec3,
-    haze_falloff: f32,
+    molecule_density: f32,
+    molecule_extinction: Vec3,
+    molecule_falloff: f32,
     start: f32,
     sun_forward: f32,
-    haze_aerosol: Vec3,
+    aerosol_density: f32,
+    aerosol_falloff: f32,
     shadowed: u32,
 }
 
@@ -124,12 +151,13 @@ impl HeightFogParams {
             sun_direction: Vec3::Y,
             max_distance: 1.0,
             haze_color: Vec3::ZERO,
-            haze_density: 0.0,
-            haze_extinction: Vec3::ONE,
-            haze_falloff: 0.0,
+            molecule_density: 0.0,
+            molecule_extinction: Vec3::ONE,
+            molecule_falloff: 0.0,
             start: 0.0,
             sun_forward: 0.0,
-            haze_aerosol: Vec3::ONE,
+            aerosol_density: 0.0,
+            aerosol_falloff: 0.0,
             shadowed: 0,
         }
     }
@@ -147,12 +175,13 @@ impl From<&HeightFog> for HeightFogParams {
             sun_direction: fog.sun_direction,
             max_distance: fog.max_distance,
             haze_color: fog.haze_color.to_linear().to_vec3(),
-            haze_density: fog.haze_density,
-            haze_extinction: fog.haze_extinction,
-            haze_falloff: fog.haze_falloff,
+            molecule_density: fog.molecule_density,
+            molecule_extinction: fog.molecule_extinction,
+            molecule_falloff: fog.molecule_falloff,
             start: fog.start,
             sun_forward: fog.sun_forward,
-            haze_aerosol: fog.haze_aerosol,
+            aerosol_density: fog.aerosol_density,
+            aerosol_falloff: fog.aerosol_falloff,
             shadowed: fog.shadow.is_some() as u32,
         }
     }

@@ -4,8 +4,11 @@
 // by that distance. Each slice adds its own stretch of ray to the one before,
 // carried between passes in `carried`.
 
-import bevy_wilderness::fog_functions::{HeightFog, layer_depth, sunlit_between, shadow_volume_direction, shadow_volume_reach};
-import bevy_wilderness::sun_shadow::{SunShadowParams, MIN_PENUMBRA};
+import bevy_wilderness::fog_functions::{
+    HeightFog, fog_shadow_margin, green_depth, layers_along, sunlit_between, shadow_volume_direction,
+    shadow_volume_reach,
+};
+import bevy_wilderness::sun_shadow::SunShadowParams;
 
 struct Bake {
     fog: HeightFog,
@@ -23,21 +26,12 @@ struct Bake {
 // The slice before: r the share so far, g the shadow margin where it ended.
 @group(1) @binding(0) var carried: texture_2d<f32>;
 
-// `sun_shadow_margin`, with a point under the ground taking its column's
-// margin at the surface. A slice reaches past the surface it's read at, and
-// what it holds there is filtered into the fog in front: shaded, it would
+// A point under the ground takes its column's margin at the surface
+// (`fog_shadow_margin`): a slice reaches past the surface it's read at, and
+// what it holds there is filtered into the fog in front. Shaded, it would
 // darken the fog over sunlit ground, and lit, brighten it over shaded ground.
 fn margin_at(shadow: SunShadowParams, world_pos: vec3<f32>) -> f32 {
-    let uv = world_pos.xz * shadow.inv_world_size + 0.5;
-    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
-        return 1e3;
-    }
-    let field_sample = textureSampleLevel(field, field_sampler, uv, 0.0);
-    let penumbra = max(field_sample.g * shadow.penumbra_per_metre, MIN_PENUMBRA);
-    // A lit column's ground is exactly at its ceiling, the penumbra's
-    // midpoint: the lift takes it into full sun, as `ground_sun_visibility_at`.
-    let height = max(world_pos.y - shadow.height_bias, field_sample.b + 2.0 * MIN_PENUMBRA);
-    return (height - field_sample.r) / penumbra;
+    return fog_shadow_margin(field, field_sampler, shadow, world_pos);
 }
 
 @vertex
@@ -65,12 +59,13 @@ fn fragment(@builtin(position) position: vec4<f32>) -> Slice {
         bake.fog.sun_direction,
         bake.fog.max_distance,
         bake.fog.haze_color,
-        bake.fog.haze_density,
-        bake.fog.haze_extinction,
-        bake.fog.haze_falloff,
+        bake.fog.molecule_density,
+        bake.fog.molecule_extinction,
+        bake.fog.molecule_falloff,
         bake.fog.start,
         bake.fog.sun_forward,
-        bake.fog.haze_aerosol,
+        bake.fog.aerosol_density,
+        bake.fog.aerosol_falloff,
         bake.fog.shadowed,
     );
     let shadow = SunShadowParams(
@@ -84,8 +79,6 @@ fn fragment(@builtin(position) position: vec4<f32>) -> Slice {
     let dir = shadow_volume_direction(cell, bake.size.xy);
     let start = bake.center + dir * fog.start;
     let reach = shadow_volume_reach(fog, shadow);
-    let mist = fog.density * fog.extinction.y;
-    let haze = fog.haze_density * fog.haze_extinction.y;
 
     let last = f32(bake.size.z - 1u);
     let near = f32(bake.slice - 1u) / last;
@@ -106,11 +99,9 @@ fn fragment(@builtin(position) position: vec4<f32>) -> Slice {
         let margin = margin_at(shadow, start + dir * end);
         // In closed form, not from a point: mist is a thin layer, which a
         // stretch's middle can miss.
-        let depth = layer_depth(mist, fog.falloff, fog.base_height, start.y, before, dir.y)
-            + layer_depth(haze, fog.haze_falloff, fog.base_height, start.y, before, dir.y);
+        let depth = green_depth(fog, layers_along(fog, start.y, before, dir.y));
         let origin_y = start.y + dir.y * before;
-        let stretch = layer_depth(mist, fog.falloff, fog.base_height, origin_y, end - before, dir.y)
-            + layer_depth(haze, fog.haze_falloff, fog.base_height, origin_y, end - before, dir.y);
+        let stretch = green_depth(fog, layers_along(fog, origin_y, end - before, dir.y));
         shaded += exp(-depth) * (1.0 - exp(-stretch)) * (1.0 - sunlit_between(margin_before, margin));
         before = end;
         margin_before = margin;

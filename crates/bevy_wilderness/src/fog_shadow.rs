@@ -220,7 +220,7 @@ fn extract_wanted(
     wanted.0 = (|| {
         let size = fog.0.shadow?;
         let field = fields.iter().next()?;
-        let foggy = fog.0.density + fog.0.haze_density > 0.0;
+        let foggy = fog.0.is_on();
         (foggy && field.params.valid >= 0.5 && volume.size == size.extent()).then_some(Fill {
             volume: volume.image.id(),
             field: field.field.id(),
