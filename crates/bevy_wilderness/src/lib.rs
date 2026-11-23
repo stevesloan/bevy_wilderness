@@ -9,6 +9,7 @@ mod fog_shadow;
 mod height_fog;
 mod height_mips;
 mod heightfield;
+mod mist_sun;
 mod holes;
 mod material;
 mod mesh;
@@ -34,6 +35,7 @@ pub use holes::{HoleShape, MAX_HOLES};
 /// that must stay in sync with the shaders (docs/architecture.md).
 #[cfg(feature = "editing")]
 pub use heightfield::Heightfield;
+pub use mist_sun::MistSunlight;
 pub use quality::{InlineFog, TerrainDebugView, TerrainFog, TerrainQuality, TerrainShading};
 pub use sun_shadow::{SunShadowParams, TerrainSunShadow};
 pub use texture::{build_terrain_array, load_terrain_array};
@@ -68,6 +70,7 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<TerrainQuality>()
             .init_resource::<InlineFog>()
             .init_resource::<EyeSunlight>()
+            .init_resource::<MistSunlight>()
             .init_resource::<TerrainDebugView>()
             .init_resource::<TerrainShading>()
             .init_resource::<TerrainHeightMips>()
@@ -105,8 +108,11 @@ impl Plugin for ClipmapPlugin {
                     // rebake's re-armed flags are seen in the frame they change.
                     vt::update_vt.after(drive_rvt_bake),
                     vt::mark_clipmap_ready.after(vt::update_vt),
-                    quality::apply_terrain_fog.after(eye_sun::update_eye_sunlight),
+                    quality::apply_terrain_fog
+                        .after(eye_sun::update_eye_sunlight)
+                        .after(mist_sun::update_mist_sunlight),
                     eye_sun::update_eye_sunlight,
+                    mist_sun::update_mist_sunlight,
                     quality::apply_terrain_debug_view,
                     quality::apply_terrain_shading,
                     warn_unbaked_terrain,

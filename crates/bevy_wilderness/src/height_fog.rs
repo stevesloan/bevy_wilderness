@@ -11,6 +11,10 @@ use bevy::{
     render::render_resource::ShaderType,
 };
 
+/// The share of sunlight scattered evenly that goes any one way: 1 / 4π, as
+/// `fog_functions.wesl`'s `EVEN_SHARE`.
+const EVEN_SHARE: f32 = 0.079_577_47;
+
 /// Height-fog parameters.
 #[derive(Clone)]
 pub struct HeightFog {
@@ -63,10 +67,11 @@ pub struct HeightFog {
     pub aerosol_falloff: f32,
     /// The fog shadow volume's size ([`crate::FogShadowVolume`]): with one,
     /// mist in a shaded valley loses the sun it can't see, and a ridge between
-    /// the eye and the sun cuts a dark shaft into the haze. `None` takes the
-    /// shadow from the terrain's shadow field at each ray's two ends instead:
-    /// fog the eye sees from inside a ridge's shade stays dark, but a shaft
-    /// across lit air doesn't show.
+    /// the eye and the sun cuts a dark shaft into the haze. `None` shades the
+    /// fog as a whole on the CPU instead ([`seen_from`](Self::seen_from)): the
+    /// glow toward the sun goes when the eye is in shade, and the mist takes
+    /// the colour of however much of it is, but a shaft across lit air doesn't
+    /// show, nor one bank of mist lit beside another shaded.
     pub shadow: Option<crate::FogShadowSize>,
 }
 
@@ -76,16 +81,22 @@ impl HeightFog {
         self.density + self.molecule_density + self.aerosol_density > 0.0
     }
 
-    /// The fog as a viewer sees it who gets `sunlit` of the sun
-    /// ([`EyeSunlight`](crate::EyeSunlight)), for when there's no shadow volume
-    /// to shade it point by point: the sun's glow scaled down. The sun's even
-    /// share in the mist's colour stays: it lights the mist alike from every
-    /// side, so taking it out would shift the fog's colour in every direction as
-    /// the viewer steps into shade, while the glow changes only toward the sun.
-    pub fn seen_from(&self, sunlit: f32) -> Self {
-        let sun = self.sun_color.to_linear().to_vec3() * sunlit;
+    /// The fog where the viewer gets `eye` of the sun
+    /// ([`EyeSunlight`](crate::EyeSunlight)) and the mist around them `mist` of
+    /// it ([`MistSunlight`](crate::MistSunlight)), for when there's no shadow
+    /// volume to shade it point by point. The sun's glow is scaled by `eye`,
+    /// and the sun's even share of the mist's colour by `mist`, as the shader
+    /// does for shaded fog. The colour doesn't follow `eye`: the sun lights the
+    /// mist alike from every side, so that would shift the fog's colour in
+    /// every direction as the viewer steps into shade, while the glow changes
+    /// only toward the sun.
+    pub fn seen_from(&self, eye: f32, mist: f32) -> Self {
+        let sun = self.sun_color.to_linear().to_vec3();
+        let color = (self.color.to_linear().to_vec3() - (1.0 - mist) * sun * EVEN_SHARE).max(Vec3::ZERO);
+        let glow = sun * eye;
         Self {
-            sun_color: Color::linear_rgb(sun.x, sun.y, sun.z),
+            color: Color::linear_rgb(color.x, color.y, color.z),
+            sun_color: Color::linear_rgb(glow.x, glow.y, glow.z),
             ..self.clone()
         }
     }

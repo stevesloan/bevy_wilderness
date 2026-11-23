@@ -185,8 +185,8 @@ fn fog_shadow_margin(
 // quoted for. The volume is centred on the viewer and read as if on cam_pos:
 // an eye's few centimetres from it don't show in fog that starts metres away.
 // `volume_sampler` must be linear and repeat in x. 1 with no volume: without
-// one, the fog's parameters carry the viewer's own share of the sun
-// (`EyeSunlight`).
+// one, the fog's parameters carry the terrain's shade as a whole
+// (`HeightFog::seen_from`).
 fn fog_sunlit_share(
     fog: HeightFog,
     volume: texture_3d<f32>,
