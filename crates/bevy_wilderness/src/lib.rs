@@ -7,6 +7,7 @@ mod dev_controls;
 mod eye_sun;
 mod fog_shadow;
 mod height_fog;
+mod height_mips;
 mod heightfield;
 mod holes;
 mod material;
@@ -27,6 +28,7 @@ pub use clipmap::{ClipmapStamp, RebakeRequested};
 pub use fog_shadow::{FogShadowSize, FogShadowViewer, FogShadowVolume};
 pub use eye_sun::EyeSunlight;
 pub use height_fog::{HeightFog, HeightFogParams};
+pub use height_mips::TerrainHeightMips;
 pub use holes::{HoleShape, MAX_HOLES};
 /// Public under `editing` so editor crates reuse the world↔texel + bilinear math
 /// that must stay in sync with the shaders (docs/architecture.md).
@@ -68,6 +70,7 @@ impl Plugin for ClipmapPlugin {
             .init_resource::<EyeSunlight>()
             .init_resource::<TerrainDebugView>()
             .init_resource::<TerrainShading>()
+            .init_resource::<TerrainHeightMips>()
             .add_observer(vt::cancel_removed_clipmap)
             .add_systems(
                 PreUpdate,
@@ -90,6 +93,7 @@ impl Plugin for ClipmapPlugin {
                 Update,
                 (
                     update_grids,
+                    height_mips::sync_height_source,
                     clipmap::sync_holes,
                     clipmap::sync_detail,
                     clipmap::sync_sun_shadow_params,

@@ -639,9 +639,8 @@ pub(crate) fn update_grids(
 /// (`editing` feature). The materials are built once at spawn, so anything an
 /// editor mutates afterward must be re-synced here: the `edit_overlay`
 /// assignment (created after the heightmap loads — it needs its dimensions),
-/// and the `heightmap` / `texel_size` / `min`/`max` swap a runtime new/load
-/// performs — without this the vertex shader keeps displacing from the *old*
-/// heightmap while the bake reads the new one, and the terrain looks flat.
+/// and the `texel_size` / `min`/`max` swap a runtime new/load performs. The
+/// heightmap itself follows in `sync_height_source`.
 #[cfg(feature = "editing")]
 pub(crate) fn sync_editable_materials(
     clipmaps: Query<(&Clipmap, &ClipmapMaterials), Changed<Clipmap>>,
@@ -653,8 +652,7 @@ pub(crate) fn sync_editable_materials(
             // Check before `get_mut`: mutable access alone marks the material
             // modified and rebuilds its bind group.
             let in_sync = materials.get(handle).is_some_and(|m| {
-                m.extension.heightmap == clipmap.heightmap
-                    && m.extension.texel_size == clipmap.texel_size
+                m.extension.texel_size == clipmap.texel_size
                     && m.extension.minmax == minmax
                     && clipmap
                         .edit_overlay
@@ -663,7 +661,6 @@ pub(crate) fn sync_editable_materials(
                     && m.extension.editor == clipmap.edit_overlay.is_some()
             });
             if !in_sync && let Some(mut material) = materials.get_mut(handle) {
-                material.extension.heightmap = clipmap.heightmap.clone();
                 material.extension.texel_size = clipmap.texel_size;
                 material.extension.minmax = minmax;
                 material.extension.editor = clipmap.edit_overlay.is_some();

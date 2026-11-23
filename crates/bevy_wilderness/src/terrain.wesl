@@ -51,8 +51,8 @@ import bevy_pbr::deferred::functions::deferred_output;
 @group(constants::MATERIAL_BIND_GROUP) @binding(108) var<uniform> texel_size: f32;
 @group(constants::MATERIAL_BIND_GROUP) @binding(109) var<uniform> minmax: vec2<f32>;
 // Packed flags (this material is at the bind-group binding limit, so quality
-// knobs ride here instead of new uniforms): bit0 = wireframe, bit1 unused,
-// bit2 = single-layer detail, bit3 = looping.
+// knobs ride here instead of new uniforms): bit0 = wireframe, bit1 = ring-level
+// height reads (`ring_height_at`), bit2 = single-layer detail, bit3 = looping.
 @group(constants::MATERIAL_BIND_GROUP) @binding(111) var<uniform> flags: u32;
 // The texture clipmap (`vt.rs`): one layer per level, finest first, the last
 // covering the whole world. Albedo + cavity; octahedral normal + roughness +
@@ -262,6 +262,30 @@ fn base_height_at(xz: vec2<f32>) -> f32 {
     return height_bilinear(sample_uv, 0) * (minmax.y - minmax.x) + minmax.x;
 }
 
+// The heightmap mip a ring with cells of `cell` metres reads one texel a vertex
+// from, or -1 for a bilinear read of the heightmap. Flags bit1 says the
+// heightmap is a chain whose mip n keeps every 2^n-th texel and that every ring
+// vertex lands on a texel of its level (`height_mips.rs`), so the read returns
+// what the bilinear one would, from texels that sit together in the cache.
+fn ring_lod(cell: f32) -> i32 {
+    if (flags & 2u) == 0u {
+        return -1;
+    }
+    let lod = i32(round(log2(cell / texel_size)));
+    return min(lod, i32(textureNumLevels(heightmap_texture)) - 1);
+}
+
+// Terrain height (world Y) at `xz`, a vertex of a ring reading mip `lod`.
+fn ring_height_at(xz: vec2<f32>, lod: i32) -> f32 {
+    if lod < 0 {
+        return base_height_at(xz);
+    }
+    let world_size = texel_size * vec2<f32>(textureDimensions(heightmap_texture));
+    let size = vec2<i32>(textureDimensions(heightmap_texture, lod));
+    let p = vec2<i32>(round((xz / world_size + 0.5) * vec2<f32>(size)));
+    return load_height_texel(p, size, lod) * (minmax.y - minmax.x) + minmax.x;
+}
+
 // --- Geomorphing ---
 // Each ring has half the resolution of the one inside it, so where a ring
 // meets the next coarser one the surface changes detail abruptly — and since
@@ -282,19 +306,19 @@ const MORPH_BAND: f32 = 0.3; // fraction of the ring's half-width
 // either one of them (same height — no extra reads), the middle of a coarse
 // edge (average of its ends), or a coarse quad's center — on the quad's
 // (+x, +z) diagonal, the ring meshes' triangulation.
-fn coarse_height_at(xz: vec2<f32>, cell: f32, fine: f32) -> f32 {
+fn coarse_height_at(xz: vec2<f32>, cell: f32, fine: f32, lod: i32) -> f32 {
     let k = vec2<i32>(round(xz / cell));
     let odd = vec2<bool>((k.x & 1) != 0, (k.y & 1) != 0);
     if odd.x && odd.y {
-        return 0.5 * (base_height_at(xz - vec2<f32>(cell)) + base_height_at(xz + vec2<f32>(cell)));
+        return 0.5 * (ring_height_at(xz - vec2<f32>(cell), lod) + ring_height_at(xz + vec2<f32>(cell), lod));
     }
     if odd.x {
         let dx = vec2<f32>(cell, 0.0);
-        return 0.5 * (base_height_at(xz - dx) + base_height_at(xz + dx));
+        return 0.5 * (ring_height_at(xz - dx, lod) + ring_height_at(xz + dx, lod));
     }
     if odd.y {
         let dz = vec2<f32>(0.0, cell);
-        return 0.5 * (base_height_at(xz - dz) + base_height_at(xz + dz));
+        return 0.5 * (ring_height_at(xz - dz, lod) + ring_height_at(xz + dz, lod));
     }
     return fine;
 }
@@ -312,10 +336,11 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let height_uv = out.world_position.xz / world_size + 0.5;
     // Looping wraps the read toroidally (height_bilinear handles the indices), so
     // the uv isn't clamped; finite terrain clamps to keep the far edge in bounds.
-    var world_y = base_height_at(out.world_position.xz);
+    let level_cell = length(model[0].xyz);
+    let lod = ring_lod(level_cell);
+    var world_y = ring_height_at(out.world_position.xz, lod);
 
     // Geomorph toward the coarser ring across this ring's outer band.
-    let level_cell = length(model[0].xyz);
     let ring = dev.ring_half_cells * level_cell;
     // The seam sits `ring` from the snapped ring center, which trails the
     // camera by up to a snap step (≤ 2 cells): finish morphing before it.
@@ -324,7 +349,7 @@ fn vertex(vertex: Vertex, @builtin(vertex_index) idx: u32) -> VertexOutput {
     let to_camera = abs(out.world_position.xz - view.world_position.xz);
     let morph = saturate((max(to_camera.x, to_camera.y) - morph_start) / (morph_end - morph_start));
     if morph > 0.0 {
-        world_y = mix(world_y, coarse_height_at(out.world_position.xz, level_cell, world_y), morph);
+        world_y = mix(world_y, coarse_height_at(out.world_position.xz, level_cell, world_y, lod), morph);
     }
 
     // Stamp floating preview (flags bit5): add the stamp heightfield

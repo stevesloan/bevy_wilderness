@@ -224,7 +224,7 @@ pub(crate) struct GridMaterial {
     pub(crate) texel_size: f32,
     #[uniform(109)]
     pub(crate) minmax: Vec2,
-    /// Packed flags: bit0 wireframe, bit1 unused, bit2 single-layer detail,
+    /// Packed flags: bit0 wireframe, bit1 ring-level height reads, bit2 single-layer detail,
     /// bit3 looping, bit4 clay display mode (`editing`). Quality knobs ride
     /// here rather than adding uniforms (this material is at the bind-group binding
     /// limit — extra uniforms silently break its pipeline).
@@ -240,6 +240,9 @@ pub(crate) struct GridMaterial {
 }
 
 impl GridMaterial {
+    /// `flags` bit1: `heightmap` is a point-sampled mip chain and every ring
+    /// vertex lands on a texel of its level. Kept by `sync_height_source`.
+    pub(crate) const FLAG_HEIGHT_MIPS: u32 = 1 << 1;
     /// `flags` bit4: clay display mode — grey + screen-derivative
     /// normals instead of the baked RVT. Kept in sync by `sync_clay_flag`.
     #[cfg(feature = "editing")]
