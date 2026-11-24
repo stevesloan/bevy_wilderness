@@ -529,7 +529,7 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
         direct += contrib * shadow * sun_vis;
     }
 
-    // Clusterable lights (point + spot) touching this fragment's cluster. The same
+    // Clusterable lights (point, spot and rect) touching this fragment's cluster. The same
     // `ranges` also feeds the environment-map lookup below.
     let cluster_index = clustering::view_fragment_cluster_index(in.frag_coord.xy, view_z, in.is_orthographic);
     var ranges = clustering::unpack_clusterable_object_index_ranges(cluster_index);
@@ -561,6 +561,17 @@ fn terrain_apply_lighting(in: pbr_types::PbrInput, sun_vis: f32, baked: BakedSam
             );
         }
         direct += lighting::spot_light(light_id, &li, baked_diffuse(light_id, baked)) * shadow;
+    }
+
+    // Rect (area) lights, which Bevy only shades with its `area_light_luts`
+    // feature. They cast no shadows, and Bevy gives them no way to leave
+    // lightmapped diffuse to a bake, so a host drops a rect light once its
+    // light is baked rather than leave it here to light the ground twice.
+    @if(AREA_LIGHT_LUTS) {
+    for (var i = ranges.first_rect_light_index_offset; i < ranges.first_reflection_probe_index_offset; i++) {
+        var light = lighting::unpack_clustered_rect_light(clustering::get_clusterable_object_id(i));
+        direct += lighting::rect_light(&light, &li, true);
+    }
     }
 
     // Indirect: baked light, else the environment map (the physical-sky IBL)
