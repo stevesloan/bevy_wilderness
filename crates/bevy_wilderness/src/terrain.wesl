@@ -925,9 +925,9 @@ fn fragment(
 
     // `TerrainShading::Simple`: lit as the Low tier's level meshes are.
     @if(WILDERNESS_SIMPLE && !PREPASS_PIPELINE) {
-        // Near the viewer, the dominant material's grain and relief over the
-        // clipmap, as the full shader's single-layer detail does: its id from
-        // the finest level's packed byte, its brightness around its own mean so
+        // Near the viewer, the dominant material's grain over the clipmap, as
+        // the full shader's single-layer detail does: its id from the finest
+        // level's packed byte, its brightness around its own mean so
         // the clipmap keeps the colour.
         let simple_dist = distance(view.world_position, in.world_position.xyz);
         let simple_fade = 1.0 - smoothstep(detail.near, detail.far, simple_dist);
@@ -935,7 +935,7 @@ fn fragment(
         let simple_dx = dpdx(simple_p);
         let simple_dy = dpdy(simple_p);
         var simple_albedo = vt.albedo.rgb;
-        var simple_n = normalize(base_normal);
+        let simple_n = normalize(base_normal);
         if simple_fade > 0.001 {
             let simple_jitter = hash22(in.world_position.xz) - 0.5;
             let simple_level = dev.vt.levels[vt.id_level];
@@ -946,15 +946,19 @@ fn fragment(
                 simple_idx = clamp(simple_raw, vec2(0), vec2(simple_size - 1));
             }
             let simple_id = u32(textureLoad(vt_normal_texture, simple_idx, vt.id_level, 0).a * 255.0 + 0.5) & 3u;
-            let simple_d = detail_sample(
-                simple_id, vec3<f32>(0.0, 1.0, 0.0), simple_p, simple_dx, simple_dy, base_normal,
-                detail.normal_strength * simple_fade,
-            );
+            // The grain alone: the detail's normal map and ORM cost a standalone
+            // headset more than the relief they add at this tier.
+            let simple_b = projection_basis(1u);
+            let simple_detail = textureSampleGrad(
+                detail_albedo_array, detail_albedo_sampler,
+                vec2<f32>(dot(simple_p, simple_b[0]), dot(simple_p, simple_b[1])), simple_id,
+                vec2<f32>(dot(simple_dx, simple_b[0]), dot(simple_dx, simple_b[1])),
+                vec2<f32>(dot(simple_dy, simple_b[0]), dot(simple_dy, simple_b[1])),
+            ).rgb;
             let simple_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
             let simple_mean = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, simple_p.xz, simple_id, simple_lod).rgb;
-            let simple_grain = min(dot(simple_d.albedo, LUMA) / max(dot(simple_mean, LUMA), 1e-4), 3.0);
+            let simple_grain = min(dot(simple_detail, LUMA) / max(dot(simple_mean, LUMA), 1e-4), 3.0);
             simple_albedo *= mix(1.0, simple_grain, detail.albedo_strength * simple_fade);
-            simple_n = normalize(simple_d.normal);
         }
         let simple_baked = baked_light_at(in.world_position.xz, simple_n);
         var simple_visible = sun_vis;
