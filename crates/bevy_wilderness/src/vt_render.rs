@@ -11,12 +11,13 @@ use bevy::{
         render_asset::RenderAssets,
         render_resource::{
             binding_types::{sampler, texture_2d, texture_2d_array, uniform_buffer},
-            BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
-            CachedRenderPipelineId, ColorTargetState, ColorWrites, DynamicUniformBuffer,
-            FragmentState, LoadOp, Operations, PipelineCache, RenderPassColorAttachment,
-            RenderPassDescriptor, RenderPipelineDescriptor, SamplerBindingType, ShaderStages,
-            ShaderType, StoreOp, TextureFormat, TextureSampleType, TextureViewDescriptor,
-            TextureViewDimension, UniformBuffer, VertexState,
+            AddressMode, BindGroup, BindGroupEntries, BindGroupLayoutDescriptor,
+            BindGroupLayoutEntries, CachedRenderPipelineId, ColorTargetState, ColorWrites,
+            DynamicUniformBuffer, FilterMode, FragmentState, LoadOp, Operations, PipelineCache,
+            RenderPassColorAttachment, RenderPassDescriptor, RenderPipelineDescriptor, Sampler,
+            SamplerBindingType, SamplerDescriptor, ShaderStages, ShaderType, StoreOp,
+            TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension,
+            UniformBuffer, VertexState,
         },
         diagnostic::RecordDiagnostics,
         renderer::{RenderContext, RenderDevice, RenderGraph, RenderGraphSystems, RenderQueue},
@@ -47,7 +48,13 @@ struct CompositeDraw {
 struct VtPipeline {
     terrain_layout: BindGroupLayoutDescriptor,
     draw_layout: BindGroupLayoutDescriptor,
+    light_layout: BindGroupLayoutDescriptor,
+    /// Writes the albedo, for the full shading.
     id: CachedRenderPipelineId,
+    /// Writes the texel lit, into an `Rgba16Float` first target.
+    lit_id: CachedRenderPipelineId,
+    /// Linear and repeating, as the main pass reads the field and baked light.
+    light_sampler: Sampler,
 }
 
 pub(crate) struct VtRenderPlugin;
@@ -76,6 +83,7 @@ fn init_vt_pipeline(
     mut commands: Commands,
     pipeline_cache: Res<PipelineCache>,
     asset_server: Res<AssetServer>,
+    render_device: Res<RenderDevice>,
 ) {
     let terrain_layout = BindGroupLayoutDescriptor::new(
         "terrain_vt_composite_terrain",
@@ -102,6 +110,18 @@ fn init_vt_pipeline(
             uniform_buffer::<CompositeDraw>(true),
         ),
     );
+    let light_layout = BindGroupLayoutDescriptor::new(
+        "terrain_vt_composite_light",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                uniform_buffer::<crate::vt::CompositeLight>(false),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+            ),
+        ),
+    );
     let shader = load_embedded_asset!(asset_server.as_ref(), "vt_composite.wesl");
     let target = |format| {
         Some(ColorTargetState {
@@ -110,30 +130,53 @@ fn init_vt_pipeline(
             write_mask: ColorWrites::ALL,
         })
     };
-    let id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
-        label: Some("terrain_vt_composite".into()),
-        layout: vec![terrain_layout.clone(), draw_layout.clone()],
-        vertex: VertexState {
-            shader: shader.clone(),
-            entry_point: Some("vertex".into()),
+    let queue = |label: &'static str, albedo: TextureFormat, lit: bool| {
+        let mut layout = vec![terrain_layout.clone(), draw_layout.clone()];
+        let mut shader_defs = Vec::new();
+        if lit {
+            layout.push(light_layout.clone());
+            shader_defs.push("VT_LIT".into());
+        }
+        pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some(label.into()),
+            layout,
+            vertex: VertexState {
+                shader: shader.clone(),
+                entry_point: Some("vertex".into()),
+                shader_defs: shader_defs.clone(),
+                ..default()
+            },
+            fragment: Some(FragmentState {
+                shader: shader.clone(),
+                entry_point: Some("fragment".into()),
+                shader_defs,
+                targets: vec![
+                    target(albedo),
+                    target(TextureFormat::Rgba8Unorm),
+                    target(TextureFormat::Rgba8Unorm),
+                ],
+                ..default()
+            }),
             ..default()
-        },
-        fragment: Some(FragmentState {
-            shader,
-            entry_point: Some("fragment".into()),
-            targets: vec![
-                target(TextureFormat::Rgba8UnormSrgb),
-                target(TextureFormat::Rgba8Unorm),
-                target(TextureFormat::Rgba8Unorm),
-            ],
-            ..default()
-        }),
+        })
+    };
+    let id = queue("terrain_vt_composite", TextureFormat::Rgba8UnormSrgb, false);
+    let lit_id = queue("terrain_vt_composite_lit", TextureFormat::Rgba16Float, true);
+    let light_sampler = render_device.create_sampler(&SamplerDescriptor {
+        label: Some("terrain_vt_composite_light"),
+        address_mode_u: AddressMode::Repeat,
+        address_mode_v: AddressMode::Repeat,
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
         ..default()
     });
     commands.insert_resource(VtPipeline {
         terrain_layout,
         draw_layout,
+        light_layout,
         id,
+        lit_id,
+        light_sampler,
     });
 }
 
@@ -263,13 +306,22 @@ fn composite_vt(
     let Some(pipeline) = pipeline else {
         return;
     };
-    let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline.id) else {
-        return;
-    };
+    // Each compiles on its own: a clipmap waits only for the one it needs.
+    let plain_pipeline = pipeline_cache.get_render_pipeline(pipeline.id);
+    let lit_pipeline = pipeline_cache.get_render_pipeline(pipeline.lit_id);
 
     let mut terrain_groups: HashMap<Entity, BindGroup> = HashMap::new();
+    let mut light_groups: HashMap<Entity, BindGroup> = HashMap::new();
     let mut targets: HashMap<Entity, (AssetId<Image>, AssetId<Image>)> = HashMap::new();
     let (slices, done) = take_work(queue, budget, |request| {
+        let ready = if request.light.is_some() {
+            lit_pipeline.is_some()
+        } else {
+            plain_pipeline.is_some()
+        };
+        if !ready {
+            return false;
+        }
         let sources = request.sources;
         let (Some(heightmap), Some(albedo), Some(normal), Some(orm), Some(vt_albedo), Some(vt_normal), Some(masks)) = (
             images.get(sources.heightmap),
@@ -318,6 +370,29 @@ fn composite_vt(
                 &masks.texture_view,
             )),
         );
+        if let Some(light) = request.light {
+            let (Some(sun_shadow), Some(baked_atlas)) =
+                (images.get(sources.sun_shadow), images.get(sources.baked_atlas))
+            else {
+                return false;
+            };
+            let mut light = UniformBuffer::from(light);
+            light.write_buffer(&render_device, &render_queue);
+            let Some(light) = light.binding() else {
+                return false;
+            };
+            let light_group = render_device.create_bind_group(
+                "terrain_vt_composite_light",
+                &pipeline_cache.get_bind_group_layout(&pipeline.light_layout),
+                &BindGroupEntries::sequential((
+                    light,
+                    &sun_shadow.texture_view,
+                    &baked_atlas.texture_view,
+                    &pipeline.light_sampler,
+                )),
+            );
+            light_groups.insert(request.clipmap, light_group);
+        }
         terrain_groups.insert(request.clipmap, group);
         targets.insert(request.clipmap, (sources.vt_albedo, sources.vt_normal));
         true
@@ -413,7 +488,15 @@ fn composite_vt(
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-        pass.set_pipeline(render_pipeline);
+        // `take_work` only lets through a clipmap whose pipeline is ready.
+        match (light_groups.get(&batch.clipmap), lit_pipeline, plain_pipeline) {
+            (Some(light), Some(lit), _) => {
+                pass.set_pipeline(lit);
+                pass.set_bind_group(2, light, &[]);
+            }
+            (None, _, Some(plain)) => pass.set_pipeline(plain),
+            _ => continue,
+        }
         pass.set_bind_group(0, &terrain_groups[&batch.clipmap], &[]);
         for ([x, y, w, h], offset) in &batch.pieces {
             pass.set_bind_group(1, &draw_group, &[*offset]);
@@ -455,9 +538,12 @@ mod tests {
                 masks: AssetId::default(),
                 vt_albedo: AssetId::default(),
                 vt_normal: AssetId::default(),
+                sun_shadow: AssetId::default(),
+                baked_atlas: AssetId::default(),
             },
             terrain: default(),
             params: default(),
+            light: None,
             layer: 0,
             size: 64,
             texel: 1.0,

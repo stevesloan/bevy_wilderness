@@ -921,9 +921,15 @@ fn fragment(
     let base_normal = vt.normal;
     // Baked light needs the shading normal, so it's sampled after the detail
     // overlay below; until then the shadow field's sun visibility stands.
-    var sun_vis = ground_sun_visibility(uv);
+    var sun_vis = 1.0;
+    @if(!WILDERNESS_SIMPLE) {
+        sun_vis = ground_sun_visibility(uv);
+    }
 
-    // `TerrainShading::Simple`: lit as the Low tier's level meshes are.
+    // `TerrainShading::Simple`: lit as the Low tier's level meshes are, by the
+    // baked light (or the ambient) and a diffuse sun in the baked or field
+    // shadow, which the clipmap holds already applied (`VT_LIT` in
+    // `vt_composite.wesl`), per texel of its level.
     @if(WILDERNESS_SIMPLE && !PREPASS_PIPELINE) {
         // Near the viewer, the dominant material's grain over the clipmap, as
         // the full shader's single-layer detail does: its id from the finest
@@ -934,8 +940,7 @@ fn fragment(
         let simple_p = in.world_position.xyz / detail.tiling;
         let simple_dx = dpdx(simple_p);
         let simple_dy = dpdy(simple_p);
-        var simple_albedo = vt.albedo.rgb;
-        let simple_n = normalize(base_normal);
+        var simple_lit = vt.albedo.rgb;
         if simple_fade > 0.001 {
             let simple_jitter = hash22(in.world_position.xz) - 0.5;
             let simple_level = dev.vt.levels[vt.id_level];
@@ -958,19 +963,9 @@ fn fragment(
             let simple_lod = f32(textureNumLevels(detail_albedo_array) - 1u);
             let simple_mean = textureSampleLevel(detail_albedo_array, detail_albedo_sampler, simple_p.xz, simple_id, simple_lod).rgb;
             let simple_grain = min(dot(simple_detail, LUMA) / max(dot(simple_mean, LUMA), 1e-4), 3.0);
-            simple_albedo *= mix(1.0, simple_grain, detail.albedo_strength * simple_fade);
+            simple_lit *= mix(1.0, simple_grain, detail.albedo_strength * simple_fade);
         }
-        let simple_baked = baked_light_at(in.world_position.xz, simple_n);
-        var simple_visible = sun_vis;
-        var simple_indirect = lights.ambient_color.rgb;
-        if simple_baked.found {
-            simple_visible = simple_baked.sun_visibility;
-            simple_indirect = simple_baked.light;
-        }
-        let simple_sun = &lights.directional_lights[0];
-        let simple_direct = (*simple_sun).color.rgb * saturate(dot(simple_n, (*simple_sun).direction_to_light))
-            / 3.14159265 * simple_visible;
-        var simple_color = simple_albedo * (simple_indirect + simple_direct) * view.exposure;
+        var simple_color = simple_lit * view.exposure;
         if fog.density + fog.molecule_density + fog.aerosol_density > 0.0 {
             let simple_fog = fog_copy();
             let simple_sunlit = fog_sunlit_share(simple_fog, fog_shadow_volume, vt_sampler, sun_shadow_copy(), view.world_position, in.world_position.xyz);

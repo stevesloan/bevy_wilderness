@@ -29,7 +29,8 @@ use bevy::{
 };
 
 use crate::{
-    Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, TerrainQuality, clipmap::ClipmapMaterials,
+    Clipmap, ClipmapReady, MAX_TERRAIN_LAYERS, SunShadowParams, TerrainBakedLight, TerrainQuality,
+    TerrainShading, TerrainSunShadow, baked_light::BakedLightParams, clipmap::ClipmapMaterials,
     material::GridMaterial, rvt::ClipmapRvt,
 };
 
@@ -181,6 +182,20 @@ pub(crate) struct CompositeTerrain {
     pub(crate) has_masks: u32,
 }
 
+/// The light a lit composite (`TerrainShading::Simple`) shades each texel with.
+/// Matches `CompositeLight` in `vt_composite.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub(crate) struct CompositeLight {
+    /// The first directional light: its colour × illuminance, as Bevy gives it
+    /// to a shader, and the direction toward it.
+    pub(crate) sun_color: Vec4,
+    pub(crate) sun_direction: Vec4,
+    /// What the ground outside every baked region takes for its sky light.
+    pub(crate) ambient: Vec4,
+    pub(crate) sun_shadow: SunShadowParams,
+    pub(crate) baked: BakedLightParams,
+}
+
 /// The images one composite reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct VtSources {
@@ -193,6 +208,10 @@ pub(crate) struct VtSources {
     pub(crate) masks: AssetId<Image>,
     pub(crate) vt_albedo: AssetId<Image>,
     pub(crate) vt_normal: AssetId<Image>,
+    /// A lit composite's shadow field and baked light atlas. The field stands
+    /// in for the atlas when there's no baked light (no region reads it then).
+    pub(crate) sun_shadow: AssetId<Image>,
+    pub(crate) baked_atlas: AssetId<Image>,
 }
 
 /// One rect of one level to composite.
@@ -204,6 +223,8 @@ pub(crate) struct VtRequest {
     pub(crate) sources: VtSources,
     pub(crate) terrain: CompositeTerrain,
     pub(crate) params: TerrainParams,
+    /// Some: write the texel lit (`Rgba16Float`) rather than its albedo.
+    pub(crate) light: Option<CompositeLight>,
     pub(crate) layer: u32,
     pub(crate) size: u32,
     pub(crate) texel: f32,
@@ -339,6 +360,8 @@ struct Layout {
 /// stay valid.
 #[derive(Component)]
 pub(crate) struct ClipmapVt {
+    /// Albedo and cavity, or under `TerrainShading::Simple` the texel lit
+    /// ([`CompositeLight`]) and cavity.
     pub(crate) albedo: Handle<Image>,
     pub(crate) normal: Handle<Image>,
     layout: Option<Layout>,
@@ -346,15 +369,15 @@ pub(crate) struct ClipmapVt {
     pub(crate) refresh: bool,
     /// A refresh is in flight; [`ClipmapReady`] waits for it.
     refreshing: bool,
-    /// The quality the layout was built with.
-    built_with: Option<(u32, f32)>,
+    /// The quality the layout was built with, and whether it holds lit texels.
+    built_with: Option<(u32, f32, bool)>,
     /// Where the windows were last centred. Held while the target is missing
     /// (despawned, or not spawned yet), as the geometry holds, so a vanished
     /// target doesn't recomposite every level around the world origin.
     last_target: Option<Vec2>,
     /// What the committed texels were composited from: a change to the layers,
     /// their textures or the masks recomposites every level.
-    composited_from: Option<(VtSources, CompositeTerrain, TerrainParams)>,
+    composited_from: Option<(VtSources, CompositeTerrain, TerrainParams, Option<CompositeLight>)>,
 }
 
 impl ClipmapVt {
@@ -498,36 +521,97 @@ fn visible(rect: IRect, world: Option<IRect>) -> Option<IRect> {
     (!rect.is_empty()).then_some(rect)
 }
 
+/// The sun and sky a lit composite shades with: the first directional light,
+/// and the ambient of the first camera that sets its own, else the global one.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct SceneLight<'w, 's> {
+    suns: Query<'w, 's, (&'static DirectionalLight, &'static GlobalTransform)>,
+    ambients: Query<'w, 's, &'static AmbientLight, With<Camera3d>>,
+    global_ambient: Option<Res<'w, GlobalAmbientLight>>,
+}
+
+impl SceneLight<'_, '_> {
+    fn composite_light(
+        &self,
+        shadow: &TerrainSunShadow,
+        baked: Option<&TerrainBakedLight>,
+    ) -> CompositeLight {
+        let (sun_color, sun_direction) = self.suns.iter().next().map_or((Vec4::ZERO, Vec4::Y), |(sun, at)| {
+            (
+                LinearRgba::from(sun.color).to_vec4() * sun.illuminance,
+                at.back().as_vec3().extend(0.0),
+            )
+        });
+        let ambient = self
+            .ambients
+            .iter()
+            .next()
+            .map(|ambient| (ambient.color, ambient.brightness))
+            .or_else(|| self.global_ambient.as_ref().map(|ambient| (ambient.color, ambient.brightness)))
+            .map_or(Vec4::ZERO, |(color, brightness)| LinearRgba::from(color).to_vec4() * brightness);
+        CompositeLight {
+            sun_color,
+            sun_direction,
+            ambient,
+            sun_shadow: shadow.params,
+            baked: baked.map(BakedLightParams::from_baked).unwrap_or_default(),
+        }
+    }
+}
+
 /// Moves each level's window with the clipmap's target, queues the strips that
 /// enter it, commits acknowledged jobs, and publishes the visible rects.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn update_vt(
     quality: Res<TerrainQuality>,
+    shading: Res<TerrainShading>,
+    scene_light: SceneLight,
     mut outbox: ResMut<VtOutbox>,
     done: Res<VtDone>,
     mut next_id: Local<u64>,
     mut images: ResMut<Assets<Image>>,
     transforms: Query<&GlobalTransform>,
-    mut clipmaps: Query<(Entity, &Clipmap, &mut ClipmapVt, &ClipmapMaterials)>,
+    mut clipmaps: Query<(
+        Entity,
+        &Clipmap,
+        &mut ClipmapVt,
+        &ClipmapMaterials,
+        Option<&TerrainSunShadow>,
+        Option<&TerrainBakedLight>,
+    )>,
     mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, GridMaterial>>>,
 ) {
     outbox.budget = quality.vt_texels_per_frame.max(1);
     let done: HashSet<u64> = done.0.lock().unwrap().drain(..).collect();
     let mut messages = Vec::new();
 
-    for (entity, clipmap, mut vt, mats) in &mut clipmaps {
+    for (entity, clipmap, mut vt, mats, shadow, baked) in &mut clipmaps {
         let Some(heightmap) = images.get(&clipmap.heightmap) else {
             continue;
         };
         let world_size = clipmap.texel_size * heightmap.width() as f32;
-        let quality_key = (quality.vt_size, quality.vt_finest_texel);
+        // Simple shading reads the light from the clipmap, composited per texel
+        // as the target moves, instead of working it out per pixel.
+        let light = match shadow {
+            Some(shadow) if *shading == TerrainShading::Simple => {
+                Some((shadow, scene_light.composite_light(shadow, baked)))
+            }
+            _ => None,
+        };
+        let lit = light.is_some();
+        let albedo_format = if lit {
+            TextureFormat::Rgba16Float
+        } else {
+            TextureFormat::Rgba8UnormSrgb
+        };
+        let quality_key = (quality.vt_size, quality.vt_finest_texel, lit);
         if vt.layout.is_none() || vt.built_with != Some(quality_key) {
             messages.push(VtMessage::Cancel(entity));
             let layout = build_layout(&quality, world_size, clipmap.looping);
             let layers = layout.levels.len() as u32;
             // The normal array's second half holds each level's layer weights.
             for (handle, layers, format) in [
-                (vt.albedo.clone(), layers, TextureFormat::Rgba8UnormSrgb),
+                (vt.albedo.clone(), layers, albedo_format),
                 (vt.normal.clone(), layers * 2, TextureFormat::Rgba8Unorm),
             ] {
                 if let Some(mut image) = images.get_mut(&handle) {
@@ -556,6 +640,12 @@ pub(crate) fn update_vt(
             masks: clipmap.masks.as_ref().map_or(clipmap.heightmap.id(), |m| m.image.id()),
             vt_albedo: vt.albedo.id(),
             vt_normal: vt.normal.id(),
+            sun_shadow: light.map_or(AssetId::default(), |(shadow, _)| shadow.field.id()),
+            baked_atlas: match (light, baked) {
+                (Some(_), Some(baked)) => baked.atlas.id(),
+                (Some((shadow, _)), None) => shadow.field.id(),
+                (None, _) => AssetId::default(),
+            },
         };
         let terrain = CompositeTerrain {
             minmax: Vec2::new(clipmap.min, clipmap.max),
@@ -564,7 +654,8 @@ pub(crate) fn update_vt(
             has_masks: clipmap.masks.is_some() as u32,
         };
         let params = TerrainParams::from_clipmap(clipmap);
-        let from = Some((sources, terrain, params));
+        let light = light.map(|(_, light)| light);
+        let from = Some((sources, terrain, params, light));
         let refresh = if vt.composited_from.is_some() && vt.composited_from != from {
             messages.push(VtMessage::Cancel(entity));
             true
@@ -629,6 +720,7 @@ pub(crate) fn update_vt(
                     sources,
                     terrain,
                     params,
+                    light,
                     layer: layer as u32,
                     size,
                     texel: level.texel,

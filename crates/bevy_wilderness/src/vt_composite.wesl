@@ -7,6 +7,8 @@
 // derivatives the layer samples take span one level texel (plus the height it
 // climbs, on a side projection): every level is prefiltered at its own density.
 
+@if(VT_LIT) import bevy_wilderness::sun_shadow::{SunShadowParams, ground_sun_visibility_at, MIN_PENUMBRA};
+
 @group(0) @binding(0) var heightmap_texture: texture_2d<f32>;
 @group(0) @binding(1) var albedo_array: texture_2d_array<f32>;
 @group(0) @binding(2) var albedo_sampler: sampler;
@@ -18,6 +20,41 @@
 @group(0) @binding(8) var<uniform> terrain: CompositeTerrain;
 @group(0) @binding(9) var mask_texture: texture_2d<f32>;
 @group(1) @binding(0) var<uniform> draw: CompositeDraw;
+
+// `VT_LIT` (`TerrainShading::Simple`): the texel is written lit, as the main
+// pass's simple shading would light it, so the main pass reads its light from
+// here rather than working it out per pixel. Mirrors that shading: keep them in
+// step, as the main pass's lit fallbacks still use its own.
+@if(VT_LIT) @group(2) @binding(0) var<uniform> light: CompositeLight;
+@if(VT_LIT) @group(2) @binding(1) var sun_shadow_field: texture_2d<f32>;
+@if(VT_LIT) @group(2) @binding(2) var baked_light_atlas: texture_2d<f32>;
+@if(VT_LIT) @group(2) @binding(3) var light_sampler: sampler;
+
+// Matches `BakedRegionGpu`.
+@if(VT_LIT)
+struct BakedRegion {
+    world: vec4<f32>,
+    color: vec4<f32>,
+    direction: vec4<f32>,
+}
+// Matches `BakedLightParams`.
+@if(VT_LIT)
+struct BakedLight {
+    count: u32,
+    exposure: f32,
+    sky_luminance: f32,
+    patch_fade: f32,
+    regions: array<BakedRegion, 8>,
+}
+// Matches `CompositeLight` in `vt.rs`.
+@if(VT_LIT)
+struct CompositeLight {
+    sun_color: vec4<f32>,
+    sun_direction: vec4<f32>,
+    ambient: vec4<f32>,
+    sun_shadow: SunShadowParams,
+    baked: BakedLight,
+}
 
 struct TerrainParams {
     tiling_scale: vec4<f32>,
@@ -385,6 +422,59 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
     return v * 0.5 + 0.5;
 }
 
+// The baked light's region `i` at `xz`, re-aimed at `n`, as `terrain.wesl`
+// samples it.
+@if(VT_LIT)
+fn baked_region_sample(i: u32, xz: vec2<f32>, n: vec3<f32>) -> vec4<f32> {
+    let region = light.baked.regions[i];
+    let local = (xz - region.world.xy) / (region.world.zw - region.world.xy);
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(baked_light_atlas));
+    let size = region.color.zw - region.color.xy;
+    let inner = clamp(local * size, half_texel, size - half_texel);
+    let color = textureSampleLevel(baked_light_atlas, light_sampler, region.color.xy + inner, 0.0);
+    let direction = textureSampleLevel(baked_light_atlas, light_sampler, region.direction.xy + inner, 0.0);
+    let d = normalize(direction.xyz * 2.0 - 1.0);
+    let scale = (0.5 * dot(n, d) + 0.5) / max(direction.w, 0.05);
+    return vec4<f32>(color.rgb * scale, color.a);
+}
+
+@if(VT_LIT)
+fn baked_region_contains(i: u32, xz: vec2<f32>) -> bool {
+    let world = light.baked.regions[i].world;
+    return all(xz >= world.xy) && all(xz <= world.zw);
+}
+
+// `albedo` lit by the baked light (or the ambient outside it) and the sun, in
+// the scene's light units: what the main pass multiplies by the exposure.
+@if(VT_LIT)
+fn lit_texel(xz: vec2<f32>, n: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    var indirect = light.ambient.rgb;
+    var visible = 1.0;
+    let params = light.sun_shadow;
+    if params.valid > 0.5 {
+        let uv = xz * params.inv_world_size + 0.5;
+        if terrain.looping != 0u || (all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0))) {
+            visible = ground_sun_visibility_at(sun_shadow_field, light_sampler, params, uv, 2.0 * MIN_PENUMBRA);
+        }
+    }
+    let count = light.baked.count;
+    if count > 0u && baked_region_contains(0u, xz) {
+        var baked = baked_region_sample(0u, xz, n);
+        for (var i = 1u; i < count; i++) {
+            if !baked_region_contains(i, xz) {
+                continue;
+            }
+            let world = light.baked.regions[i].world;
+            let edge = min(min(xz.x - world.x, world.z - xz.x), min(xz.y - world.y, world.w - xz.y));
+            baked = mix(baked, baked_region_sample(i, xz, n), smoothstep(0.0, light.baked.patch_fade, edge));
+        }
+        indirect = baked.rgb * light.baked.exposure;
+        visible = baked.a;
+    }
+    let sun = light.sun_color.rgb * saturate(dot(n, light.sun_direction.xyz)) / 3.14159265 * visible;
+    return albedo * (indirect + sun);
+}
+
 @vertex
 fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let uv = vec2<f32>(f32(index >> 1u), f32(index & 1u)) * 2.0;
@@ -408,6 +498,9 @@ fn fragment(@builtin(position) position: vec4<f32>) -> CompositeOutput {
     let splat = splat_terrain(p, dpdx(p), dpdy(p), normal, cavity);
     var out: CompositeOutput;
     out.albedo = vec4<f32>(splat.color, cavity);
+    @if(VT_LIT) {
+        out.albedo = vec4<f32>(lit_texel(world_xz, splat.normal, splat.color), cavity);
+    }
     out.normal = vec4<f32>(oct_encode(splat.normal), splat.roughness, splat.material_id);
     out.weights = splat.weights;
     return out;
